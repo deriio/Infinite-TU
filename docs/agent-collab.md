@@ -9,14 +9,15 @@
 | `main` | никто | зеркало апстрима n1m21n/Infinite. **Никогда не коммитить и не пушить.** |
 | `my/main` | deriio | интеграционная ветка форка, из неё собираются релизы. **Напрямую не пушить.** |
 | `my/*` | deriio и его агенты | **не трогать.** |
-| `tu/<задача>` | turiaart | **все свои правки — только здесь**, одна ветка = одна задача. |
+| `tu/main` | turiaart | её интеграционная ветка: сюда вливаются её задачи, отсюда deriio забирает в `my/main`. |
+| `tu/<задача>` | агенты turiaart | одна ветка = одна задача, создаётся от `tu/main`. |
 
 ## Как начать задачу
 
 ```bash
 git clone https://github.com/deriio/Infinite-TU.git && cd Infinite-TU   # один раз
 git fetch origin
-git switch -c tu/<короткое-имя> origin/my/main    # новая ветка от свежего my/main
+git switch -c tu/<короткое-имя> origin/tu/main    # новая ветка от свежего tu/main
 ```
 
 Сабмодули: только `git submodule update --init external/vst3sdk` (без `--recursive` — тянет гигабайты документации).
@@ -31,9 +32,9 @@ git switch -c tu/<короткое-имя> origin/my/main    # новая вет
 
 ## Держать ветку свежей
 
-Если `my/main` ушёл вперёд:
+Если `tu/main` ушёл вперёд:
 ```bash
-git fetch origin && git merge origin/my/main     # merge, не rebase — история уже на GitHub
+git fetch origin && git merge origin/tu/main     # merge, не rebase — история уже на GitHub
 ```
 Конфликты решать, сохраняя обе стороны; если непонятно — остановиться и спросить.
 
@@ -45,8 +46,15 @@ git fetch origin && git merge origin/my/main     # merge, не rebase — ист
 
 ## Как сдать
 
-Открыть Pull Request **из `tu/<имя>` в `my/main`** (не в `main`!):
+Открыть Pull Request **из `tu/<имя>` в `tu/main`** (не в `main` и не в `my/main`!):
 ```bash
-gh pr create --base my/main --head tu/<имя> --title "..." --body "что сделано / как проверить"
+gh pr create --base tu/main --head tu/<имя> --title "..." --body "что сделано / как проверить"
 ```
-deriio смотрит и сливает. После слияния ветку можно удалить.
+turiaart (или её агент) смотрит и сливает в `tu/main`. После слияния ветку задачи можно удалить.
+
+## Обмен между tu/main и my/main
+
+- **Хотя бы раз в неделю** (и перед крупной задачей) подтягивать наше в своё:
+  `git switch tu/main && git merge origin/my/main && git push` — конфликты решать сразу, пока они мелкие.
+- Когда в `tu/main` накопилось готовое — открыть PR **`tu/main` → `my/main`**; deriio проверяет и сливает, оно попадает в релиз.
+- Чем чаще обмен, тем меньше конфликтов: две ветки, которые месяц живут отдельно, сливать больно.
