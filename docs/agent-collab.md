@@ -20,7 +20,12 @@ git fetch origin
 git switch -c tu/<короткое-имя> origin/tu/main    # новая ветка от свежего tu/main
 ```
 
-Сабмодули: только `git submodule update --init external/vst3sdk` (без `--recursive` — тянет гигабайты документации).
+Сабмодули (обязательно перед первой сборкой, иначе CMake: «VST3 SDK was not found»):
+```bash
+git submodule update --init external/vst3sdk
+git -C external/vst3sdk submodule update --init base cmake pluginterfaces public.sdk
+```
+Без `--recursive` — он тянет гигабайты документации. Если VST3-плагины не нужны: `cmake ... -DINFINITE_ENABLE_VST3=OFF`.
 
 ## Во время работы
 
