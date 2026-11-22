@@ -30,7 +30,7 @@ namespace chat
    std::vector<std::string> ArgsCustom(const std::string&, const std::string&, bool, const std::vector<std::string>&, const TurnOptions&);
 
    // ---- the custom (OpenAI-compatible) provider ----
-   struct CustomPreset
+   struct EnvironmentAgentPreset
    {
       const char* id;
       const char* name;
@@ -38,7 +38,7 @@ namespace chat
       std::vector<const char*> models;  // hints only
       const char* note;
    };
-   const std::vector<CustomPreset>& CustomPresets();
+   const std::vector<EnvironmentAgentPreset>& EnvironmentAgentPresets();
    constexpr const char* kDefaultKeyEnv = "CUSTOM_LLM_API_KEY";
    bool ValidEnvName(const std::string& name);
    // "" when the form is complete, else why a turn cannot start (shown in the chat).
