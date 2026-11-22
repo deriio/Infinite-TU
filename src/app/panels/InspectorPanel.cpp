@@ -454,21 +454,21 @@ void DrawTopBarParamsTools(float centreY)
    const bool allShown = total > 0 && shown == total;
    const bool allHidden = shown == 0;
    TopBarParts::SectionBreak();
-   ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, centreY - tok::tile * 0.5f));
-   if (IconTile::Draw("##tbShowParams", IconsInfinite::Eye, IconsInfinite::Eye, allShown, tok::tile, 0.0f, total > 0))
+   ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, centreY - tok::control_h * 0.5f));
+   if (IconTile::Draw("##tbShowParams", IconsInfinite::Eye, IconsInfinite::Eye, allShown, tok::control_h, 0.0f, total > 0))
       for (GraphNode& gn : gNodes)
          gn.showParams = true;
    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       HelpTip(T("Show all params (%d of %d open)"), shown, total);
    ImGui::SameLine(0.0f, 4.0f);
-   if (IconTile::Draw("##tbHideParams", IconsInfinite::EyeOff, IconsInfinite::EyeOff, total > 0 && allHidden, tok::tile,
+   if (IconTile::Draw("##tbHideParams", IconsInfinite::EyeOff, IconsInfinite::EyeOff, total > 0 && allHidden, tok::control_h,
                       0.0f, total > 0))
       for (GraphNode& gn : gNodes)
          gn.showParams = false;
    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
       HelpTip(T("Hide all params (%d of %d open)"), shown, total);
    ImGui::SameLine(0.0f, 4.0f);
-   if (IconTile::Draw("##tbInspector", IconsInfinite::Edit, IconsInfinite::Edit, gInspectorOpen, tok::tile))
+   if (IconTile::Draw("##tbInspector", IconsInfinite::Edit, IconsInfinite::Edit, gInspectorOpen, tok::control_h))
       gInspectorOpen = !gInspectorOpen;
    if (ImGui::IsItemHovered())
       HelpTip("%s", T("Inspector - parameters of the selected node (Shift+I)"));
