@@ -19,7 +19,7 @@ git submodule update --init external/vst3sdk
 git -C external/vst3sdk submodule update --init base cmake pluginterfaces public.sdk
 scripts/ibuild.py build --mode dev || fail=1
 if [ -z "${fail:-}" ]; then
-  INFINITE_BIN=build-dev/Infinite.app/Contents/MacOS/Infinite \
+  INFINITE_BIN=build-dev/InfiniteTU.app/Contents/MacOS/InfiniteTU \
     .claude/skills/run-infinite-hygiene/driver.sh --skip-build --fast || fail=1
 fi
 if [ -n "${fail:-}" ]; then

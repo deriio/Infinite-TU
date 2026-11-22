@@ -42,7 +42,7 @@ namespace app
          portInit = true;
          std::snprintf(port, sizeof port, "%d", s.port);
       }
-      if (FormParts::SearchInput("##mcpPort", "7790", port, sizeof port, 100.0f))
+      if (FormParts::SearchInput("##mcpPort", "7890", port, sizeof port, 100.0f))
       {
          const int p = std::atoi(port);
          if (p >= 1024 && p <= 65535)

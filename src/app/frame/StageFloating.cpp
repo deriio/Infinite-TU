@@ -6,6 +6,7 @@
 #include "app/ui/design/components/DialogParts.h"
 #include "app/ui/design/components/FormParts.h"
 #include "app/ui/design/components/LibraryParts.h"
+#include "core/ForkIdentity.h"
 #include "core/MediaCollect.h"
 #include "core/SelfUpdate.h"
 #include "core/Notices.h"
@@ -529,7 +530,7 @@ int DrawFloating(FrameCtx& fc)
          // The version is in the title so anyone can see which copy is running: with an old copy still on disk,
          // double-clicking a patch can open that one, and its bugs look like the new version's.
          std::string title = (gPatchDirty ? std::string("\xE2\x80\xA2 ") : std::string()) +
-            base + " \xE2\x80\x94 Infinite " INFINITE_VERSION_STRING;
+            base + " \xE2\x80\x94 " + ForkIdentity::kDisplayName + " " INFINITE_VERSION_STRING;
          if (title != sLastTitle)
          {
             glfwSetWindowTitle(window, title.c_str());
