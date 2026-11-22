@@ -5,4 +5,13 @@
 | 2026-11-12 | 0 (первый ручной прогон, main = b0461e9c7) | нет | self-test 60/60 | my/main запушен |
 | 2026-11-12 | слияние my/themes, my/osc, my/quick-fixes, my/fps, my/agents в my/main (my/inspector не слит) | только docs/fork-changes.md (оставлены обе стороны) | сборка dev x86_64 OK; driver.sh --skip-build --fast 60/60 (INFINITE_BIN=build-dev/...) | my/main запушен |
 | 2026-11-13 | 15 (main b0461e9c7→d905269e3) | нет | сборка dev + self-test 60/60 | my/main запушен |
-| 2026-11-22 | 880 (main d905269e3 → 6f4de28c1) | 21 files in my/main, 1 in tu/main | x86_64 configure, token generator and OSC decoder smoke passed | local sync branches prepared; build and upstream publication pending |
+| 2026-11-22 | 880 (main d905269e3 → 6f4de28c1) | 21 файл для my/main, 1 для tu/main | обе сборки macOS x86_64 прошли. RPC, OSC, инспектор и undo прошли. Быстрый набор для my: 52 прошло, 10 отказов, 1 известный отказ | зеркало main обновлено. Кандидаты в sync/2026-11-22-my и sync/2026-11-22-tu. Рабочие ветки остались на предыдущих версиях |
+
+Для обновления 22 ноября: `PATCHTEST` упёрся в компиляцию шейдера OpenGL
+при отрисовке Render 3D. Предел 35 секунд также истёк у нескольких других
+проверок. `BYPASSSWEEPTEST` сообщил об отказе Brain Sculpt, а
+`GENSAMPLETEST` о снижении метрики в пяти семействах. Эти отказы
+не сопоставлены с локальным запуском чистой официальной сборки.
+На официальном коммите `6f4de28c1` [апстримный CI](https://github.com/n1m21n/Infinite/actions/runs/45004260529)
+отдельно подтвердил ошибки сборок Windows, macOS arm64 и Linux.
+Проверки macOS запускались на коде `2309791d5` и `d5006e151`.
