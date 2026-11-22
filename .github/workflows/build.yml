@@ -162,10 +162,10 @@ jobs:
 
       # A release job must never carry the dev-only menu items (UI Debugger / Style Editor).
       - name: Release binary has no debug-only UI
-        run: python3 scripts/check_release_binary.py build/Infinite.app
+        run: python3 scripts/check_release_binary.py build/InfiniteTU.app/Contents/MacOS/InfiniteTU
 
       - name: Headless self-tests
-        run: ./.github/scripts/headless-tests.sh build/Infinite.app/Contents/MacOS/Infinite
+        run: ./.github/scripts/headless-tests.sh build/InfiniteTU.app/Contents/MacOS/InfiniteTU
 
       # Audio Unit validation with auval (tools/plugin/validate.sh, M-3). Builds the AU
       # components the same way the Windows/Linux jobs build their VST3s. Skips cleanly when
@@ -179,7 +179,7 @@ jobs:
             exit 0
           fi
           mkdir -p plugin-logs
-          INFINITE_PLUGIN_ENGINE="$PWD/build/Infinite.app" LOGDIR="$PWD/plugin-logs" \
+          INFINITE_PLUGIN_ENGINE="$PWD/build/InfiniteTU.app/Contents/MacOS/InfiniteTU" LOGDIR="$PWD/plugin-logs" \
             tools/plugin/validate.sh --build build-plugin --skip-pluginval --licensed
       - name: Upload plugin logs (macOS)
         if: always()
@@ -193,18 +193,18 @@ jobs:
       # case fails with it (first CI run of this script, 2026-10-01). Read, not gated.
       - name: Headless CLI smoke (informational)
         continue-on-error: true
-        run: scripts/headless_smoke.sh build/Infinite.app/Contents/MacOS/Infinite
+        run: scripts/headless_smoke.sh build/InfiniteTU.app/Contents/MacOS/InfiniteTU
 
       # tests/render/*.inf against tests/render/golden (R504). Tolerant compare; same-machine
       # exactness is tools/determinism-check.py.
       # Informational on the hosted macOS runner for the same no-GPU reason as the smoke step above.
       - name: Render goldens
         continue-on-error: true
-        run: python3 tools/render-check.py --binary build/Infinite.app/Contents/MacOS/Infinite
+        run: python3 tools/render-check.py --binary build/InfiniteTU.app/Contents/MacOS/InfiniteTU
 
       - name: UI gallery goldens (informational)
         continue-on-error: true
-        run: python3 tools/design/golden.py --binary build/Infinite.app/Contents/MacOS/Infinite --render-out artifacts-macos/ui-golden
+        run: python3 tools/design/golden.py --binary build/InfiniteTU.app/Contents/MacOS/InfiniteTU --render-out artifacts-macos/ui-golden
 
       - name: Upload macOS UI golden artifacts
         uses: actions/upload-artifact@v4
@@ -352,7 +352,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 2
         shell: bash
-        run: python3 tools/design/golden.py --binary build/Release/Infinite.exe --render-out artifacts-windows/ui-golden
+        run: python3 tools/design/golden.py --binary build/Release/InfiniteTU.exe --render-out artifacts-windows/ui-golden
 
       # Windows goldens are not committed yet; see docs/ci/HOSTED_TESTS.md (adopting the artifact).
       - name: Note when the Windows golden is not committed
