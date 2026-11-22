@@ -17,9 +17,9 @@ namespace FieldWell
       const ImVec4 t = ImGui::GetStyleColorVec4(ImGuiCol_Text);
       const float a = active ? 0.12f : hovered ? 0.10f : 0.06f;
       UiAudit::NoteFill(ImVec4(t.x, t.y, t.z, 0.06f));
-      dl->AddRectFilled(mn, mx, ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, a)), tok::radius_tile);
+      dl->AddRectFilled(mn, mx, ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, a)), tok::radius_control);
       dl->AddRect(mn, mx, ImGui::GetColorU32(CategoryColors::IsThemeLight() ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f)),
-                  tok::radius_tile);
+                  tok::radius_control);
    }
 
    // Accent fill from the left edge to `fillX`, clipped inside the rounded well.
@@ -30,7 +30,7 @@ namespace FieldWell
       ImVec4 ac = app::AccentEmphasisSelected();
       ac.w = 0.32f;
       dl->PushClipRect(mn, ImVec2(fillX, mx.y), true);
-      dl->AddRectFilled(mn, mx, ImGui::GetColorU32(ac), tok::radius_tile);
+      dl->AddRectFilled(mn, mx, ImGui::GetColorU32(ac), tok::radius_control);
       dl->PopClipRect();
    }
 
@@ -55,7 +55,7 @@ namespace FieldWell
       ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_Border, CategoryColors::IsThemeLight() ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f));
-      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_tile);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_control);
       ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 1.0f);
    }
    inline void PopStyle()
@@ -132,6 +132,9 @@ namespace FieldWell
       PushStyle(id ^ 0x9e3779b9u);
       ImGui::PushStyleColor(ImGuiCol_SliderGrab, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(0, 0, 0, 0));
+      // The grab is invisible and the fill spans the whole well, so the value maps over the whole well too:
+      // a press lands where the fill will end, even in a narrow well (ImGui otherwise maps over well minus grab).
+      ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 1.0f);
       // The text field gets a quiet accent edge instead of ImGui's bright blue nav ring.
       const bool typing = editing || sTypeId == id;
       if (typing)
@@ -149,6 +152,7 @@ namespace FieldWell
       }
       if (typing)
          ImGui::PopStyleColor(2);
+      ImGui::PopStyleVar();
       ImGui::PopStyleColor(2);
       PopStyle();
       return r || restored;

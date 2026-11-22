@@ -36,6 +36,15 @@ namespace GLUtil
       return v > (float)kMaxTargetSide ? kMaxTargetSide : (int)v;
    }
 
+   // glGetUniformLocation with a per-thread memo keyed by (program, name).
+   // The driver call is a string hash on every use and the locations never
+   // change between links, so hot render paths look each name up once.
+   // Returns exactly what glGetUniformLocation returns (including -1).
+   // Every glLinkProgram must be followed by ForgetUniformLocations(): a
+   // relink changes locations and a deleted program's id can be reused.
+   int UniformLoc(unsigned int program, const char* name);
+   void ForgetUniformLocations();
+
    bool EnsureFbo(Fbo& fbo, int w, int h, unsigned int internalFormat = GL_RGBA8,
                   const char* label = "Fbo");
    void DestroyFbo(Fbo& fbo);
@@ -116,6 +125,13 @@ namespace GLUtil
    // Binds out's FBO, sets viewport, runs `setup` to bind uniforms, then draws
    // the shared fullscreen quad. Restores previously-bound FBO/viewport after.
    void RunShaderPass(const Fbo& out, unsigned int program, const std::function<void()>& setup);
+
+   // Like RunShaderPass but keeps what is in `out` (no clear), so a pass can
+   // blend onto it. `scissor` (x, y, w, h in out's pixels, bottom-left origin)
+   // limits the pass to that rectangle; nullptr draws the whole target.
+   void DrawPass(const Fbo& out, unsigned int program, const std::function<void()>& setup, const int* scissor = nullptr);
+   // Clears `out` to transparent, or to `rgba`.
+   void ClearFbo(const Fbo& out, const float* rgba = nullptr);
 
    // Draws `tex` as a fullscreen quad into whatever framebuffer is currently
    // bound (used to blit a node's output to a window). Clears the full

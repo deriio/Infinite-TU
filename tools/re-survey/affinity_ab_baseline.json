@@ -1,0 +1,69 @@
+{
+ "_photo": "a41112d0975d5890",
+ "adj_normals": {
+  "flip": 0.0065
+ },
+ "adj_recolour": {
+  "flip": 0.0048
+ },
+ "adj_split_toning": {
+  "flip": 0.007
+ },
+ "adj_tone_compression": {
+  "flip": 0.0107
+ },
+ "adj_tone_stretch": {
+  "flip": 0.0474
+ },
+ "adj_white_balance": {
+  "flip": 0.0181
+ },
+ "blur_brush": {
+  "flip": 0.0033
+ },
+ "bucket": {
+  "flip": 0.0006
+ },
+ "copy_rect": {
+  "flip": 0.0
+ },
+ "cut_rect": {
+  "flip": 0.0
+ },
+ "delete_ellipse": {
+  "flip": 0.0005
+ },
+ "delete_rect": {
+  "flip": 0.0
+ },
+ "eraser": {
+  "flip": 0.0021
+ },
+ "fill_rect": {
+  "flip": 0.0
+ },
+ "heal": {
+  "flip": 0.0014
+ },
+ "layer_opacity": {
+  "flip": 0.0124
+ },
+ "rasterize": {
+  "flip": 0.0
+ },
+ "shape_ellipse_stroke": {
+  "flip": 0.0007
+ },
+ "shape_multiply": {
+  "flip": 0.0
+ },
+ "shape_opacity": {
+  "flip": 0.0009
+ },
+ "shape_rect": {
+  "flip": 0.0
+ },
+ "wand_delete": {
+  "flip": 0.0002
+ }
+}

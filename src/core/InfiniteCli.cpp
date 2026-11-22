@@ -1123,9 +1123,10 @@ namespace
 
 Look     graph [p.inf]  explain [p.inf]  params <node> [--full]  selection  status  nodes  describe <type>
 Edit     add <type> [x y]  remove <node>  connect <src[:out]> <dst[:slot]>  disconnect <dst[:slot]>
-         set <node> <key> <value>  mod <src[:out]> <dst> <key> [lo hi]  mod clear <dst> <key>  mod curve <dst> <key> <-1..1>
+         set <node> <key> <value>  reset <node> <key>  mod <src[:out]> <dst> <key> [lo hi]  mod clear <dst> <key>  mod curve <dst> <key> <-1..1>
          expr <node> <key> <text>  bypass <node> [on|off]  batch <file|->  undo  redo
-         select <node>...|all|none  focus <node>  copy  paste  duplicate  group  ungroup  view3d-add <node>...
+         select <node>...|all|none  focus <node>  copy  paste  duplicate  group  ungroup  view3d-add <node>...  view2d-add <node>...
+         view2d layers|fields|'<json call or [calls]>'|-   (one gated batch, one undo step)
 Patch    new [synth|effect|3d]  recent  open <p.inf>  save [p.inf]  import <file>... [into <node>]  files <words>  reveal <file>  validate <p.inf>  canonicalize <in> <out>  apply <p.inf>
 Play     play  stop  rewind  seek <seconds>  tempo <bpm>
 Timeline timeline [track|clip|marker|group|loop|snap|render] ...  (times in beats, key=value sets fields)
@@ -1140,7 +1141,7 @@ Generate patch recipes|new|check|layout|apply
 App      panel [name|settings/<place>] [open|close] [bottom|right|left|top]  settings [key [value]]|devices|midi|apply|updates|reset|logs|gpu [n]|global [name [expr]]|extension <file>
          show list|next|prev|go <n>|lock|panic|check|add|remove <n>|clear|open|save|fade <ms>|quantize <n>|launch <n>
          view fit|params on|off|clearcards|metronome [on|off]  quit
-Learn    context  attention  guide  docs [topic [name]]  find <words>
+Learn    context  attention  guide  docs [topic [name]]  find <words>  version
 Watch    watch
 Terminal term open|list|read|send|run
 
@@ -1182,23 +1183,29 @@ for patches; `infinite code errors` for the open window.
          fputs(R"(viewport      the output picture; nodes' viewport cards dock here
 modmatrix     modulation matrix: every source -> destination binding and its depth
 perf          performance surface: macros, triggers and faders for playing live
+mixer         hardware mixing desk: strips, sends, inserts, groups and master
 timeline      clips on lanes for arranging a piece in time
 session       clip launcher for playing clips live
 samplestudio  record, generate, slice and shape samples, then drop the result on the canvas
 pianoroll     notes of the selected note clip or pattern
+drums         hardware step sequencer for Drum Sequencer nodes
 view3d        3D View: arranges 3D outputs, camera and lights, before Render 3D
+view2d        2D View: layered 2D compositing, paint, vector shapes and text (Scene 2D)
 curveeditor   draw, record and assign MSEG curves to any knob
+fieldpatcher  Field Patcher: visual node-box editor for writing Field programs
 terminal      this Terminal and the agent chat
+library       Node Library: browse and add nodes, presets and samples
 showset       show set: patches to step through in a live set
 history       undo history
 settings      settings window
 templates     starter patches
 help          node help
 shortcuts     shortcut list
-Open, close or dock one: `infinite panel <name> open|close [bottom|right|left|top]`.
+Open, close or dock one: `infinite panel <name> open|close [bottom|right|left|top|fill]` (`fill` for view2d, view3d).
 Settings opens at a page or section: `infinite panel settings/<place>`, a chat button `open:settings/<place>`.
 Places: appearance theme node-colors cable-colors cards display backdrop canvas grid minimap cables audio devices
-midi general autosave performance movement-log learning diagnostics updates field globals extensions plugins agents.
+midi general autosave performance movement-log learning diagnostics updates field globals extensions plugins agents
+terminal daw-plugin daw-sync 3d-view.
 )", stdout);
          if (gLive.Connect())
             Print(gLive.Call("panel"));
@@ -1233,7 +1240,11 @@ midi general autosave performance movement-log learning diagnostics updates fiel
                { "timeline", { "arrangement", "tracks" } }, { "clip", { "tracks" } }, { "mod matrix", { "modulation" } },
                { "matrix", { "modulation" } }, { "session", { "sound panels" } }, { "studio", { "sound panels" } },
                { "piano", { "sound panels" } }, { "terminal", { "command line" } }, { "chat", { "command line" } },
-               { "agent", { "command line" } }, { "menu", { "menus", "right-click" } }, { "3d", { "3d view" } } };
+               { "agent", { "command line" } }, { "menu", { "menus", "right-click" } }, { "3d", { "3d view" } },
+               { "view3d", { "3d view" } }, { "2d", { "2d view" } }, { "view2d", { "2d view" } },
+               { "drum", { "drums" } }, { "drums", { "drums" } }, { "mixer", { "mixer" } },
+               { "fieldpatcher", { "field patcher" } }, { "patcher", { "field patcher" } },
+               { "curveeditor", { "curve editor" } }, { "curve", { "curve editor" } }, { "mseg", { "curve editor" } } };
             for (const auto& [from, to] : kAlias)
                if (want == from || (want.size() > 3 && std::string(from).find(want) == 0))
                   wants.insert(wants.end(), to.begin(), to.end());
@@ -1521,6 +1532,11 @@ map, and the visual, sound and film crafts.
          need(3, "set <node> <key> <value>");
          return call("set_param", { { "index", NodeRef(args[0]) }, { "name", args[1] }, { "value", ParamValue(args[2]) } });
       }
+      if (verb == "reset")
+      {
+         need(2, "reset <node> <key>");
+         return call("reset_param", { { "index", NodeRef(args[0]) }, { "key", args[1] } });
+      }
       if (verb == "mod")
       {
          if (!args.empty() && args[0] == "clear")
@@ -1597,6 +1613,34 @@ map, and the visual, sound and film crafts.
             nodes.push_back(NodeRef(node));
          return call("edit", { { "action", "view3d-add" }, { "nodes", nodes } });
       }
+      if (verb == "view2d-add")
+      {
+         need(1, "view2d-add <node>...");
+         json nodes = json::array();
+         for (const std::string& node : args)
+            nodes.push_back(NodeRef(node));
+         return call("edit", { { "action", "view2d-add" }, { "nodes", nodes } });
+      }
+      if (verb == "view2d")
+      {
+         // layers | fields | <json call or {op:apply, calls:[...]}> | - (the JSON on stdin)
+         need(1, "view2d layers | fields | '<json>' | -");
+         if (args[0] == "layers" || args[0] == "fields")
+            return call("view2d", { { "op", args[0] } });
+         std::string text = args[0];
+         if (text == "-")
+         {
+            std::stringstream in;
+            in << std::cin.rdbuf();
+            text = in.str();
+         }
+         json p = json::parse(text, nullptr, false);
+         if (p.is_array())
+            p = { { "op", "apply" }, { "calls", p } };
+         if (!p.is_object())
+            Fail("view2d wants a JSON call {op, ...} or an array of calls");
+         return call("view2d", p);
+      }
       if (verb == "copy" || verb == "paste" || verb == "duplicate" || verb == "group" || verb == "ungroup")
          return call("edit", { { "action", verb } });
 
@@ -1608,7 +1652,7 @@ map, and the visual, sound and film crafts.
          {
             if (word == "open" || word == "close")
                params["open"] = word == "open";
-            else if (word == "bottom" || word == "right" || word == "left" || word == "top")
+            else if (word == "bottom" || word == "right" || word == "left" || word == "top" || word == "fill")
                params["dock"] = word;
             else
                params["name"] = word;

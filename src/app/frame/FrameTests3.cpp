@@ -1,6 +1,12 @@
 // Per-frame self-test blocks moved verbatim out of the main loop in main.cpp.
+#include "app/panels/FieldPatcherPanel.h"
 #include "app/AppShared.h"
+#include "app/frame/CanvasLink.h"
+#include "nodes/PianoRollNode.h"
 #include "app/panels/CurveEditorPanel.h"
+#include "core/field/MaterialRegistry.h"
+#include "nodes/ShadeNodes.h"
+#include "nodes/UtilityNodes.h"
 
 namespace app
 {
@@ -1999,6 +2005,194 @@ void FrameTest_ROUNDTRIPTEST(int frameId, GLFWwindow* window)
             }
          }
 
+         // OPUS_PLAN row 2.8: a patch holding every Shade node, wired into one Material's field, roughness,
+         // metallic, normal and emission pins, survives save/load, undo and copy/paste with the same composed
+         // program (same text, same registered id) and the same knobs; and every Shade type has its own help row.
+         bool shadeRoundTripOk = false;
+         {
+            static const char* kShade[] = { "Shade Coord", "Shade Mapping", "Shade Checker", "Shade Noise",
+                                            "Shade Voronoi", "Shade Gradient", "Shade Brick", "Shade Image",
+                                            "Shade Math", "Shade Vector Math", "Shade Mix", "Shade Ramp",
+                                            "Shade Map Range", "Shade Separate", "Shade Combine", "Shade Curves",
+                                            "Shade Bump", "Shade Normal Map", "Shade Fresnel", "Shade Layer Weight",
+                                            "Shade Geometry" };
+            const int kN = (int)(sizeof(kShade) / sizeof(kShade[0]));
+            NewPatch();
+            std::map<std::string, int> idx;
+            for (int i = 0; i < kN; i++)
+               if (GraphNode* g = SpawnNode(kShade[i], "3D", 200.0f * (i % 6), 160.0f * (i / 6)))
+                  idx[kShade[i]] = g->index;
+            GraphNode* mg = SpawnNode("Material", "3D", 1400.0f, 0.0f);
+            const int matIdx = mg ? mg->index : -1;
+            // Knobs off their defaults, so a dropped value shows.
+            for (auto& kv : idx)
+               if (GraphNode* g = FindNodeByIndex(kv.second))
+               {
+                  if (auto* n = dynamic_cast<ShadeCoordNode*>(g->node.get())) n->output = ShadeCoordNode::kObject;
+                  if (auto* n = dynamic_cast<ShadeMappingNode*>(g->node.get())) { n->rotate[2] = 30.0f; n->scale[0] = n->scale[1] = n->scale[2] = 3.0f; }
+                  if (auto* n = dynamic_cast<ShadeCheckerNode*>(g->node.get())) n->scale = 2.5f;
+                  if (auto* n = dynamic_cast<ShadeMathNode*>(g->node.get())) n->op = ShadeMathNode::kMultiply;
+                  if (auto* n = dynamic_cast<ShadeBumpNode*>(g->node.get())) n->strength = 0.6f;
+               }
+            struct Link { const char* src; const char* dst; int slot; };
+            const Link links[] = {
+               { "Shade Coord", "Shade Mapping", 0 },     { "Shade Mapping", "Shade Noise", 0 },
+               { "Shade Mapping", "Shade Voronoi", 0 },   { "Shade Mapping", "Shade Gradient", 0 },
+               { "Shade Mapping", "Shade Brick", 0 },     { "Shade Mapping", "Shade Checker", 0 },
+               { "Shade Mapping", "Shade Image", 0 },     { "Shade Mapping", "Shade Separate", 0 },
+               { "Shade Noise", "Shade Math", 0 },        { "Shade Voronoi", "Shade Math", 1 },
+               { "Shade Math", "Shade Ramp", 0 },         { "Shade Gradient", "Shade Map Range", 0 },
+               { "Shade Map Range", "Shade Mix", 0 },     { "Shade Brick", "Shade Mix", 1 },
+               { "Shade Checker", "Shade Mix", 2 },       { "Shade Mix", "Shade Curves", 0 },
+               { "Shade Curves", "Shade Vector Math", 0 }, { "Shade Image", "Shade Vector Math", 1 },
+               { "Shade Separate", "Shade Combine", 0 },  { "Shade Fresnel", "Shade Combine", 1 },
+               { "Shade Layer Weight", "Shade Combine", 2 }, { "Shade Ramp", "Shade Normal Map", 0 },
+               { "Shade Geometry", "Shade Bump", 0 },     { "Shade Normal Map", "Shade Bump", 1 },
+            };
+            int wired = 0;
+            std::string connErr;
+            for (const Link& l : links)
+               if (idx.count(l.src) && idx.count(l.dst) && ConnectNodes(idx[l.src], 0, idx[l.dst], l.slot, connErr))
+                  wired++;
+            const struct { const char* src; int map; } matLinks[] = {
+               { "Shade Vector Math", -1 }, { "Shade Combine", kMapRoughness }, { "Shade Ramp", kMapMetallic },
+               { "Shade Bump", kMapNormal }, { "Shade Mix", kMapEmission },
+            };
+            for (const auto& l : matLinks)
+               if (idx.count(l.src) && matIdx >= 0 &&
+                   ConnectNodes(idx[l.src], 0, matIdx, l.map < 0 ? MaterialNode::kFieldSlot : 1 + l.map, connErr))
+                  wired++;
+            const int wantWired = (int)(sizeof(links) / sizeof(links[0])) + (int)(sizeof(matLinks) / sizeof(matLinks[0]));
+
+            // What decides the picture: every Material's composed program text and registered id, every node's
+            // saved knobs, the cable count. Equal signatures draw the same picture.
+            struct Sig { std::vector<std::string> programs; std::vector<int> ids; std::vector<std::string> knobs; size_t cables = 0; int locals = 0; uint32_t written = 0; std::string err; };
+            auto signature = [&]()
+            {
+               Sig s;
+               for (GraphNode& g : gNodes)
+               {
+                  std::vector<std::pair<std::string, std::string>> kv;
+                  Patch::SaveParams(g.node.get(), kv);
+                  std::string line = g.typeName;
+                  for (auto& p : kv) line += "|" + p.first + "=" + p.second;
+                  s.knobs.push_back(line);
+                  auto* m = dynamic_cast<MaterialNode*>(g.node.get());
+                  if (!m) continue;
+                  std::vector<ShadeOutput> outs;
+                  m->ShadeOutputs(outs);
+                  const float lo[3] = { 0.0f, 0.0f, 0.0f }, hi[3] = { 1.0f, 1.0f, 1.0f };
+                  std::string err;
+                  const std::string src = ComposeShadeProgram(outs, lo, hi, err);
+                  if (!err.empty()) s.err = err;
+                  s.programs.push_back(src);
+                  const int id = m->GetMaterial().fieldProgram;
+                  s.ids.push_back(id);
+                  if (const Field::MaterialProgramEntry* e = id > 0 ? Field::FindMaterialProgram(id) : nullptr)
+                     s.written |= e->written;
+                  int locals = 0;
+                  for (size_t at = 0; (at = src.find("\nsh", at)) != std::string::npos; at += 3) locals++;
+                  if (src.rfind("sh", 0) == 0) locals++;
+                  s.locals = std::max(s.locals, locals);
+               }
+               std::sort(s.knobs.begin(), s.knobs.end());
+               s.cables = BuildPatchData().cables.size();
+               return s;
+            };
+            auto same = [](const Sig& a, const Sig& b)
+            {
+               return a.programs == b.programs && a.ids == b.ids && a.knobs == b.knobs && a.cables == b.cables;
+            };
+            const Sig s0 = signature();
+            const bool built = (int)idx.size() == kN && matIdx >= 0 && wired == wantWired && s0.err.empty() &&
+                               s0.ids.size() == 1 && s0.ids[0] > 0 && s0.locals >= kN;
+            const uint32_t needBits = (1u << Field::MaterialOutputBit("base")) | (1u << Field::MaterialOutputBit("roughness")) |
+                                      (1u << Field::MaterialOutputBit("metallic")) | (1u << Field::MaterialOutputBit("height")) |
+                                      (1u << Field::MaterialOutputBit("emission"));
+            const bool channels = (s0.written & needBits) == needBits;
+
+            // save / load, through a file as well as in memory
+            Patch::Data saved = BuildPatchData();
+            const std::string tmp = "/tmp/infinite_shade_rt.inf";
+            Patch::Data back;
+            std::string ioErr;
+            const bool io = Patch::Write(tmp, saved, ioErr) && Patch::Read(tmp, back, ioErr);
+            std::remove(tmp.c_str());
+            NewPatch();
+            ApplyPatchData(io ? back : saved);
+            const Sig s1 = signature();
+            const bool loadOk = io && same(s0, s1);
+
+            // undo: a knob change gives a new program, undo brings the first one back, redo the second
+            bool undoOk = false;
+            for (GraphNode& g : gNodes)
+               if (auto* n = dynamic_cast<ShadeMappingNode*>(g.node.get()))
+               {
+                  PushUndoCheckpoint();
+                  n->rotate[2] = 45.0f;
+                  const Sig changed = signature();
+                  Undo();
+                  const Sig undone = signature();
+                  Redo();
+                  const Sig redone = signature();
+                  undoOk = !same(changed, s0) && changed.ids != s0.ids && same(undone, s0) && same(redone, changed);
+                  Undo();
+                  break;
+               }
+
+            // copy / paste the whole patch: the pasted Material composes the same program, same id
+            // The editor rebuilds gLinks from the cables every frame and paste reads it; no frame ran since the
+            // undo, so rebuild the image-cable links here the way the frame does.
+            gLinks.clear();
+            for (GraphNode& gn : gNodes)
+               for (int slot = 0; slot < InputCountFor(gn); slot++)
+                  if (ImageCable* cable = CableFor(gn, slot))
+                     if (cable->IsConnected())
+                        for (GraphNode& src : gNodes)
+                           if (src.node.get() == cable->GetSource())
+                           {
+                              gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
+                                                 src.OutputPinId(cable->GetSourceOutput()), gn.InputPinId(slot) });
+                              break;
+                           }
+            std::set<int> all;
+            for (GraphNode& g : gNodes) all.insert(g.index);
+            PerformCopyPaste(all);
+            const Sig s2 = signature();
+            const bool copyOk = s2.ids.size() == 2 && s2.ids[0] == s0.ids[0] && s2.ids[1] == s0.ids[0] &&
+                                s2.programs.size() == 2 && s2.programs[0] == s0.programs[0] && s2.programs[1] == s0.programs[0] &&
+                                s2.cables == 2 * s0.cables;
+
+            if (!copyOk)
+            {
+               printf("  copy/paste: %zu programs, ids", s2.ids.size());
+               for (int id : s2.ids) printf(" %d", id);
+               printf(" (first %d), cables %zu (first %zu)\n", s0.ids.empty() ? 0 : s0.ids[0], s2.cables, s0.cables);
+               for (size_t k = 0; k < s2.programs.size(); k++)
+                  if (s0.programs.empty() || s2.programs[k] != s0.programs[0])
+                     printf("  pasted program %zu:\n%s\n  first:\n%s\n", k, s2.programs[k].c_str(), s0.programs.empty() ? "" : s0.programs[0].c_str());
+            }
+            // help: every Shade type has its own row (not the 3D category text)
+            int helpOk = 0;
+            const std::string catText = NodeHelpTextFor("\x01no such node", "3D");
+            for (int i = 0; i < kN; i++)
+               if (catText != NodeHelpTextFor(kShade[i], "3D")) helpOk++;
+            // category: Shader, also for nodes spawned the way a patch saved before the move names them ("3D")
+            int shaderCat = 0;
+            for (auto& kv : idx)
+               if (GraphNode* g = FindNodeByIndex(kv.second); g != nullptr && g->category == "Shader")
+                  shaderCat++;
+
+            printf("shade round trip: %d nodes, %d/%d cables, %d locals, program %d, channels %s\n", (int)idx.size(), wired,
+                   wantWired, s0.locals, s0.ids.empty() ? 0 : s0.ids[0], channels ? "base+rough+metal+height+emission" : "MISSING");
+            if (!s0.err.empty()) printf("  shade compose error: %s\n", s0.err.c_str());
+            printf("shade round trip: save/load %s, undo/redo %s, copy/paste %s, help rows %d/%d, Shader category %d/%d\n",
+                   loadOk ? "same" : "CHANGED", undoOk ? "same" : "CHANGED", copyOk ? "same" : "CHANGED", helpOk, kN, shaderCat, kN);
+            shadeRoundTripOk = built && channels && loadOk && undoOk && copyOk && helpOk == kN && shaderCat == kN;
+            printf("shade round trip  %s\n", shadeRoundTripOk ? "OK" : "FAIL");
+            NewPatch();
+         }
+
          // Every shipped template (Resources/templates, listed in index.txt): reads, every node type exists,
          // it explains itself (at least two Comment nodes), it has a thumbnail, and it survives write + read.
          int templatesTested = 0, templatesBad = 0;
@@ -2050,7 +2244,7 @@ void FrameTest_ROUNDTRIPTEST(int frameId, GLFWwindow* window)
                    (templatesTested > 0 && templatesBad == 0) ? "OK" : "FAIL");
          }
 
-         printf("%s\n", (copyFails == 0 && loadFails == 0 && fieldGraphRoundTripOk && templatesTested > 0 && templatesBad == 0) ? "ROUND TRIP OK" : "SUSPECT");
+         printf("%s\n", (copyFails == 0 && loadFails == 0 && fieldGraphRoundTripOk && shadeRoundTripOk && templatesTested > 0 && templatesBad == 0) ? "ROUND TRIP OK" : "SUSPECT");
       }
 }
 
@@ -3301,5 +3495,343 @@ void FrameTest_CURVEMOTIONTEST(int frameId, GLFWwindow* window)
       glfwSetWindowShouldClose(window, GLFW_TRUE);
    }
    ed::SetCurrentEditor(prevEditor);
+}
+
+// Field Patcher (internal/plans/field-patcher/README.md §8, §10 M5/M6): the panel draws open on a Field node page,
+// maximised and on an empty strip without trouble, and its gestures (box edit, move, broken program, export,
+// Value mode, save and load) land on real nodes.
+void FrameTest_FIELDPATCHERTEST(int frameId, GLFWwindow* window)
+{
+   if (getenv("INFINITE_FIELDPATCHERTEST") == nullptr)
+      return;
+   static int sFails = 0;
+   if (frameId == 4)
+   {
+      NewPatch();
+      gFieldPatcherDock = 0;
+      gFieldPatcherOpen = true;
+   }
+   if (frameId == 8)
+      sFails += FieldPatcherSelfCheck();
+   if (frameId == 12)
+      gFieldPatcherMaximised = true;
+   if (frameId == 16)
+   {
+      gFieldPatcherMaximised = false;
+      gFieldPatcherDock = 3;
+   }
+   if (frameId == 20)
+   {
+      const bool drew = gFieldPatcherOpen;
+      printf("FIELDPATCHER the panel drew 16 frames docked, maximised and on top  %s\n", drew ? "OK" : "FAIL");
+      sFails += drew ? 0 : 1;
+      gFieldPatcherDock = 0;
+      gFieldPatcherHeight = 420.0f;
+      NewPatch(); // the preset exports above leave node pages that follow the canvas selection
+      FieldPatcherLoadState("");
+   }
+   if (frameId == 21)
+   {
+      FieldPatcherOpenStarter(0); // Spiral: boxes and wires
+   }
+   // Keys on the canvas, as on the main canvas: the pointer rests on the canvas, the keys go to the patcher.
+   ImGuiIO& kio = ImGui::GetIO();
+   static int sBoxes = 0, sWires = 0;
+   auto counts = [&]() { FieldPatcherTestCounts(sBoxes, sWires); };
+   auto keyCheck = [&](const char* what, bool pass) {
+      printf("FIELDPATCHER %s  %s\n", what, pass ? "OK" : "FAIL");
+      sFails += pass ? 0 : 1;
+   };
+   ImVec2 centre;
+   if (frameId > 22 && frameId < 120 && FieldPatcherTestCanvasCentre(centre))
+   {
+      kio.ConfigInputTrickleEventQueue = false;
+      kio.AddFocusEvent(true);
+      kio.AddMousePosEvent(centre.x, centre.y);
+      glfwSetCursorPos(window, (double)(centre.x * ImGui_ImplGlfw_GetPointScale()), (double)(centre.y * ImGui_ImplGlfw_GetPointScale()));
+   }
+   // The backend re-reads the real modifier keys on every cursor move, so a held Cmd is sent again each frame.
+   auto chord = [&](int f0, ImGuiKey key, bool cmd) {
+      if (cmd && frameId >= f0 && frameId <= f0 + 3)
+         gFieldPatcherTestCmd = frameId < f0 + 3;
+      if (frameId == f0)
+         kio.AddKeyEvent(key, true);
+      if (frameId == f0 + 1)
+         kio.AddKeyEvent(key, false);
+   };
+   int b0 = 0, w0 = 0;
+   if (frameId == 30)
+   {
+      counts();
+      FieldPatcherTestSelect(0, 0);
+   }
+   chord(32, ImGuiKey_D, true);
+   if (frameId == 38)
+   {
+      FieldPatcherTestCounts(b0, w0);
+      keyCheck("Cmd+D duplicates the selected box", b0 == sBoxes + 1);
+      counts();
+      FieldPatcherTestSelect(0, sBoxes - 1);
+   }
+   chord(40, ImGuiKey_Backspace, false);
+   if (frameId == 46)
+   {
+      FieldPatcherTestCounts(b0, w0);
+      keyCheck("Backspace deletes the selected box", b0 == sBoxes - 1);
+      counts();
+      FieldPatcherTestSelect(0, 0);
+   }
+   chord(48, ImGuiKey_C, true);
+   chord(52, ImGuiKey_V, true);
+   if (frameId == 58)
+   {
+      FieldPatcherTestCounts(b0, w0);
+      keyCheck("Cmd+C then Cmd+V pastes a copy", b0 == sBoxes + 1);
+      counts();
+      FieldPatcherTestSelect(1, 0);
+   }
+   chord(60, ImGuiKey_Delete, false);
+   if (frameId == 66)
+   {
+      FieldPatcherTestCounts(b0, w0);
+      keyCheck("Delete removes the selected wire", w0 == sWires - 1 && b0 == sBoxes);
+      counts();
+      FieldPatcherTestSelect(0, 0);
+   }
+   chord(68, ImGuiKey_X, true);
+   if (frameId == 74)
+   {
+      FieldPatcherTestCounts(b0, w0);
+      keyCheck("Cmd+X cuts the selected box", b0 == sBoxes - 1);
+      printf("FIELDPATCHER %s\n", sFails == 0 ? "PASS" : "FAIL");
+      glfwSetWindowShouldClose(window, GLFW_TRUE);
+   }
+}
+
+// The Timeline's own export, in the app: with INFINITE_LOADPATCH, queues the job the Render dialog builds
+// (ArrangeRenderJobFromSettings) to $INFINITE_TIMELINEEXPORTTEST, optionally cut to
+// $INFINITE_TIMELINEEXPORT_SECONDS, and exits when it settles. H2 compares this file with --render --timeline.
+void FrameTest_TIMELINEEXPORTTEST(int frameId, GLFWwindow* window)
+{
+   const char* out = getenv("INFINITE_TIMELINEEXPORTTEST");
+   if (out == nullptr)
+      return;
+   static uint64_t sId = 0;
+   if (frameId == 30)
+   {
+      ArrangeRenderJob j = ArrangeRenderJobFromSettings(0, 1, out);
+      if (const char* secs = getenv("INFINITE_TIMELINEEXPORT_SECONDS"))
+      {
+         const double bpm = std::max(1.0, (double)Transport::Instance().Tempo());
+         j.endTick = Arrange::SecondsToTicks(ArrangeRenderTickSeconds(j.startTick) + std::atof(secs), bpm);
+      }
+      j.id = gArrangeRenderNextJobId++;
+      j.status = kArrangeJobQueued;
+      sId = j.id;
+      gArrangeRenderQueue.insert(gArrangeRenderQueue.begin(), j);
+      gArrangeRenderQueueRunning = true;
+   }
+   if (frameId > 30 && sId != 0)
+   {
+      const ArrangeRenderJob* j = ArrangeRenderFindJob(sId);
+      if (j == nullptr || j->status == kArrangeJobDone || j->status == kArrangeJobFailed || j->status == kArrangeJobCancelled)
+      {
+         printf("TIMELINEEXPORT %s %s\n", j != nullptr && j->status == kArrangeJobDone ? "OK" : "FAIL",
+                j != nullptr ? j->message.c_str() : "job vanished");
+         sId = 0;
+         glfwSetWindowShouldClose(window, GLFW_TRUE);
+      }
+   }
+}
+
+// Canvas Link: a real canvas click. Arm a Piano-Roll-only pick, click an Oscillator (dimmed, ignored), click the
+// Piano Roll (picked, disarmed), arm again and press Esc (cancelled), arm one pick over another (the first cancels).
+void FrameTest_CANVASLINKTEST(int frameId, GLFWwindow* window)
+{
+   // Review shots (INFINITE_CLSHOT, with IMAGERESYNTH_SCREENSHOT): the Piano Roll panel open, an Oscillator beside
+   // its node; the panel arms the pick itself. The pointer rests on the Piano Roll node while armed.
+   if (getenv("INFINITE_CLSHOT") != nullptr)
+   {
+      if (frameId == 4)
+      {
+         NewPatch();
+         SpawnNode("Oscillator", "Synths", -380.0f, 40.0f);
+         gPianoRollOpen = true;
+      }
+      for (const GraphNode& gn : gNodes)
+      {
+         ImVec2 mn, mx;
+         if (frameId > 30 && dynamic_cast<const PianoRollNode*>(gn.node.get()) != nullptr && CanvasLink::ScreenRectForTest(gn.uid, mn, mx))
+         {
+            const ImVec2 c((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+            ImGui::GetIO().AddMousePosEvent(c.x, c.y);
+            glfwSetCursorPos(window, (double)(c.x * ImGui_ImplGlfw_GetPointScale()), (double)(c.y * ImGui_ImplGlfw_GetPointScale()));
+         }
+      }
+      return;
+   }
+   // Review shot (INFINITE_FILLSHOT=3d|2d, with IMAGERESYNTH_SCREENSHOT): a busy, all-selected canvas under a view
+   // docked Fill, to check nothing of the canvas shows round the view's edges.
+   if (const char* fill = getenv("INFINITE_FILLSHOT"))
+   {
+      if (frameId == 4)
+      {
+         NewPatch();
+         for (int i = 0; i < 12; i++)
+            SpawnNode(i % 3 == 0 ? "Mixer" : "Oscillator", i % 3 == 0 ? "Utility" : "Synths", -1400.0f + 300.0f * (i % 6), -500.0f + 500.0f * (i / 6));
+      }
+      if (frameId == 8 && (std::strcmp(fill, "drum") == 0 || std::strcmp(fill, "mixer") == 0))
+      {
+         if (fill[0] == 'd')
+         {
+            SpawnNode("Drum Sequencer", "Synths", 0.0f, 900.0f);
+            gDrumPanelOpen = true;
+            gDrumPanelDock = 0;
+            gDrumPanelHeight = 520.0f;
+         }
+         else
+         {
+            MixerPanelAddPage();
+            gMixerPanelOpen = true;
+            gMixerPanelDock = 0;
+            gMixerPanelHeight = 420.0f;
+         }
+         return;
+      }
+      if (frameId == 8)
+      {
+         ed::SetCurrentEditor(gEditor);
+         for (const GraphNode& gn : gNodes)
+            ed::SelectNode(gn.NodeId(), true);
+         const bool three = std::strcmp(fill, "2d") != 0;
+         (three ? gView3DOpen : gView2DOpen) = true;
+         (three ? gView3DDock : gView2DDock) = 4;
+      }
+      return;
+   }
+   if (getenv("INFINITE_CANVASLINKTEST") == nullptr)
+      return;
+   static int sFails = 0;
+   static uint64_t sPr = 0, sOsc = 0, sPicked = 0;
+   static int sCancels = 0;
+   auto check = [&](const char* what, bool pass) {
+      printf("CANVASLINK %-52s %s\n", what, pass ? "OK" : "FAIL");
+      sFails += pass ? 0 : 1;
+   };
+   auto spec = [&](const char* owner) {
+      CanvasLink::Spec s;
+      s.owner = owner;
+      s.kind = "Piano Roll";
+      s.accepts = [](const GraphNode& gn) { return dynamic_cast<const PianoRollNode*>(gn.node.get()) != nullptr; };
+      s.onPicked = [](uint64_t uid) { sPicked = uid; };
+      s.onCancel = [] { ++sCancels; };
+      return s;
+   };
+   ImGuiIO& io = ImGui::GetIO();
+   auto pointAt = [&](uint64_t uid) {
+      ImVec2 mn, mx;
+      if (!CanvasLink::ScreenRectForTest(uid, mn, mx))
+         return false;
+      const ImVec2 c((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
+      io.ConfigInputTrickleEventQueue = false;
+      io.AddFocusEvent(true);
+      io.AddMousePosEvent(c.x, c.y);
+      glfwSetCursorPos(window, (double)(c.x * ImGui_ImplGlfw_GetPointScale()), (double)(c.y * ImGui_ImplGlfw_GetPointScale()));
+      return true;
+   };
+   if (frameId == 4)
+   {
+      NewPatch();
+      GraphNode* pr = SpawnNode("Piano Roll", "Notes", 0.0f, 0.0f);
+      sPr = pr ? pr->uid : 0; // read now: the next spawn can move gNodes
+      GraphNode* osc = SpawnNode("Oscillator", "Synths", 420.0f, 0.0f);
+      sOsc = osc ? osc->uid : 0;
+      check("spawned a Piano Roll and an Oscillator", sPr != 0 && sOsc != 0);
+      CanvasLink::Show({ sPr, sOsc });
+   }
+   if (frameId == 30)
+      CanvasLink::Arm(spec("test.a"));
+   if (frameId >= 32 && frameId < 40)
+      pointAt(sOsc);
+   if (frameId == 36)
+      io.AddMouseButtonEvent(0, true);
+   if (frameId == 37)
+      io.AddMouseButtonEvent(0, false);
+   if (frameId == 40)
+      check("a click on a node the pick can't take is ignored", sPicked == 0 && CanvasLink::Armed("test.a"));
+   if (frameId >= 42 && frameId < 50)
+      pointAt(sPr);
+   if (frameId == 46)
+      io.AddMouseButtonEvent(0, true);
+   if (frameId == 47)
+      io.AddMouseButtonEvent(0, false);
+   if (frameId == 50)
+   {
+      check("a click on the Piano Roll picks it", sPicked == sPr);
+      check("the pick disarms after the click", !CanvasLink::Armed());
+      check("a pick is not a cancel", sCancels == 0);
+      CanvasLink::Arm(spec("test.b"));
+   }
+   if (frameId == 52)
+      io.AddKeyEvent(ImGuiKey_Escape, true);
+   if (frameId == 53)
+      io.AddKeyEvent(ImGuiKey_Escape, false);
+   if (frameId == 56)
+   {
+      check("Esc cancels an armed pick", !CanvasLink::Armed() && sCancels == 1);
+      CanvasLink::Arm(spec("test.c"));
+      CanvasLink::Arm(spec("test.d"));
+      check("arming a second pick cancels the first", CanvasLink::Armed("test.d") && !CanvasLink::Armed("test.c") && sCancels == 2);
+      CanvasLink::Cancel();
+   }
+   // A knob pick through Sync, as the Perf / Curve / Drift panels use it: the panel's own flag arms it, a click on a
+   // knob calls back with that control, and clearing the flag (here: the callback) disarms it.
+   static bool sWant = false;
+   static int sPickedNode = -1, sPickedParam = -1, sWantParam = -1;
+   if (frameId == 58)
+      sWant = true;
+   if (frameId >= 58 && frameId < 90)
+      CanvasLink::Sync("test.knob", sWant ? "test.knob.1" : "", [] {
+         CanvasLink::Spec s;
+         s.target = CanvasLink::Target::Param;
+         s.kind = "knob";
+         s.onPickedParam = [](int n, int p) { sPickedNode = n, sPickedParam = p, sWant = false; };
+         s.onCancel = [] { sWant = false; };
+         return s;
+      });
+   if (frameId == 62)
+      check("Sync arms a knob pick from the panel's flag", CanvasLink::Armed("test.knob.1"));
+   GraphNode* osc = FindNodeByUid(sOsc);
+   if (frameId >= 64 && frameId < 74 && osc != nullptr)
+   {
+      ImVec2 at;
+      if (CanvasLink::ParamScreenPosForTest(osc->index, at, sWantParam))
+      {
+         io.ConfigInputTrickleEventQueue = false;
+         io.AddFocusEvent(true);
+         io.AddMousePosEvent(at.x, at.y);
+         glfwSetCursorPos(window, (double)(at.x * ImGui_ImplGlfw_GetPointScale()), (double)(at.y * ImGui_ImplGlfw_GetPointScale()));
+      }
+   }
+   if (frameId == 70)
+      io.AddMouseButtonEvent(0, true);
+   if (frameId == 71)
+      io.AddMouseButtonEvent(0, false);
+   if (frameId == 76)
+   {
+      check("a click on a knob picks that control", osc != nullptr && sPickedNode == osc->index && sPickedParam == sWantParam && sWantParam >= 0);
+      check("the knob pick disarms and stays off", !CanvasLink::Armed() && !sWant);
+      sWant = true;
+   }
+   if (frameId == 80)
+   {
+      sWant = false; // the panel dropped it itself
+   }
+   if (frameId == 82)
+   {
+      check("clearing the panel's flag cancels the pick", !CanvasLink::Armed());
+      printf("CANVASLINK %s\n", sFails == 0 ? "PASS" : "FAIL");
+      glfwSetWindowShouldClose(window, GLFW_TRUE);
+   }
 }
 }

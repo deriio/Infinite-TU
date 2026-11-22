@@ -1,5 +1,6 @@
 #include "GlslBackend.h"
 #include "GlslHelpers.h"
+#include "FieldNoise.h"
 #include "../../audio/PhaseShape.h"
 #include <iomanip>
 #include <sstream>
@@ -235,6 +236,11 @@ namespace Field
                   return "src";
                }
 
+               if (name.rfind("brain.", 0) == 0)
+               {
+                  return "fld_brain_" + name.substr(6);
+               }
+
                return "fld_v_" + name;
             }
 
@@ -358,6 +364,15 @@ namespace Field
                      argStr += args[i];
                   }
                   ctx.EmitLine("   " + typeStr + " " + resTemp + " = " + name + "(" + argStr + ");");
+               }
+               else if (IsImageBuiltin(name))
+                  ctx.EmitLine("   " + typeStr + " " + resTemp + " = " + (name == "imgc" ? "fldImgC" : "fldImg") + "(int(" + args[0] + " + 0.5), " + args[1] + ");");
+               else if (IsNoiseBuiltin(name))
+               {
+                  std::string argStr;
+                  for (size_t i = 0; i < args.size(); i++)
+                     argStr += (i ? ", " : "") + args[i];
+                  ctx.EmitLine("   " + typeStr + " " + resTemp + " = fld_" + name + "(" + argStr + ");");
                }
                else if (name == "mod" || name == "fmod")
                {
@@ -535,6 +550,12 @@ namespace Field
 
             case IRStmtKind::DeclAttrib:
             case IRStmtKind::DeclState:
+            case IRStmtKind::DeclOutput:
+            case IRStmtKind::DeclInput:
+            case IRStmtKind::Emit:
+            case IRStmtKind::Connect:
+            case IRStmtKind::SetParam:
+            case IRStmtKind::Place:
                break;
          }
       }
@@ -597,6 +618,7 @@ namespace Field
       // 5. Helper prelude
       ctx.EmitLine(kFieldHelperPrelude);
       ctx.EmitLine(PhaseShape::kGlslPrelude);
+      ctx.EmitLine(NoiseGlsl());
 
       // 6. Hoisted uniforms from prologue
       if (!program.prologue.empty())
@@ -644,6 +666,55 @@ namespace Field
             ctx.paramNames.insert(p.name);
          }
          ctx.EmitLine("");
+      }
+
+      // 7a. Brain global uniforms (only emitted when referenced in the pixel body)
+      {
+         std::vector<std::string> brainVars;
+         std::unordered_set<std::string> seenBrain;
+         auto collectBrain = [&](const auto& self, const IRNodePtr& node) -> void
+         {
+            if (!node) return;
+            if (node->kind == IRKind::Variable && node->varName.rfind("brain.", 0) == 0)
+            {
+               if (seenBrain.insert(node->varName).second)
+                  brainVars.push_back(node->varName);
+            }
+            for (const auto& c : node->children)
+               self(self, c);
+         };
+         auto collectStmt = [&](const auto& self, const IRStmtPtr& s) -> void
+         {
+            if (!s) return;
+            if (s->rvalueExpr) collectBrain(collectBrain, s->rvalueExpr);
+            if (s->expr) collectBrain(collectBrain, s->expr);
+            if (s->ifCond) collectBrain(collectBrain, s->ifCond);
+            if (s->forInit) self(self, s->forInit);
+            if (s->forCond) collectBrain(collectBrain, s->forCond);
+            if (s->forStep) self(self, s->forStep);
+            for (const auto& b : s->thenStmts) self(self, b);
+            for (const auto& b : s->elseStmts) self(self, b);
+            for (const auto& b : s->forBody) self(self, b);
+         };
+         for (const auto& s : program.pixelBody)
+            collectStmt(collectStmt, s);
+
+         if (!brainVars.empty())
+         {
+            ctx.EmitLine("// ---- live BCI brain.* uniforms ----");
+            for (const auto& bv : brainVars)
+            {
+               const std::string uName = "fld_brain_" + bv.substr(6);
+               ctx.EmitLine("uniform float " + uName + ";");
+               UniformSlot slot;
+               slot.name = uName;
+               slot.varName = bv;
+               slot.type = FieldType(DataType::Float, 1);
+               slot.domain = Domain::Frame;
+               result.uniforms.push_back(slot);
+            }
+            ctx.EmitLine("");
+         }
       }
 
       // 7b. Declared `image` inputs alias the existing fld_srcTex/`src` path
@@ -773,5 +844,82 @@ namespace Field
       result.branchCount = ctx.branchCount;
       result.lineToIrNode = ctx.lineToIrNode;
       return result;
+   }
+
+   namespace
+   {
+      // Shared by both material emitters' refusal checks.
+      bool MaterialFnRefusal(const PixelIRProgram& program, std::string& err)
+      {
+         if (program.kind != PixelProgramKind::Material)
+            err = "not a Material-domain program";
+         else if (!program.declaredStates.empty())
+            err = "state is not available in the Material domain (a surface hit has no previous frame)";
+         else if (!program.declaredInputs.empty())
+            err = "input pins are not available in the Material domain";
+         return !err.empty();
+      }
+   }
+
+   std::string GlslMaterialPrelude()
+   {
+      std::string s = kFieldHelperPrelude;
+      s += PhaseShape::kGlslPrelude;
+      s += NoiseGlsl();
+      // Row 2.4 field images: the host shader defines fldImg (it owns the samplers).
+      s += "\nvec4 fldImg(int slot, vec2 uv);\n"
+           "vec4 fldImgC(int slot, vec2 uv)\n{\n"
+           "   vec4 c = fldImg(slot, uv);\n"
+           "   return vec4(mix(pow((c.rgb + 0.055) / 1.055, vec3(2.4)), c.rgb / 12.92, vec3(lessThan(c.rgb, vec3(0.04045)))), c.a);\n}\n";
+      s += "\nstruct FldMat { vec3 base; float roughness; float metallic; vec3 normal; float height; vec3 emission; "
+           "float opacity; float mask; vec4 prm0; vec4 prm1; vec4 prm2; vec4 prm3; };\n";
+      return s;
+   }
+
+   MaterialFnResult EmitGlslMaterialFn(const PixelIRProgram& program, const std::string& fnName,
+                                       const std::vector<float>& paramValues)
+   {
+      MaterialFnResult r;
+      if (MaterialFnRefusal(program, r.error)) return r;
+      EmitterContext ctx;
+      ctx.EmitLine("void " + fnName + "(inout FldMat o, vec3 P, vec3 N, vec2 UV, float fld_t, vec3 W, vec3 V, vec4 G, vec4 A)");
+      ctx.EmitLine("{");
+      ctx.EmitLine("   float fld_dt = 0.0; int fld_frame = 0;");
+      for (int i = 0; i < kMaterialInputCount; i++)
+      {
+         const MaterialChannel& c = kMaterialInputs[i];
+         const char* gl = std::string(c.name) == "backfacing" ? "G.x" : std::string(c.name) == "objrand" ? "G.y"
+                          : std::string(c.name) == "curvature" ? "G.z" : std::string(c.name) == "attr" ? "A.x" : "G.w";
+         const std::string v = (c.lanes == 1) ? gl : c.name; // G = (backfacing, objrand, curvature, cavity)
+         ctx.EmitLine("   " + GlslTypeString(FieldType(c.type, c.lanes)) + " fld_v_" + c.name + " = " + v + ";");
+         ctx.declaredLocals.insert(c.name);
+      }
+      for (int i = 0; i < kMaterialOutputCount; i++)
+      {
+         const MaterialChannel& c = kMaterialOutputs[i];
+         ctx.EmitLine("   " + GlslTypeString(FieldType(c.type, c.lanes)) + " fld_v_" + c.name + " = o." + c.name + ";");
+         ctx.declaredLocals.insert(c.name);
+      }
+      for (size_t i = 0; i < program.declaredParams.size(); i++)
+      {
+         const auto& p = program.declaredParams[i];
+         const float v = i < paramValues.size() ? paramValues[i] : (float)p.defaultValue;
+         // Row 3.4: the first kMaterialLiveParams knobs are read from the record the host fills per material, so a
+         // knob move changes data, not the program; the rest are baked.
+         if (i < (size_t)kMaterialLiveParams)
+            ctx.EmitLine("   float fld_p_" + p.name + " = o.prm" + std::to_string(i / 4) + "." + "xyzw"[i % 4] + ";");
+         else
+            ctx.EmitLine("   float fld_p_" + p.name + " = " + FormatFloat(v) + ";");
+         ctx.paramNames.insert(p.name);
+      }
+      // Frame-rate statements stay in the function: a host shader has no CPU prologue to hoist them into.
+      for (const auto& s : program.prologue) EmitStmt(s, ctx);
+      for (const auto& s : program.pixelBody) EmitStmt(s, ctx);
+      if (!ctx.error.empty()) { r.error = ctx.error; return r; }
+      for (int i = 0; i < kMaterialOutputCount; i++)
+         ctx.EmitLine(std::string("   o.") + kMaterialOutputs[i].name + " = fld_v_" + kMaterialOutputs[i].name + ";");
+      ctx.EmitLine("}");
+      r.source = ctx.out.str();
+      return r;
    }
 }

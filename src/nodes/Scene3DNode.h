@@ -66,6 +66,7 @@ public:
       Backdrop backdrop;
       std::string name;             // empty: the node's own name
       std::vector<uint64_t> unlit;  // light nodes this item ignores
+      std::vector<uint64_t> unshadow; // light nodes this item casts no shadow for (shadow linking, row 4.2)
       // Look at, in Blender's terms: which of the item's own axes points at the target (0 X, 1 Y, 2 Z, 3 -X, 4 -Y,
       // 5 -Z, so -Z is a camera's or light's natural aim), which axis stays up (0 X, 1 Y, 2 Z), how far the aim goes
       // (0 = the unturned pose, 1 = all the way) and whether the target's own up decides the roll.
@@ -193,6 +194,9 @@ public:
       int look = 0;                 // 0 none, 1 soft contrast, 2 medium, 3 strong, 4 faded
       bool xray = false;            // Solid: surfaces half see-through, hidden edges show (Alt+Z)
       bool wireOver = false;        // the edges drawn over shaded surfaces
+      // An environment world still lights the scene, but this colour is what is seen behind it.
+      bool backdropOn = false;
+      float backdrop[3] = { 1.0f, 1.0f, 1.0f };
    };
 
    // Set once by the app: the live node for a uid, nullptr when it is gone.
@@ -330,7 +334,6 @@ private:
    GLUtil::Fbo mFinishFbo;
    float mCookMs = 0.0f;
    unsigned int mFinishProgram = 0, mStampTex = 0;
-   int mStampW = 0, mStampH = 0;
    std::string mStampKey;
    unsigned int mGridProgram = 0;
    unsigned int mOutTex = 0;

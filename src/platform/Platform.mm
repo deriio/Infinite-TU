@@ -16,8 +16,17 @@
 
 #import <objc/runtime.h>
 #import <Cocoa/Cocoa.h>
+#import <Security/Security.h>
 #import <dispatch/dispatch.h>
 #import <CoreGraphics/CoreGraphics.h>
+
+// The crawler (INFINITE_NO_DIALOGS) clicks every Open/Save button: a file dialog then answers Cancel at once.
+static NSModalResponse PanelRunModal(NSSavePanel* panel)
+{
+   if (getenv("INFINITE_NO_DIALOGS") != nullptr)
+      return NSModalResponseCancel;
+   return [panel runModal];
+}
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 #import <AVFoundation/AVFoundation.h>
@@ -83,6 +92,35 @@ static std::atomic<double> gPendingTrackpadMagnification{0.0};
       expected, expected + (double)delta, std::memory_order_relaxed))
    {
    }
+}
+@end
+
+// Backs Platform::PollTrackpadRotationDelta(): the same running-total-to-delta
+// bookkeeping for NSRotationGestureRecognizer (degrees). Both recognizers are
+// allowed to run at once, so a pinch that also turns still zooms.
+static std::atomic<double> gPendingTrackpadRotation{0.0};
+
+@interface InfiniteRotateGestureHandler : NSObject <NSGestureRecognizerDelegate>
+@property(nonatomic, assign) CGFloat lastRotation;
+- (void)handleRotate:(NSRotationGestureRecognizer*)recognizer;
+@end
+
+@implementation InfiniteRotateGestureHandler
+- (void)handleRotate:(NSRotationGestureRecognizer*)recognizer
+{
+   if (recognizer.state == NSGestureRecognizerStateBegan)
+      self.lastRotation = 0.0;
+   const CGFloat delta = recognizer.rotationInDegrees - self.lastRotation;
+   self.lastRotation = recognizer.rotationInDegrees;
+   double expected = gPendingTrackpadRotation.load(std::memory_order_relaxed);
+   while (!gPendingTrackpadRotation.compare_exchange_weak(
+      expected, expected + (double)delta, std::memory_order_relaxed))
+   {
+   }
+}
+- (BOOL)gestureRecognizer:(NSGestureRecognizer*)a shouldRecognizeSimultaneouslyWithGestureRecognizer:(NSGestureRecognizer*)b
+{
+   return YES;
 }
 @end
 
@@ -262,15 +300,35 @@ namespace Platform
       return gPendingTrackpadMagnification.exchange(0.0, std::memory_order_relaxed);
    }
 
+   double PollTrackpadRotationDelta()
+   {
+      static InfiniteRotateGestureHandler* sHandler = nil;
+      if (sHandler == nil)
+      {
+         // Same lazy attach as the pinch: the GLFW window appears after the first calls.
+         NSWindow* window = [NSApp keyWindow] ?: [NSApp mainWindow];
+         if (window == nil || window.contentView == nil)
+            return 0.0;
+         sHandler = [[InfiniteRotateGestureHandler alloc] init];
+         NSRotationGestureRecognizer* recognizer = [[NSRotationGestureRecognizer alloc]
+            initWithTarget:sHandler action:@selector(handleRotate:)];
+         recognizer.delegate = sHandler;
+         [window.contentView addGestureRecognizer:recognizer];
+      }
+      return gPendingTrackpadRotation.exchange(0.0, std::memory_order_relaxed);
+   }
+
    // The crashreporter daemon writes the `.ips` report without app-side
    // setup. The one thing installed here names the plugin the crashing thread
    // was inside (PluginCrashGuard), then steps aside: SA_RESETHAND puts the
    // default action back, the faulting instruction runs again on return, and
    // the process dies exactly as it would have, report included. Nothing is
    // caught or resumed.
-   static void PluginCrashSignal(int)
+   static void PluginCrashSignal(int sig)
    {
       PluginCrashGuard::NoteCrash();
+      if (gCrashHook != nullptr)
+         gCrashHook(sig);
    }
 
    void InstallCrashHandler()
@@ -321,9 +379,45 @@ namespace Platform
    int GpuPreference() { return 0; }
    void SetGpuPreference(int) {}
 
+   PenSample PenNowSample(GLFWwindow*)
+   {
+      static PenSample sSample;
+      static id sMonitor = nil;
+      if (sMonitor == nil)
+      {
+         NSEventMask mask = NSEventMaskLeftMouseDown | NSEventMaskLeftMouseDragged | NSEventMaskTabletPoint;
+         sMonitor = [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
+            bool tablet = e.type == NSEventTypeTabletPoint || e.subtype == NSEventSubtypeTabletPoint;
+            sSample.active = tablet;
+            sSample.pressure = tablet ? (float)e.pressure : -1.0f;
+            if (tablet)
+            {
+               NSPoint tilt = e.tilt;
+               sSample.tiltX = (float)tilt.x;
+               sSample.tiltY = (float)tilt.y;
+               sSample.rotation = (float)e.rotation;
+            }
+            else
+               sSample.tiltX = sSample.tiltY = sSample.rotation = 0.0f;
+            sSample.timestamp = (double)e.timestamp;
+            return e;
+         }];
+      }
+      return sSample;
+   }
+
+   float PenPressure(GLFWwindow* window) { return PenNowSample(window).pressure; }
+
    void ShowFatalError(const std::string& title, const std::string& message)
    {
       fprintf(stderr, "%s: %s\n", title.c_str(), message.c_str());
+   }
+
+   bool LocalTime(std::time_t time, std::tm* outTm)
+   {
+      if (outTm == nullptr)
+         return false;
+      return localtime_r(&time, outTm) != nullptr;
    }
 
    std::string OpenImageDialog()
@@ -352,7 +446,7 @@ namespace Platform
                [panel setAllowedContentTypes:contentTypes];
          }
 
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
 
          NSURL* url = [[panel URLs] firstObject];
@@ -385,7 +479,31 @@ namespace Platform
                [panel setAllowedContentTypes:types];
          }
 
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
+            return std::string();
+         NSURL* url = [[panel URLs] firstObject];
+         if (url == nil)
+            return std::string();
+         return std::string([[url path] UTF8String]);
+      }
+   }
+
+   std::string OpenIesDialog()
+   {
+      @autoreleasepool
+      {
+         NSOpenPanel* panel = [NSOpenPanel openPanel];
+         [panel setCanChooseFiles:YES];
+         [panel setCanChooseDirectories:NO];
+         [panel setAllowsMultipleSelection:NO];
+         [panel setTitle:@"Open IES profile"];
+         if (@available(macOS 11.0, *))
+         {
+            UTType* t = [UTType typeWithFilenameExtension:@"ies"];
+            if (t != nil)
+               [panel setAllowedContentTypes:@[ t ]];
+         }
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          if (url == nil)
@@ -1302,7 +1420,7 @@ namespace Platform
             if (types.count > 0)
                [panel setAllowedContentTypes:types];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1324,7 +1442,7 @@ namespace Platform
             if (type != nil)
                [panel setAllowedContentTypes:@[ type ]];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [panel URL];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1350,7 +1468,7 @@ namespace Platform
             if ([types count] > 0)
                [panel setAllowedContentTypes:types];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1376,7 +1494,7 @@ namespace Platform
             if ([types count] > 0)
                [panel setAllowedContentTypes:types];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1402,7 +1520,7 @@ namespace Platform
             if ([types count] > 0)
                [panel setAllowedContentTypes:types];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [panel URL];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1423,7 +1541,7 @@ namespace Platform
             UTType* t = [UTType typeWithFilenameExtension:@"infshow"];
             if (t != nil) [panel setAllowedContentTypes:@[ t ]];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1444,7 +1562,7 @@ namespace Platform
             UTType* t = [UTType typeWithFilenameExtension:@"infshow"];
             if (t != nil) [panel setAllowedContentTypes:@[ t ]];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [panel URL];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1461,7 +1579,7 @@ namespace Platform
             [NSString stringWithUTF8String:suggestedName.empty() ? "sample.wav" : suggestedName.c_str()]];
          if (@available(macOS 11.0, *))
             [panel setAllowedContentTypes:@[ UTTypeWAV ]];
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [panel URL];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1477,7 +1595,24 @@ namespace Platform
          [panel setNameFieldStringValue:[NSString stringWithUTF8String:suggestedName.c_str()]];
          if (@available(macOS 11.0, *))
             [panel setAllowedContentTypes:video ? @[ UTTypeMPEG4Movie, UTTypeQuickTimeMovie ] : @[ UTTypePNG, UTTypeJPEG ]];
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
+            return std::string();
+         NSURL* url = [panel URL];
+         return url ? std::string([[url path] UTF8String]) : std::string();
+      }
+   }
+
+   std::string SaveLayeredDialog(const std::string& suggestedName, const std::string& ext)
+   {
+      @autoreleasepool
+      {
+         NSSavePanel* panel = [NSSavePanel savePanel];
+         [panel setTitle:ext == "ora" ? @"Export ORA" : @"Export PSD"];
+         [panel setNameFieldStringValue:[NSString stringWithUTF8String:suggestedName.c_str()]];
+         if (@available(macOS 11.0, *))
+            if (UTType* t = [UTType typeWithFilenameExtension:[NSString stringWithUTF8String:ext.c_str()]])
+               [panel setAllowedContentTypes:@[ t ]];
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [panel URL];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -1511,7 +1646,7 @@ namespace Platform
                [panel setAllowedContentTypes:types];
          }
 
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          if (url == nil)
@@ -1530,6 +1665,9 @@ namespace Platform
          float startX = 0.0f, startY = 0.0f;
          float offsetX = 0.0f, offsetY = 0.0f;
          float scale = 1.0f;
+         Platform::TextCurveBuilder curve { &current.curve };
+         float X(float x) const { return (x + offsetX) * scale; }
+         float Y(float y) const { return (y + offsetY) * scale; }
 
          void Push(float x, float y)
          {
@@ -1543,9 +1681,11 @@ namespace Platform
          {
             // Under four points is a degenerate contour - two points and a
             // close, say - and would only produce zero-area triangles.
+            curve.Close();
             if (current.points.size() >= 6)
                contours->push_back(current);
             current.points.clear();
+            current.curve.clear();
          }
       };
 
@@ -1563,13 +1703,16 @@ namespace Platform
                b->Close();
                b->startX = (float)p[0].x;
                b->startY = (float)p[0].y;
+               b->curve.Move(b->X((float)p[0].x), b->Y((float)p[0].y));
                b->Push((float)p[0].x, (float)p[0].y);
                break;
             case kCGPathElementAddLineToPoint:
+               b->curve.Line(b->X((float)p[0].x), b->Y((float)p[0].y));
                b->Push((float)p[0].x, (float)p[0].y);
                break;
             case kCGPathElementAddQuadCurveToPoint:
             {
+               b->curve.Quad(b->X((float)p[0].x), b->Y((float)p[0].y), b->X((float)p[1].x), b->Y((float)p[1].y));
                const float x0 = b->lastX, y0 = b->lastY;
                for (int i = 1; i <= kCurveSteps; i++)
                {
@@ -1583,6 +1726,8 @@ namespace Platform
             }
             case kCGPathElementAddCurveToPoint:
             {
+               b->curve.Cubic(b->X((float)p[0].x), b->Y((float)p[0].y), b->X((float)p[1].x), b->Y((float)p[1].y), b->X((float)p[2].x),
+                              b->Y((float)p[2].y));
                const float x0 = b->lastX, y0 = b->lastY;
                for (int i = 1; i <= kCurveSteps; i++)
                {
@@ -1601,6 +1746,35 @@ namespace Platform
                break;
          }
       }
+   }
+
+   std::string FontFileForFamily(const std::string& family)
+   {
+      std::string out;
+      @autoreleasepool
+      {
+         NSString* name = [NSString stringWithUTF8String:family.c_str()];
+         if (name == nil)
+            return out;
+         NSDictionary* attrs = @{ (__bridge NSString*)kCTFontFamilyNameAttribute : name };
+         CTFontDescriptorRef desc = CTFontDescriptorCreateWithAttributes((__bridge CFDictionaryRef)attrs);
+         if (desc == nullptr)
+            return out;
+         CTFontDescriptorRef match = CTFontDescriptorCreateMatchingFontDescriptor(desc, nullptr);
+         CFRelease(desc);
+         if (match == nullptr)
+            return out;
+         CFURLRef url = (CFURLRef)CTFontDescriptorCopyAttribute(match, kCTFontURLAttribute);
+         CFRelease(match);
+         if (url != nullptr)
+         {
+            NSString* path = [(__bridge NSURL*)url path];
+            if (path != nil)
+               out = [path UTF8String];
+            CFRelease(url);
+         }
+      }
+      return out;
    }
 
    const std::vector<std::string>& AvailableFontFamilies()
@@ -1636,6 +1810,45 @@ namespace Platform
       if (sFamilies.empty())
          sFamilies.push_back("Helvetica");
       return sFamilies;
+   }
+
+   bool AddFontFile(const std::string& path, std::string& family)
+   {
+      family.clear();
+      @autoreleasepool
+      {
+         NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path.c_str()]];
+         if (url == nil)
+            return false;
+         CFArrayRef descs = CTFontManagerCreateFontDescriptorsFromURL((__bridge CFURLRef)url);
+         if (descs == nullptr)
+            return false;
+         if (CFArrayGetCount(descs) > 0)
+         {
+            CTFontDescriptorRef d = (CTFontDescriptorRef)CFArrayGetValueAtIndex(descs, 0);
+            CFStringRef name = (CFStringRef)CTFontDescriptorCopyAttribute(d, kCTFontFamilyNameAttribute);
+            if (name != nullptr)
+            {
+               family = [(__bridge NSString*)name UTF8String];
+               CFRelease(name);
+            }
+         }
+         CFRelease(descs);
+         if (family.empty())
+            return false;
+         CFErrorRef err = nullptr;
+         // Already registered (a second add of the same file) still counts: the family is there.
+         CTFontManagerRegisterFontsForURL((__bridge CFURLRef)url, kCTFontManagerScopeProcess, &err);
+         if (err != nullptr)
+            CFRelease(err);
+      }
+      auto& fam = const_cast<std::vector<std::string>&>(AvailableFontFamilies());
+      if (std::find(fam.begin(), fam.end(), family) == fam.end())
+      {
+         fam.push_back(family);
+         std::sort(fam.begin(), fam.end());
+      }
+      return true;
    }
 
    bool GetTextOutlines(const std::string& text, const std::string& fontName,
@@ -1763,9 +1976,20 @@ namespace Platform
                c.points[i] -= cx;
                c.points[i + 1] -= cy;
             }
+            for (size_t i = 0; i + 1 < c.curve.size(); i += 2)
+            {
+               c.curve[i] -= cx;
+               c.curve[i + 1] -= cy;
+            }
          }
          return true;
       }
+   }
+
+   static CGColorRef SrgbColor(CGColorSpaceRef space, CGFloat r, CGFloat g, CGFloat b, CGFloat a)
+   {
+      const CGFloat c[4] = { r, g, b, a };
+      return CGColorCreate(space, c);
    }
 
    void RasterizeText(const TextRasterRequest& req, int width, int height,
@@ -1773,15 +1997,17 @@ namespace Platform
    {
       @autoreleasepool
       {
-         CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+         // sRGB for the bitmap and every colour: Generic RGB colours drawn into it were colour-matched, so a pure red
+         // came out (1, 0.15, 0).
+         CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
          CGContextRef ctx = CGBitmapContextCreate(
             outPixelsRGBA, width, height, 8, width * 4, colorSpace, kCGImageAlphaPremultipliedLast);
 
          if (ctx != nullptr)
          {
             CGColorRef fillColor =
-               CGColorCreateGenericRGB(req.color[0], req.color[1], req.color[2], 1.0);
-            CGColorRef strokeColor = CGColorCreateGenericRGB(
+               SrgbColor(colorSpace, req.color[0], req.color[1], req.color[2], 1.0);
+            CGColorRef strokeColor = SrgbColor(colorSpace, 
                req.outlineColor[0], req.outlineColor[1], req.outlineColor[2], 1.0);
 
             float strokeSetting = 0.0f;
@@ -1794,13 +2020,21 @@ namespace Platform
             else if (req.align == 3) ctAlign = kCTTextAlignmentJustified;
 
             CGFloat lineSpacingMultiple = std::max(0.1f, req.lineSpacing);
+            // Paragraph indents and spacing, px. A tail indent below 0 counts from the trailing edge.
+            CGFloat headIndent = req.indentL, firstIndent = req.indentL + req.indentFirst, tailIndent = -req.indentR;
+            CGFloat spaceBefore = std::max(0.0f, req.spaceBefore), spaceAfter = std::max(0.0f, req.spaceAfter);
             CTParagraphStyleSetting paragraphSettings[] = {
                { kCTParagraphStyleSpecifierAlignment, sizeof(ctAlign), &ctAlign },
                { kCTParagraphStyleSpecifierLineHeightMultiple,
                  sizeof(lineSpacingMultiple), &lineSpacingMultiple },
+               { kCTParagraphStyleSpecifierHeadIndent, sizeof(headIndent), &headIndent },
+               { kCTParagraphStyleSpecifierFirstLineHeadIndent, sizeof(firstIndent), &firstIndent },
+               { kCTParagraphStyleSpecifierTailIndent, sizeof(tailIndent), &tailIndent },
+               { kCTParagraphStyleSpecifierParagraphSpacingBefore, sizeof(spaceBefore), &spaceBefore },
+               { kCTParagraphStyleSpecifierParagraphSpacing, sizeof(spaceAfter), &spaceAfter },
             };
             CTParagraphStyleRef paragraphStyle =
-               CTParagraphStyleCreate(paragraphSettings, 2);
+               CTParagraphStyleCreate(paragraphSettings, 7);
 
             CFStringRef cfText = CFStringCreateWithCString(kCFAllocatorDefault, req.text.c_str(), kCFStringEncodingUTF8);
             CFNumberRef kern =
@@ -1813,17 +2047,70 @@ namespace Platform
                CFStringRef nameRef = CFStringCreateWithCString(kCFAllocatorDefault, req.fontName.c_str(), kCFStringEncodingUTF8);
                CTFontRef trialFont = CTFontCreateWithName(nameRef, pointSize, nullptr);
                CFRelease(nameRef);
+               // Bold / italic: the family's own face when it has one; else a drawn bold (fill + stroke) or a slant.
+               bool fakeBold = false;
+               if (req.bold || req.italic)
+               {
+                  const CTFontSymbolicTraits want = (req.bold ? kCTFontBoldTrait : 0) | (req.italic ? kCTFontItalicTrait : 0);
+                  CTFontRef styled = CTFontCreateCopyWithSymbolicTraits(trialFont, pointSize, nullptr, want, want);
+                  if (styled == nullptr && req.bold && req.italic)
+                     styled = CTFontCreateCopyWithSymbolicTraits(trialFont, pointSize, nullptr, kCTFontBoldTrait, kCTFontBoldTrait);
+                  if (styled != nullptr)
+                  {
+                     CFRelease(trialFont);
+                     trialFont = styled;
+                  }
+                  const CTFontSymbolicTraits got = CTFontGetSymbolicTraits(trialFont);
+                  fakeBold = req.bold && (got & kCTFontBoldTrait) == 0;
+                  if (req.italic && (got & kCTFontItalicTrait) == 0)
+                  {
+                     const CGAffineTransform slant = CGAffineTransformMake(1.0, 0.0, 0.21, 1.0, 0.0, 0.0);
+                     if (CTFontRef sl = CTFontCreateCopyWithAttributes(trialFont, pointSize, &slant, nullptr))
+                     {
+                        CFRelease(trialFont);
+                        trialFont = sl;
+                     }
+                  }
+               }
+               float fakeStroke = -3.0f;   // percent of the size; negative = fill and stroke
+               CFNumberRef fakeStrokeNum = CFNumberCreate(kCFAllocatorDefault, kCFNumberFloatType, &fakeStroke);
+               const bool useFake = fakeBold && req.outlineWidth <= 0.0f;
+               int ul = req.underline ? kCTUnderlineStyleSingle : kCTUnderlineStyleNone;
+               CFNumberRef ulNum = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &ul);
 
-               CFStringRef keys[] = {
-                  kCTFontAttributeName, kCTForegroundColorAttributeName, kCTKernAttributeName,
+               // Kerning on: tracking adds to the font's pair kerning. Off: a fixed kern replaces it (0 = none).
+               CFStringRef keys[9] = {
+                  kCTFontAttributeName, kCTForegroundColorAttributeName,
+                  req.kerning ? kCTTrackingAttributeName : kCTKernAttributeName,
                   kCTStrokeWidthAttributeName, kCTStrokeColorAttributeName,
-                  kCTParagraphStyleAttributeName
+                  kCTParagraphStyleAttributeName, kCTUnderlineStyleAttributeName
                };
-               CFTypeRef values[] = { trialFont, fillColor, kern, strokeNum, strokeColor,
-                                      paragraphStyle };
+               CFTypeRef values[9] = { trialFont, fillColor, kern, useFake ? fakeStrokeNum : strokeNum,
+                                       useFake ? fillColor : strokeColor, paragraphStyle, ulNum };
+               CFIndex nAttr = 7;
+               // Own underline colour; OpenType language (locale forms, e.g. Turkish i).
+               CGColorRef ulColor = nullptr;
+               if (req.underline && req.underlineOwn)
+               {
+                  ulColor = SrgbColor(colorSpace, req.underlineColor[0], req.underlineColor[1], req.underlineColor[2],
+                                                    std::clamp(req.underlineColor[3], 0.0f, 1.0f));
+                  keys[nAttr] = kCTUnderlineColorAttributeName;
+                  values[nAttr++] = ulColor;
+               }
+               CFStringRef langRef = nullptr;
+               if (!req.language.empty())
+               {
+                  langRef = CFStringCreateWithCString(kCFAllocatorDefault, req.language.c_str(), kCFStringEncodingUTF8);
+                  keys[nAttr] = kCTLanguageAttributeName;
+                  values[nAttr++] = langRef;
+               }
                CFDictionaryRef attrs = CFDictionaryCreate(
-                  kCFAllocatorDefault, (const void**)keys, (const void**)values, 6,
+                  kCFAllocatorDefault, (const void**)keys, (const void**)values, nAttr,
                   &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+               if (ulColor != nullptr) CGColorRelease(ulColor);
+               if (langRef != nullptr) CFRelease(langRef);
+               CFRelease(fakeStrokeNum);
+               CFRelease(ulNum);
                CFAttributedStringRef result =
                   CFAttributedStringCreate(kCFAllocatorDefault, cfText, attrs);
                CFRelease(attrs);
@@ -1839,6 +2126,35 @@ namespace Platform
             CGContextTranslateCTM(ctx, anchorX, anchorY);
             CGContextScaleCTM(ctx, sx, sy);
             CGContextTranslateCTM(ctx, -anchorX, -anchorY);
+
+            // Highlight bands sit on each line; strike lines move with the letters (baseShift).
+            auto lineBand = [&](CTLineRef line, CGPoint o)
+            {
+               CGFloat a = 0, d = 0, lead = 0;
+               const double w = CTLineGetTypographicBounds(line, &a, &d, &lead) - CTLineGetTrailingWhitespaceWidth(line);
+               if (w <= 0.0)
+                  return;
+               if (req.highlight)
+               {
+                  CGContextSetRGBFillColor(ctx, req.highlightColor[0], req.highlightColor[1], req.highlightColor[2],
+                                           std::clamp(req.highlightColor[3], 0.0f, 1.0f));
+                  CGContextFillRect(ctx, CGRectMake(o.x, o.y - d, w, a + d));
+               }
+            };
+            auto lineStrike = [&](CTLineRef line, CGPoint o)
+            {
+               if (!req.strike)
+                  return;
+               CGFloat a = 0, d = 0, lead = 0;
+               const double w = CTLineGetTypographicBounds(line, &a, &d, &lead) - CTLineGetTrailingWhitespaceWidth(line);
+               const CGFloat t = std::max<CGFloat>(1.0, a / 14.0);
+               if (req.strikeOwn)
+                  CGContextSetRGBFillColor(ctx, req.strikeColor[0], req.strikeColor[1], req.strikeColor[2],
+                                           std::clamp(req.strikeColor[3], 0.0f, 1.0f));
+               else
+                  CGContextSetFillColorWithColor(ctx, fillColor);
+               CGContextFillRect(ctx, CGRectMake(o.x, o.y + req.baseShift + a * 0.3 - t * 0.5, w, t));
+            };
 
             if (req.wordWrap)
             {
@@ -1879,7 +2195,22 @@ namespace Platform
                CGRect box = CGRectMake(anchorX - boxW * 0.5, anchorY - frameH * 0.5, boxW, frameH);
                CGPathRef path = CGPathCreateWithRect(box, nullptr);
                CTFrameRef frame = CTFramesetterCreateFrame(setter, CFRangeMake(0, 0), path, nullptr);
+               CFArrayRef frameLines = CTFrameGetLines(frame);
+               const CFIndex nLines = CFArrayGetCount(frameLines);
+               std::vector<CGPoint> origins((size_t)std::max<CFIndex>(1, nLines));
+               if (nLines > 0)
+                  CTFrameGetLineOrigins(frame, CFRangeMake(0, 0), origins.data());
+               auto at = [&](CFIndex i) { return CGPointMake(box.origin.x + origins[i].x, box.origin.y + origins[i].y); };
+               if (req.highlight)
+                  for (CFIndex i = 0; i < nLines; i++)
+                     lineBand((CTLineRef)CFArrayGetValueAtIndex(frameLines, i), at(i));
+               CGContextSaveGState(ctx);
+               CGContextTranslateCTM(ctx, 0, req.baseShift);
                CTFrameDraw(frame, ctx);
+               CGContextRestoreGState(ctx);
+               if (req.strike)
+                  for (CFIndex i = 0; i < nLines; i++)
+                     lineStrike((CTLineRef)CFArrayGetValueAtIndex(frameLines, i), at(i));
                CFRelease(frame);
                CGPathRelease(path);
                CFRelease(setter);
@@ -1898,8 +2229,10 @@ namespace Platform
                else if (req.align == 2)
                   originX -= bounds.size.width;
 
-               CGContextSetTextPosition(ctx, originX, originY);
+               lineBand(line, CGPointMake(originX, originY));
+               CGContextSetTextPosition(ctx, originX, originY + req.baseShift);
                CTLineDraw(line, ctx);
+               lineStrike(line, CGPointMake(originX, originY));
                CFRelease(line);
                CFRelease(single);
                outFittedSize = req.fontSize;
@@ -2071,7 +2404,7 @@ namespace Platform
          if (@available(macOS 11.0, *))
             [panel setAllowedContentTypes:@[ UTTypeMovie, UTTypeVideo, UTTypeQuickTimeMovie, UTTypeMPEG4Movie ]];
 
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          if (url == nil)
@@ -4533,25 +4866,26 @@ namespace Platform
       InputRing gInputRing[kMaxInputChannels];
       int gInputChannelCount = 0;
       int gInputCaptureWantCount = 0; // how many AudioInputNode instances are alive
-      bool gInputTapInstalled = false; // whether the tap is actually live on gInputEngine
+      bool gInputTapInstalled = false; // whether the capture unit is actually running
       std::atomic<uint32_t> gRequestedInputDeviceId { 0 };
       uint32_t gActiveInputDeviceId = 0;
 
-      // The capture tap's OWN engine, deliberately not the render engine
-      // AudioDeviceOpen runs. On macOS an AVAudioEngine's inputNode and
-      // outputNode are backed by one AUHAL, and AudioDeviceOpen sets that
-      // unit's device with kAudioOutputUnitProperty_CurrentDevice on the
-      // GLOBAL scope - which pins the input side to the chosen *output*
-      // device too. Pick any output-only device in the picker (the built-in
-      // speakers are a separate AudioObjectID from the built-in microphone
-      // on every modern Mac, as is any USB DAC) and that device reports
-      // zero input channels, so inputFormatForBus:0 came back with
-      // channelCount == 0, the tap never installed, and Audio In sat at
-      // "idle" forever while blaming the microphone privacy setting. A
-      // dedicated engine with no device override follows the system default
-      // *input* device instead - the same thing AudioStart (Audio Analyze's
-      // separate live tap) has always done.
-      AVAudioEngine* gInputEngine = nil;
+      // The capture's OWN AUHAL input unit, deliberately not the render
+      // engine AudioDeviceOpen runs. The render engine's AUHAL is pinned to the
+      // chosen *output* device, and an output-only device (the built-in
+      // speakers, any USB DAC) reports zero input channels, so Audio In sat at
+      // "idle" while blaming the microphone privacy setting. A separate unit
+      // with its own device follows the system default *input* device (or the
+      // one picked in the node) - the same thing AudioStart (Audio Analyze's
+      // separate live tap) has always done. It is a raw HAL input unit, not an
+      // AVAudioEngine tap, so audio arrives in device-buffer-sized pieces
+      // (the render buffer size, see gRenderBufferFrames) instead of 1024-frame
+      // batches that put ~21 ms between the microphone and the sound.
+      AudioUnit gInputUnit = nullptr;
+
+      // Set by AudioDeviceOpen/Close: the render buffer size the capture device
+      // is asked to match (0 = leave the device's own).
+      std::atomic<int> gRenderBufferFrames { 0 };
 
       // Set by AudioDeviceOpen/Close. The capture engine runs at the input
       // device's native rate while AudioInputCaptureRead is drained from the
@@ -4570,6 +4904,84 @@ namespace Platform
       constexpr int kInputTapMaxOut = 8192;
       double gInputResamplePos = 0.0;
       float gInputResampleScratch[kMaxInputChannels][kInputTapMaxOut] = {};
+
+      // Writes one buffer of captured audio into the ring, resampled to the
+      // render clock when the two rates differ. `channels` is non-interleaved.
+      void InputProduce(const float* const* channels, int numFrames, int chCount, double inRate)
+      {
+         if (numFrames <= 0 || chCount <= 0)
+            return;
+         const double outRate = gRenderSampleRate.load(std::memory_order_relaxed);
+         if (outRate <= 0.0 || std::fabs(outRate - inRate) < 1.0)
+         {
+            for (int ch = 0; ch < chCount; ch++)
+               gInputRing[ch].Write(channels[ch], numFrames);
+            gInputResamplePos = 0.0;
+            return;
+         }
+
+         // Linear resample to the render clock. Good enough for a mic
+         // input stage and, unlike an AVAudioConverter, allocation-free.
+         const double step = inRate / outRate;
+         double pos = gInputResamplePos;
+         int n = 0;
+         while (pos < (double)numFrames && n < kInputTapMaxOut)
+         {
+            const int i0 = std::max(0, (int)pos);
+            const int i1 = std::min(i0 + 1, numFrames - 1);
+            const float frac = (float)(pos - (double)i0);
+            for (int ch = 0; ch < chCount; ch++)
+               gInputResampleScratch[ch][n] = channels[ch][i0] + (channels[ch][i1] - channels[ch][i0]) * frac;
+            n++;
+            pos += step;
+         }
+         gInputResamplePos = pos - (double)numFrames; // carry the sub-sample phase into the next buffer
+         for (int ch = 0; ch < chCount; ch++)
+            gInputRing[ch].Write(gInputResampleScratch[ch], n);
+      }
+
+      // The input unit's render-thread callback: pulls the captured frames out
+      // of the unit into static scratch (no allocation on this thread) and
+      // hands them to the ring in pieces small enough for the resampler.
+      constexpr int kInputRenderMaxFrames = 4096;
+      constexpr int kInputProduceChunk = 1024;
+      float gInputRenderScratch[kMaxInputChannels][kInputRenderMaxFrames] = {};
+      struct InputBufferList
+      {
+         UInt32 mNumberBuffers;
+         AudioBuffer mBuffers[kMaxInputChannels];
+      };
+      InputBufferList gInputBufferList = {};
+      int gInputUnitChannels = 0;
+      double gInputUnitRate = 0.0;
+
+      OSStatus InputRenderCallback(void*, AudioUnitRenderActionFlags* flags, const AudioTimeStamp* stamp,
+                                   UInt32 bus, UInt32 frames, AudioBufferList*)
+      {
+         AudioUnit unit = gInputUnit;
+         const int chCount = gInputUnitChannels;
+         if (unit == nullptr || chCount <= 0 || frames == 0 || frames > (UInt32)kInputRenderMaxFrames)
+            return noErr;
+         gInputBufferList.mNumberBuffers = (UInt32)chCount;
+         for (int ch = 0; ch < chCount; ch++)
+         {
+            gInputBufferList.mBuffers[ch].mNumberChannels = 1;
+            gInputBufferList.mBuffers[ch].mDataByteSize = frames * (UInt32)sizeof(float);
+            gInputBufferList.mBuffers[ch].mData = gInputRenderScratch[ch];
+         }
+         const OSStatus status = AudioUnitRender(unit, flags, stamp, bus, frames, (AudioBufferList*)&gInputBufferList);
+         if (status != noErr)
+            return status;
+         for (int off = 0; off < (int)frames; off += kInputProduceChunk)
+         {
+            const int n = std::min(kInputProduceChunk, (int)frames - off);
+            const float* piece[kMaxInputChannels];
+            for (int ch = 0; ch < chCount; ch++)
+               piece[ch] = gInputRenderScratch[ch] + off;
+            InputProduce(piece, n, chCount, gInputUnitRate);
+         }
+         return noErr;
+      }
    }
 
    void AudioInputCaptureAddRef() { gInputCaptureWantCount++; }
@@ -4592,33 +5004,20 @@ namespace Platform
 
    void AudioInputCaptureTeardown()
    {
-      if (gInputEngine == nil)
+      if (gInputUnit != nullptr)
       {
-         gInputTapInstalled = false;
-         gActiveInputDeviceId = 0;
-         gInputChannelCount = 0;
-         return;
-      }
-      @autoreleasepool
-      {
-         // Same teardown hazard AudioDeviceClose documents: AVAudioEngine
-         // throws an NSException on bad teardown state rather than returning
-         // an error, and an uncaught one aborts the process.
-         @try
-         {
-            [[gInputEngine inputNode] removeTapOnBus:0];
-            [gInputEngine stop];
-         }
-         @catch (NSException* exception)
-         {
-            fprintf(stderr, "audio input capture teardown: %s\n",
-                    [[exception reason] UTF8String] ? [[exception reason] UTF8String] : "unknown");
-         }
-         gInputEngine = nil;
+         // Stop first: AudioOutputUnitStop returns only once the render
+         // callback is finished, so nothing touches the unit after this.
+         AudioUnit unit = gInputUnit;
+         AudioOutputUnitStop(unit);
+         gInputUnit = nullptr;
+         AudioUnitUninitialize(unit);
+         AudioComponentInstanceDispose(unit);
       }
       gInputTapInstalled = false;
       gActiveInputDeviceId = 0;
       gInputChannelCount = 0;
+      gInputUnitChannels = 0;
       for (int ch = 0; ch < kMaxInputChannels; ch++)
          gInputRing[ch].Clear();
    }
@@ -4666,91 +5065,112 @@ namespace Platform
             return;
          }
 
-         gInputEngine = [[AVAudioEngine alloc] init];
-         AVAudioInputNode* input = [gInputEngine inputNode];
-
-         AudioObjectID targetDevice = (AudioObjectID)reqDevice;
-         if (targetDevice != 0)
+         // A HAL input unit: input enabled on bus 1, output disabled on bus 0.
+         AudioComponentDescription desc = {};
+         desc.componentType = kAudioUnitType_Output;
+         desc.componentSubType = kAudioUnitSubType_HALOutput;
+         desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+         AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
+         AudioUnit unit = nullptr;
+         if (comp == nullptr || AudioComponentInstanceNew(comp, &unit) != noErr || unit == nullptr)
          {
-            // Same stale-AudioObjectID hazard as AudioDeviceOpen's output
-            // path (a replug can reassign this ID to a different, possibly
-            // output-only, device) - verify it still names a live input
-            // device before handing it to the unit, otherwise fall back to
-            // whatever the input unit already defaults to.
-            uint32_t inChannels = 0;
-            if (DeviceHasScope(targetDevice, kAudioObjectPropertyScopeInput, inChannels))
-            {
-               AudioUnit inputUnit = input.audioUnit;
-               AudioUnitSetProperty(inputUnit, kAudioOutputUnitProperty_CurrentDevice,
-                                    kAudioUnitScope_Global, 0, &targetDevice, sizeof(targetDevice));
-            }
-         }
-
-         AVAudioFormat* format = [input inputFormatForBus:0];
-         if (format == nil || format.sampleRate <= 0 || format.channelCount == 0)
-         {
-            outError = "no audio input device available";
-            gInputEngine = nil;
+            outError = "audio input unit unavailable";
             return;
          }
+         const auto fail = [&](const char* what, OSStatus st)
+         {
+            outError = std::string(what) + " (" + std::to_string((int)st) + ")";
+            AudioComponentInstanceDispose(unit);
+         };
 
-         const int tapChannels = std::min((int)format.channelCount, kMaxInputChannels);
+         UInt32 on = 1, off = 0;
+         OSStatus st = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input, 1, &on, sizeof(on));
+         if (st == noErr)
+            st = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Output, 0, &off, sizeof(off));
+         if (st != noErr)
+            return fail("audio input unit could not enable input", st);
+
+         // The picked device when it still names a live input device (a replug
+         // can reassign an AudioObjectID to an output-only one), else the
+         // system default input.
+         AudioObjectID targetDevice = (AudioObjectID)reqDevice;
+         uint32_t inChannels = 0;
+         if (targetDevice == 0 || !DeviceHasScope(targetDevice, kAudioObjectPropertyScopeInput, inChannels))
+            targetDevice = CoreAudioResolveDevice(0, kAudioHardwarePropertyDefaultInputDevice);
+         if (targetDevice == kAudioObjectUnknown)
+         {
+            outError = "no audio input device available";
+            AudioComponentInstanceDispose(unit);
+            return;
+         }
+         st = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0,
+                                   &targetDevice, sizeof(targetDevice));
+         if (st != noErr)
+            return fail("audio input device could not be selected", st);
+
+         // Ask the device for the render buffer size, so a captured block is the
+         // size the output pulls. A device that refuses keeps its own.
+         const int wantFrames = gRenderBufferFrames.load(std::memory_order_relaxed);
+         if (wantFrames > 0)
+         {
+            AudioObjectPropertyAddress bufferAddr { kAudioDevicePropertyBufferFrameSize, kAudioObjectPropertyScopeGlobal,
+                                                    kAudioObjectPropertyElementMain };
+            UInt32 frames = (UInt32)wantFrames;
+            AudioObjectSetPropertyData(targetDevice, &bufferAddr, 0, nullptr, sizeof(frames), &frames);
+         }
+
+         // The device's own format (rate, channels) on the hardware side of bus 1.
+         AudioStreamBasicDescription hw = {};
+         UInt32 hwSize = sizeof(hw);
+         st = AudioUnitGetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 1, &hw, &hwSize);
+         if (st != noErr || hw.mSampleRate <= 0 || hw.mChannelsPerFrame == 0)
+         {
+            outError = "no audio input device available";
+            AudioComponentInstanceDispose(unit);
+            return;
+         }
+         const int tapChannels = std::min((int)hw.mChannelsPerFrame, kMaxInputChannels);
+
+         // What the unit hands us: the same rate, non-interleaved float32.
+         AudioStreamBasicDescription fmt = {};
+         fmt.mSampleRate = hw.mSampleRate;
+         fmt.mFormatID = kAudioFormatLinearPCM;
+         fmt.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked | kAudioFormatFlagIsNonInterleaved;
+         fmt.mFramesPerPacket = 1;
+         fmt.mBytesPerFrame = sizeof(float);
+         fmt.mBytesPerPacket = sizeof(float);
+         fmt.mChannelsPerFrame = (UInt32)tapChannels;
+         fmt.mBitsPerChannel = 32;
+         st = AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output, 1, &fmt, sizeof(fmt));
+         if (st != noErr)
+            return fail("audio input format rejected", st);
+
+         AURenderCallbackStruct cb = {};
+         cb.inputProc = InputRenderCallback;
+         st = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global, 0, &cb, sizeof(cb));
+         if (st != noErr)
+            return fail("audio input callback could not be set", st);
+
          gInputChannelCount = tapChannels;
+         gInputUnitChannels = tapChannels;
+         gInputUnitRate = hw.mSampleRate;
          gActiveInputDeviceId = reqDevice;
-
          for (int ch = 0; ch < kMaxInputChannels; ch++)
             gInputRing[ch].Clear();
          gInputResamplePos = 0.0;
+         gInputUnit = unit;
 
-         const double inRate = format.sampleRate;
-         [input installTapOnBus:0 bufferSize:1024 format:format
-                          block:^(AVAudioPCMBuffer* buffer, AVAudioTime*) {
-            const float* const* channels = buffer.floatChannelData;
-            if (channels == nullptr)
-               return;
-            const int numFrames = (int)buffer.frameLength;
-            if (numFrames <= 0)
-               return;
-
-            const int chCount = std::min((int)buffer.format.channelCount, kMaxInputChannels);
-            const double outRate = gRenderSampleRate.load(std::memory_order_relaxed);
-            if (outRate <= 0.0 || std::fabs(outRate - inRate) < 1.0)
-            {
-               for (int ch = 0; ch < chCount; ch++)
-                  gInputRing[ch].Write(channels[ch], numFrames);
-               gInputResamplePos = 0.0;
-               return;
-            }
-
-            // Linear resample to the render clock. Good enough for a mic
-            // input stage and, unlike an AVAudioConverter, allocation-free.
-            const double step = inRate / outRate;
-            double pos = gInputResamplePos;
-            int n = 0;
-            while (pos < (double)numFrames && n < kInputTapMaxOut)
-            {
-               const int i0 = std::max(0, (int)pos);
-               const int i1 = std::min(i0 + 1, numFrames - 1);
-               const float frac = (float)(pos - (double)i0);
-               for (int ch = 0; ch < chCount; ch++)
-                  gInputResampleScratch[ch][n] = channels[ch][i0] + (channels[ch][i1] - channels[ch][i0]) * frac;
-               n++;
-               pos += step;
-            }
-            gInputResamplePos = pos - (double)numFrames; // carry the sub-sample phase into the next buffer
-            for (int ch = 0; ch < chCount; ch++)
-               gInputRing[ch].Write(gInputResampleScratch[ch], n);
-         }];
-
-         NSError* err = nil;
-         [gInputEngine prepare];
-         if (![gInputEngine startAndReturnError:&err])
+         st = AudioUnitInitialize(unit);
+         if (st == noErr)
+            st = AudioOutputUnitStart(unit);
+         if (st != noErr)
          {
-            outError = err ? std::string([[err localizedDescription] UTF8String])
-                           : "input engine failed to start";
-            [input removeTapOnBus:0];
-            gInputEngine = nil;
-            return;
+            gInputUnit = nullptr;
+            gInputUnitChannels = 0;
+            gInputChannelCount = 0;
+            gActiveInputDeviceId = 0;
+            AudioUnitUninitialize(unit);
+            return fail("audio input failed to start", st);
          }
 
          gInputTapInstalled = true;
@@ -4891,6 +5311,7 @@ namespace Platform
             UInt32 frames = (UInt32)requestedBufferFrames;
             AudioObjectSetPropertyData(targetDevice, &bufferAddr, 0, nullptr, sizeof(frames), &frames);
          }
+         gRenderBufferFrames.store(requestedBufferFrames > 0 ? requestedBufferFrames : 0, std::memory_order_relaxed);
 
          h->outputDeviceId = targetDevice;
 #if !defined(INFINITE_VST3_SCANNER)
@@ -5022,11 +5443,12 @@ namespace Platform
          @try
          {
             // The input-capture tap used to live on this same engine and had
-            // to be dropped here; it now runs on its own gInputEngine (see
+            // to be dropped here; it now runs on its own gInputUnit (see
             // AudioInputCapturePump) whose lifetime is independent of the
             // render device, so there is nothing to detach - only the render
             // clock the tap resamples to goes away.
             gRenderSampleRate.store(0.0, std::memory_order_relaxed);
+            gRenderBufferFrames.store(0, std::memory_order_relaxed);
             [h->engine stop];
             [h->engine detachNode:h->source];
          }
@@ -5126,7 +5548,7 @@ namespace Platform
          [panel setTitle:@"Open audio"];
          if (@available(macOS 11.0, *))
             [panel setAllowedContentTypes:@[ UTTypeAudio, UTTypeMP3, UTTypeWAV, UTTypeAIFF, UTTypeMPEG4Audio ]];
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -5152,7 +5574,7 @@ namespace Platform
                [panel setAllowedContentTypes:types];
          }
          std::vector<std::string> out;
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return out;
          for (NSURL* url in [panel URLs])
             if (url != nil && [url path] != nil)
@@ -5182,7 +5604,7 @@ namespace Platform
             if ([types count] > 0)
                [panel setAllowedContentTypes:types];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -5204,7 +5626,7 @@ namespace Platform
                                         isDirectory:YES];
             [panel setDirectoryURL:dirURL];
          }
-         if ([panel runModal] != NSModalResponseOK)
+         if (PanelRunModal(panel) != NSModalResponseOK)
             return std::string();
          NSURL* url = [[panel URLs] firstObject];
          return url ? std::string([[url path] UTF8String]) : std::string();
@@ -8379,6 +8801,8 @@ namespace Platform
    {
       if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0)
          return;
+      if (getenv("INFINITE_NO_DIALOGS") != nullptr)
+         return;
 
       @autoreleasepool
       {
@@ -8426,9 +8850,23 @@ namespace Platform
       }
    }
 
+   bool SetClipboardImage(const std::vector<unsigned char>& png, const std::vector<unsigned char>& rgba, int w, int h)
+   {
+      (void)rgba, (void)w, (void)h;
+      if (png.empty())
+         return false;
+      @autoreleasepool
+      {
+         NSPasteboard* pb = [NSPasteboard generalPasteboard];
+         [pb clearContents];
+         NSData* data = [NSData dataWithBytes:png.data() length:png.size()];
+         return [pb setData:data forType:NSPasteboardTypePNG] == YES;
+      }
+   }
+
    void RevealInFileManager(const std::string& path)
    {
-      if (path.empty())
+      if (path.empty() || getenv("INFINITE_NO_DIALOGS") != nullptr)
          return;
       @autoreleasepool
       {
@@ -8827,6 +9265,230 @@ namespace Platform
             return false;
          }
          return true;
+      }
+   }
+}
+
+@interface InfinitePostStreamDelegate : NSObject <NSURLSessionDataDelegate>
+@property (nonatomic, assign) const Platform::HttpStreamChunk* onChunk;
+@property (nonatomic, assign) int* outStatus;
+@property (nonatomic, assign) std::string* errorBody;
+@property (nonatomic, assign) std::string* errorMsg;
+@property (nonatomic, assign) bool* ok;
+@property (nonatomic, assign) bool* aborted;
+@property (nonatomic, strong) dispatch_semaphore_t doneSema;
+@end
+
+@implementation InfinitePostStreamDelegate
+- (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)dataTask
+didReceiveResponse:(NSURLResponse*)response
+ completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler
+{
+   (void)session;
+   (void)dataTask;
+   if ([response isKindOfClass:[NSHTTPURLResponse class]])
+      *self.outStatus = (int)[(NSHTTPURLResponse*)response statusCode];
+   completionHandler(NSURLSessionResponseAllow);
+}
+
+- (void)URLSession:(NSURLSession*)session dataTask:(NSURLSessionDataTask*)dataTask didReceiveData:(NSData*)data
+{
+   (void)session;
+   if (*self.aborted || data == nil || [data length] == 0)
+      return;
+   if (*self.outStatus >= 200 && *self.outStatus < 300)
+   {
+      if (self.onChunk && *self.onChunk)
+      {
+         std::string chunk((const char*)[data bytes], (size_t)[data length]);
+         if (!(*self.onChunk)(chunk))
+         {
+            *self.aborted = true;
+            [dataTask cancel];
+         }
+      }
+   }
+   else if (self.errorBody->size() < 65536)
+   {
+      const size_t take = std::min((size_t)[data length], 65536 - self.errorBody->size());
+      self.errorBody->append((const char*)[data bytes], take);
+   }
+}
+
+- (void)URLSession:(NSURLSession*)session task:(NSURLSessionTask*)task didCompleteWithError:(NSError*)error
+{
+   (void)session;
+   (void)task;
+   if (error != nil && !*self.aborted)
+   {
+      *self.ok = false;
+      *self.errorMsg = std::string([[error localizedDescription] UTF8String] ?: "request failed");
+   }
+   else if (*self.aborted)
+   {
+      *self.ok = false;
+      *self.errorMsg = "cancelled";
+   }
+   else
+   {
+      *self.ok = (*self.outStatus >= 200 && *self.outStatus < 300);
+      if (!*self.ok && self.errorMsg->empty())
+         *self.errorMsg = "http status " + std::to_string(*self.outStatus);
+   }
+   dispatch_semaphore_signal(self.doneSema);
+}
+@end
+
+namespace Platform
+{
+   bool HttpPostStream(const std::string& url, const std::string& jsonBody,
+                       const std::string& bearerToken, const HttpStreamChunk& onChunk,
+                       int& outStatus, std::string& outErrorBody,
+                       std::string& outError, int timeoutSeconds)
+   {
+      outStatus = 0;
+      outErrorBody.clear();
+      outError.clear();
+      if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0)
+      {
+         outError = "url must be http(s)";
+         return false;
+      }
+
+      @autoreleasepool
+      {
+         NSURL* nsUrl = [NSURL URLWithString:[NSString stringWithUTF8String:url.c_str()]];
+         if (nsUrl == nil)
+         {
+            outError = "invalid url";
+            return false;
+         }
+         NSMutableURLRequest* request = [NSMutableURLRequest requestWithURL:nsUrl];
+         [request setHTTPMethod:@"POST"];
+         [request setTimeoutInterval:(NSTimeInterval)timeoutSeconds];
+         [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+         [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
+         if (!bearerToken.empty())
+         {
+            NSString* auth = [NSString stringWithFormat:@"Bearer %s", bearerToken.c_str()];
+            [request setValue:auth forHTTPHeaderField:@"Authorization"];
+         }
+         [request setHTTPBody:[NSData dataWithBytes:jsonBody.data() length:jsonBody.size()]];
+
+         bool ok = false;
+         bool aborted = false;
+         std::string errBody;
+         std::string errMsg;
+         dispatch_semaphore_t sema = dispatch_semaphore_create(0);
+
+         InfinitePostStreamDelegate* del = [[InfinitePostStreamDelegate alloc] init];
+         del.onChunk = &onChunk;
+         del.outStatus = &outStatus;
+         del.errorBody = &errBody;
+         del.errorMsg = &errMsg;
+         del.ok = &ok;
+         del.aborted = &aborted;
+         del.doneSema = sema;
+
+         NSURLSessionConfiguration* config = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+         config.timeoutIntervalForRequest = (NSTimeInterval)timeoutSeconds;
+         config.timeoutIntervalForResource = (NSTimeInterval)timeoutSeconds;
+         NSURLSession* session = [NSURLSession sessionWithConfiguration:config delegate:del delegateQueue:nil];
+         NSURLSessionDataTask* task = [session dataTaskWithRequest:request];
+         [task resume];
+
+         dispatch_time_t deadline = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeoutSeconds + 2) * NSEC_PER_SEC);
+         if (dispatch_semaphore_wait(sema, deadline) != 0)
+         {
+            [task cancel];
+            [session invalidateAndCancel];
+            outError = "timed out";
+            return false;
+         }
+         [session finishTasksAndInvalidate];
+
+         outErrorBody = std::move(errBody);
+         if (!ok)
+         {
+            outError = errMsg.empty() ? "request failed" : errMsg;
+            return false;
+         }
+         return true;
+      }
+   }
+
+   bool SecretStore(const std::string& account, const std::string& secret)
+   {
+      if (account.empty())
+         return false;
+      @autoreleasepool
+      {
+         NSString* service = [NSString stringWithUTF8String:ForkIdentity::kCredService]; // fork: separate Keychain entries
+         NSString* acct = [NSString stringWithUTF8String:account.c_str()];
+         NSData* data = [NSData dataWithBytes:secret.data() length:secret.size()];
+
+         NSDictionary* query = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: service,
+            (__bridge id)kSecAttrAccount: acct
+         };
+         OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, nullptr);
+         if (status == errSecSuccess)
+         {
+            NSDictionary* update = @{ (__bridge id)kSecValueData: data };
+            return SecItemUpdate((__bridge CFDictionaryRef)query, (__bridge CFDictionaryRef)update) == errSecSuccess;
+         }
+         NSDictionary* attrs = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: service,
+            (__bridge id)kSecAttrAccount: acct,
+            (__bridge id)kSecValueData: data
+         };
+         return SecItemAdd((__bridge CFDictionaryRef)attrs, nullptr) == errSecSuccess;
+      }
+   }
+
+   bool SecretLoad(const std::string& account, std::string& outSecret)
+   {
+      outSecret.clear();
+      if (account.empty())
+         return false;
+      @autoreleasepool
+      {
+         NSString* service = [NSString stringWithUTF8String:ForkIdentity::kCredService]; // fork: separate Keychain entries
+         NSString* acct = [NSString stringWithUTF8String:account.c_str()];
+         NSDictionary* query = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: service,
+            (__bridge id)kSecAttrAccount: acct,
+            (__bridge id)kSecReturnData: @YES,
+            (__bridge id)kSecMatchLimit: (__bridge id)kSecMatchLimitOne
+         };
+         CFTypeRef result = nullptr;
+         OSStatus status = SecItemCopyMatching((__bridge CFDictionaryRef)query, &result);
+         if (status != errSecSuccess || result == nullptr)
+            return false;
+         NSData* data = (__bridge_transfer NSData*)result;
+         outSecret.assign((const char*)[data bytes], (size_t)[data length]);
+         return true;
+      }
+   }
+
+   bool SecretClear(const std::string& account)
+   {
+      if (account.empty())
+         return false;
+      @autoreleasepool
+      {
+         NSString* service = [NSString stringWithUTF8String:ForkIdentity::kCredService]; // fork: separate Keychain entries
+         NSString* acct = [NSString stringWithUTF8String:account.c_str()];
+         NSDictionary* query = @{
+            (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
+            (__bridge id)kSecAttrService: service,
+            (__bridge id)kSecAttrAccount: acct
+         };
+         OSStatus status = SecItemDelete((__bridge CFDictionaryRef)query);
+         return status == errSecSuccess || status == errSecItemNotFound;
       }
    }
 }

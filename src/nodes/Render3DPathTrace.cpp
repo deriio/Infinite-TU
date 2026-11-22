@@ -1,4 +1,6 @@
 #include "Render3DPathTrace.h"
+#include "GLUtil.h"
+#include "field/MaterialRegistry.h"
 
 #include <algorithm>
 #include <chrono>
@@ -8,6 +10,9 @@
 
 #include "BenchReport.h"
 #include "ColorSpace.h"
+#include "Render3DSheen.h"
+
+static const int kPtMaxLights = 8; // the GL path tracer keeps its 8-light shader (row 5.6 lifts raster, live, settle)
 #include "Render3DTonemap.h"
 #include "gl3.h"
 
@@ -41,6 +46,15 @@ namespace
       "uniform samplerBuffer uMaterials;\n"
       "uniform samplerBuffer uBlasUvs;\n"
       "uniform sampler2D uAtlas;\n"
+      // Field material programs (row 1.4): UploadScene splices their library here (MaterialRegistry.h).
+      "//@FLD_MAT_LIB@\n"
+      "#ifndef FLD_MAT_ANY\n"
+      "#define FLD_MAT_ANY 0\n"
+      "#endif\n"
+      "#if FLD_MAT_ANY\n"
+      "vec4 fldImg(int slot, vec2 uv) { return vec4(0.5, 0.5, 0.5, 1.0); }\n" // this tracer's atlas holds no field images
+      "#endif\n"
+      "uniform float uFldTime;\n"
       "\n"
       "uniform int uSampleIndex;\n"
       "uniform int uMaxBounces;\n"
@@ -79,6 +93,11 @@ namespace
       "uniform float uLensRadius;\n"
       "uniform float uFocusDist;\n"
       "uniform vec3 uBokeh;\n"
+      // Probe mode (raster's probe grid): x = probe, y = direction; the ray starts at the probe.
+      "uniform int uProbeMode;\n"
+      "uniform vec3 uProbeLo;\n"
+      "uniform vec3 uProbeStep;\n"
+      "uniform ivec3 uProbeDims;\n"
       "\n"
       "const float PI = 3.14159265358979323846;\n"
       "\n"
@@ -446,6 +465,7 @@ namespace
       "   float trans; float tRough; float ior;\n"
       "};\n"
       "\n"
+      R3D_SHEEN_GLSL
       "float schlick5(float c) {\n"
       "   float m = clamp(1.0 - c, 0.0, 1.0);\n"
       "   float m2 = m * m;\n"
@@ -506,8 +526,8 @@ namespace
       "   vec3 F = s.f0 + (vec3(1.0) - s.f0) * schlick5(vDotH);\n"
       "   float ccAtten = 1.0 - s.cc * (0.04 + 0.96 * schlick5(nDotV));\n"
       // The sheen layer sits over the base and takes its directional albedo out of it, as Cycles'
-      // layering does: the Charlie lobe's albedo at roughness 0.5 is 0.08 head on up to 0.6 at grazing.
-      "   if (s.sh > 0.0) ccAtten *= 1.0 - clamp(s.sh * max(s.shCol.r, max(s.shCol.g, s.shCol.b)) * (0.083 + 0.55 * pow(1.0 - nDotV, 1.5)), 0.0, 1.0);\n"
+      // layering does (Render3DSheen.h: Cycles' measured sheen albedo).
+      "   if (s.sh > 0.0) ccAtten *= 1.0 - clamp(s.sh * max(s.shCol.r, max(s.shCol.g, s.shCol.b)) * sheenE(nDotV, s.shRough), 0.0, 1.0);\n"
       "   vec3 f = (D * ggxVis(nDotV, nDotL, alpha) * F * w.y + (vec3(1.0) - F) * (1.0 - s.metal) * s.base * (1.0 / PI) * w.x) * ccAtten;\n"
       "\n"
       "   float ccAlpha = max(0.002, s.ccRough * s.ccRough);\n"
@@ -516,13 +536,8 @@ namespace
       "      Dc = ggxD(nDotH, ccAlpha);\n"
       "      f += vec3(Dc * ggxVis(nDotV, nDotL, ccAlpha) * (0.04 + 0.96 * schlick5(vDotH)) * s.cc * w.y);\n"
       "   }\n"
-      "   // Sheen: Charlie distribution with the Neubelt visibility, as Render 3D draws it.\n"
-      "   if (s.sh > 0.0) {\n"
-      "      float invR = 1.0 / max(s.shRough, 0.01);\n"
-      "      float sin2h = max(1.0 - nDotH * nDotH, 0.0078125);\n"
-      "      float Dsh = (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * PI);\n"
-      "      f += s.shCol * (Dsh / max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-4) * s.sh * w.y);\n"
-      "   }\n"
+      "   // Sheen: Cycles' microfiber lobe (Render3DSheen.h).\n"
+      "   if (s.sh > 0.0) f += s.shCol * (s.sh * w.y * sheenLtc(nDotL, nDotV, dot(L, V), s.shRough));\n"
       "\n"
       "   vec3 p = lobeProbs(s, nDotV);\n"
       "   float toL = nDotH / max(4.0 * vDotH, 1e-6);\n"
@@ -621,6 +636,20 @@ namespace
       "      rayDir = normalize(focusPt - rayOrigin);\n"
       "   }\n"
       "   float coverage = 1.0;\n"
+      "   float probeBack = 0.0;\n"
+      "   float probeT = 1000.0;\n"
+      "   if (uProbeMode == 1) {\n"
+      "      int pi = int(pix.x), di = int(pix.y);\n"
+      "      ivec3 c = ivec3(pi % uProbeDims.x, (pi / uProbeDims.x) % uProbeDims.y, pi / (uProbeDims.x * uProbeDims.y));\n"
+      "      rayOrigin = uProbeLo + vec3(c) * uProbeStep;\n"
+      // A golden spiral over the sphere, each direction jittered inside its own cell (the CPU
+      // folds the result with the cell centres).
+      "      float nd = uResolution.y;\n"
+      "      float zc = 1.0 - 2.0 * (float(di) + 0.5) / nd;\n"
+      "      float z = clamp(zc + (rand(rng) - 0.5) * 2.0 / nd, -1.0, 1.0);\n"
+      "      float ph = 2.39996323 * (float(di) + 0.5) + (rand(rng) - 0.5) * sqrt(12.566 / nd) / max(sqrt(max(1.0 - zc * zc, 0.0)), 0.1);\n"
+      "      rayDir = vec3(sqrt(max(1.0 - z * z, 0.0)) * vec2(cos(ph), sin(ph)), z);\n"
+      "   }\n"
       "\n"
       "   vec3 radiance = vec3(0.0);\n"
       "   vec3 throughput = vec3(1.0);\n"
@@ -659,7 +688,7 @@ namespace
       "      }\n"
       "\n"
       "      if (hit.triSlot < 0) {\n"
-      "         if (bounce == 0 && uEnvAsBg == 0) { coverage = 0.0; break; }\n"
+      "         if (bounce == 0 && uEnvAsBg == 0 && uProbeMode == 0) { coverage = 0.0; break; }\n"
       "         vec3 envContrib = throughput * envRadiance(rayDir);\n"
       "         radiance += (bounce > 0) ? min(envContrib, vec3(10.0)) : envContrib;\n"
       "         break;\n"
@@ -681,6 +710,7 @@ namespace
       "      vec3 Ng = normalize(m0.xyz * localNg.x + m1.xyz * localNg.y + m2.xyz * localNg.z);\n"
       "      vec3 N = normalize(m0.xyz * localN.x + m1.xyz * localN.y + m2.xyz * localN.z);\n"
       "      bool entering = dot(Ng, -rayDir) >= 0.0;\n"
+      "      if (bounce == 0) { probeT = min(hit.t, 1000.0); if (!entering) probeBack = 1.0; }\n"
       "      if (!entering) {\n"
       "         Ng = -Ng;\n"
       "         N = -N;\n"
@@ -688,7 +718,7 @@ namespace
       "      if (dot(N, -rayDir) <= 1e-4)\n"
       "         N = Ng;\n"
       "\n"
-      "      int mb = hit.matId * 20;\n"
+      "      int mb = hit.matId * 24;\n"
       "      vec4 mt0 = texelFetch(uMaterials, mb + 0);\n"
       "      vec4 mt1 = texelFetch(uMaterials, mb + 1);\n"
       "      vec4 mt2 = texelFetch(uMaterials, mb + 2);\n"
@@ -796,6 +826,51 @@ namespace
       "            }\n"
       "         }\n"
       "      }\n"
+      // Field material program (row 1.4), as Render 3D's raster: after the maps, it replaces what it writes, at the
+      // hit's local position, shading normal and mesh uv. Its tangent normal goes through the triangle's uv frame;
+      // its height needs screen derivatives, so the tracer leaves it out.
+      "#if FLD_MAT_ANY\n"
+      "      float fldId = texelFetch(uMaterials, mb + 9).w;\n"
+      "      if (fldId > 0.5) {\n"
+      "         vec4 ft0 = texelFetch(uBlasTris, hit.triSlot * 3 + 0);\n"
+      "         vec4 fuA = texelFetch(uBlasUvs, hit.triSlot * 2 + 0);\n"
+      "         vec4 fuB = texelFetch(uBlasUvs, hit.triSlot * 2 + 1);\n"
+      "         float fw = 1.0 - hit.u - hit.v;\n"
+      "         vec3 fP = ft0.xyz + hit.u * t1.xyz + hit.v * t2.xyz;\n"
+      "         vec2 fUV = fw * fuA.xy + hit.u * fuA.zw + hit.v * fuB.xy;\n"
+      "         float transIn = s.metal < 1.0 ? s.trans / (1.0 - s.metal) : clamp(mt2.z, 0.0, 1.0);\n"
+      "         FldMat o;\n"
+      "         o.base = s.base; o.roughness = s.rough; o.metallic = s.metal; o.normal = vec3(0.0, 0.0, 1.0); o.height = 0.0;\n"
+      "         o.emission = emission; o.opacity = alpha; o.mask = 1.0;\n"
+      "         o.prm0 = texelFetch(uMaterials, mb + 20); o.prm1 = texelFetch(uMaterials, mb + 21);\n"
+      "         o.prm2 = texelFetch(uMaterials, mb + 22); o.prm3 = texelFetch(uMaterials, mb + 23);\n"
+      "         fldMatDispatch(int(fldId + 0.5), o, fP, N, fUV, uFldTime, hitPos, -rayDir, vec4(0.0), vec4(0.0));\n"
+      "         s.base = max(o.base, vec3(0.0));\n"
+      "         s.rough = clamp(o.roughness, 0.045, 1.0);\n"
+      "         s.metal = clamp(o.metallic, 0.0, 1.0);\n"
+      "         s.trans = transIn * (1.0 - s.metal);\n"
+      "         s.f0 = mix(vec3(clamp(iorF0 * iorF0 * 2.0 * mt2.y, 0.0, 1.0)), s.base, s.metal);\n"
+      "         emission = max(o.emission, vec3(0.0));\n"
+      "         alpha = o.mask < 0.5 ? 0.0 : o.opacity;\n"
+      "         if (o.normal.x != 0.0 || o.normal.y != 0.0) {\n"
+      "            vec2 d1 = fuA.zw - fuA.xy, d2 = fuB.xy - fuA.xy;\n"
+      "            float det = d1.x * d2.y - d1.y * d2.x;\n"
+      "            if (abs(det) > 1e-12) {\n"
+      "               vec3 lt = (t1.xyz * d2.y - t2.xyz * d1.y) / det;\n"
+      "               vec3 lb = (t2.xyz * d1.x - t1.xyz * d2.x) / det;\n"
+      "               vec3 T = m0.xyz * lt.x + m1.xyz * lt.y + m2.xyz * lt.z;\n"
+      "               vec3 B = m0.xyz * lb.x + m1.xyz * lb.y + m2.xyz * lb.z;\n"
+      "               T = T - N * dot(N, T);\n"
+      "               if (dot(T, T) > 1e-12) {\n"
+      "                  T = normalize(T);\n"
+      "                  vec3 Bo = cross(N, T) * (dot(cross(N, T), B) < 0.0 ? -1.0 : 1.0);\n"
+      "                  vec3 Nm = normalize(T * o.normal.x + Bo * o.normal.y + N * o.normal.z);\n"
+      "                  if (dot(Nm, -rayDir) > 1e-4) N = Nm;\n"
+      "               }\n"
+      "            }\n"
+      "         }\n"
+      "      }\n"
+      "#endif\n"
       // See-through as raster blends: pass on with chance 1 - alpha (always under the cutoff),
       // without spending a bounce, up to 16 layers.
       "      float cut = texelFetch(uMaterials, mb + 7).w;\n"
@@ -949,6 +1024,8 @@ namespace
       "      radiance = vec3(0.0);\n"
       "\n"
       // Alpha keeps the share of samples that hit something (or the world shown as background).
+      // Probe alpha packs the first hit: 1e5 when it is a back face, plus its distance (1000 = the world).
+      "   if (uProbeMode == 1) coverage = probeBack * 1e5 + probeT;\n"
       "   if (uSampleIndex <= 0) {\n"
       "      fragColor = vec4(radiance, coverage);\n"
       "   } else {\n"
@@ -970,20 +1047,12 @@ namespace
       "uniform vec3 uBgColor;\n"   // sRGB, shown as is where no sample hit, like Render 3D's clear colour
       "uniform float uBgOpacity;\n"
       "\n"
-      "vec3 toLinear(vec3 c) { c = max(c, vec3(0.0)); return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }\n"
-      "vec3 toSrgb(vec3 c) { c = max(c, vec3(0.0)); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }\n"
+      R3D_SRGB_SRC
       "\n"
-      "vec3 acesFilm(vec3 x) {\n"
-      "   return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);\n"
-      "}\n"
-      R3D_TONEMAP_GLSL
+      R3D_TONEMAP_SRC
       "\n"
       "vec3 toneDisplay(vec3 c) {\n"
-      "   if (uTonemap == 1) return acesFilm(c);\n"
-      "   if (uTonemap == 2) return c / (c + vec3(1.0));\n"
-      "   if (uTonemap == 3) return agxTone(c);\n"
-      "   if (uTonemap == 4) return neutralTone(c);\n"
-      "   return c;\n"
+      "   return toneMap(c, uTonemap);\n"
       "}\n"
       "\n"
       "void main() {\n"
@@ -1027,6 +1096,7 @@ namespace
       glAttachShader(prog, vs);
       glAttachShader(prog, fs);
       glLinkProgram(prog);
+      GLUtil::ForgetUniformLocations();
       glDeleteShader(vs);
       glDeleteShader(fs);
       GLint linked = 0;
@@ -1069,6 +1139,8 @@ Render3DPathTrace::PtMaterial Render3DPathTrace::PtMaterial::FromMaterial(const 
    m.metallic = std::clamp(mat.metallic, 0.0f, 1.0f);
    m.roughness = std::clamp(mat.roughness, 0.045f, 1.0f);
    m.ior = std::max(1.0001f, mat.ior);
+   m.fieldProgram = mat.fieldProgram;
+   std::memcpy(m.fieldParams, mat.fieldParams, sizeof(m.fieldParams));
    m.specular = std::max(0.0f, mat.specular);
    m.transmission = std::clamp(mat.transmission, 0.0f, 1.0f);
    m.transmissionRoughness = std::clamp(mat.transmissionRoughness, 0.0f, 1.0f);
@@ -1235,12 +1307,44 @@ void Render3DPathTrace::Release()
    mSampleIndex = 0;
 }
 
+unsigned int Render3DPathTrace::CompileTrace()
+{
+   if (mFldGlsl.empty())
+      return CompileProgram330(kTraceFrag330);
+   std::string src = kTraceFrag330;
+   const size_t at = src.find("//@FLD_MAT_LIB@");
+   if (at != std::string::npos) src.insert(at, mFldGlsl);
+   unsigned int prog = CompileProgram330(src.c_str());
+   if (prog == 0 && !mFldIds.empty()) // row 1.5: mark the programs that fail alone, trace the rest
+   {
+      Field::IsolateFailingPrograms(mFldIds, Field::MaterialLang::Glsl, [](const std::string& one) -> std::string {
+         std::string s1 = kTraceFrag330;
+         const size_t a1 = s1.find("//@FLD_MAT_LIB@");
+         if (a1 != std::string::npos) s1.insert(a1, one);
+         const unsigned int p1 = CompileProgram330(s1.c_str());
+         if (p1 != 0) { glDeleteProgram(p1); return std::string(); }
+         return "GLSL: does not compile in the GL path tracer";
+      });
+      mFldGlsl = Field::BuildMaterialLibrary(mFldIds, Field::MaterialLang::Glsl, mFldKey);
+      src = kTraceFrag330;
+      const size_t a2 = src.find("//@FLD_MAT_LIB@");
+      if (a2 != std::string::npos) src.insert(a2, mFldGlsl);
+      prog = mFldGlsl.empty() ? 0u : CompileProgram330(src.c_str());
+   }
+   if (prog == 0) // a library that does not build here: trace with the knobs rather than not at all
+   {
+      mFldGlsl.clear();
+      prog = CompileProgram330(kTraceFrag330);
+   }
+   return prog;
+}
+
 bool Render3DPathTrace::EnsureShaders()
 {
    if (mShadersTried)
       return mProgTrace != 0 && mProgDisplay != 0;
    mShadersTried = true;
-   mProgTrace = CompileProgram330(kTraceFrag330);
+   mProgTrace = CompileTrace();
    mProgDisplay = CompileProgram330(kDisplayFrag330);
    return mProgTrace != 0 && mProgDisplay != 0;
 }
@@ -1468,7 +1572,7 @@ bool Render3DPathTrace::UploadScene(const std::vector<Mesh>& meshes,
       mats.push_back(PtMaterial());
    std::vector<float> rects;
    BuildAtlas(mats, rects);
-   constexpr size_t kMatFloats = 20 * 4;
+   constexpr size_t kMatFloats = 24 * 4;   // texels 20..23: the field program's live knobs (row 3.4)
    std::vector<float> matTexels(mats.size() * kMatFloats, 0.0f);
    for (size_t i = 0; i < mats.size(); i++)
    {
@@ -1485,11 +1589,12 @@ bool Render3DPathTrace::UploadScene(const std::vector<Mesh>& meshes,
                             m.mapScale[0], m.mapScale[1], m.mapScale[2], anyMap,
                             m.mapRotate[0], m.mapRotate[1], m.mapRotate[2], m.alphaCutoff,
                             m.mapTranslate[0], m.mapTranslate[1], m.mapTranslate[2], (float)m.textureAlpha,
-                            m.objLo[0], m.objLo[1], m.objLo[2], 0.0f,
+                            m.objLo[0], m.objLo[1], m.objLo[2], (float)m.fieldProgram,
                             m.objHi[0], m.objHi[1], m.objHi[2], 0.0f };
       float* dst = &matTexels[i * kMatFloats];
       std::memcpy(dst, t, sizeof(t));
       std::memcpy(dst + 44, &rects[i * PtMaterial::kMapSlots * 4], PtMaterial::kMapSlots * 4 * sizeof(float));
+      std::memcpy(dst + 80, m.fieldParams, sizeof(m.fieldParams));
    }
 
    UploadBufferTex(mTlasNodesBuf, tlas.nodeTexels, "PtTlasNodes");
@@ -1498,6 +1603,24 @@ bool Render3DPathTrace::UploadScene(const std::vector<Mesh>& meshes,
    UploadBufferTex(mBlasTrisBuf, allBlasTris, "PtBlasTris");
    UploadBufferTex(mBlasNormalsBuf, allBlasNormals, "PtBlasNormals");
    UploadBufferTex(mMaterialsBuf, matTexels, "PtMaterials");
+   {
+      std::vector<int> ids;
+      for (const PtMaterial& m : materials)
+         if (m.fieldProgram != 0) ids.push_back(m.fieldProgram);
+      unsigned long long key = 0;
+      std::string lib = Field::BuildMaterialLibrary(ids, Field::MaterialLang::Glsl, key);
+      if (key != mFldKey)
+      {
+         mFldKey = key;
+         mFldIds = ids;
+         mFldGlsl = std::move(lib);
+         if (mShadersTried)
+         {
+            if (mProgTrace != 0) glDeleteProgram(mProgTrace);
+            mProgTrace = CompileTrace();
+         }
+      }
+   }
    if (allBlasUvs.empty())
       allBlasUvs.assign(8, 0.0f);
    UploadBufferTex(mBlasUvsBuf, allBlasUvs, "PtBlasUvs");
@@ -1510,8 +1633,8 @@ bool Render3DPathTrace::UploadScene(const std::vector<Mesh>& meshes,
 void Render3DPathTrace::SetLights(const std::vector<PtLight>& lights)
 {
    mLights = lights;
-   if ((int)mLights.size() > Render3DNode::kMaxLights)
-      mLights.resize((size_t)Render3DNode::kMaxLights);
+   if ((int)mLights.size() > kPtMaxLights)
+      mLights.resize((size_t)kPtMaxLights);
    ResetAccumulation();
 }
 
@@ -1623,14 +1746,14 @@ bool Render3DPathTrace::StepSamples(int width, int height, int numSamples, bool 
    if (!EnsureShaders() || !EnsureTargets(width, height))
       return false;
 
-   const int lightCount = std::min((int)mLights.size(), (int)Render3DNode::kMaxLights);
-   int lTypes[Render3DNode::kMaxLights] = {};
-   float lPos[Render3DNode::kMaxLights * 3] = {};
-   float lAim[Render3DNode::kMaxLights * 3] = {};
-   float lCol[Render3DNode::kMaxLights * 3] = {};
-   float lArea[Render3DNode::kMaxLights * 2] = {};
-   float lSpot[Render3DNode::kMaxLights * 3] = {};
-   float lTerms[Render3DNode::kMaxLights * 3] = {};
+   const int lightCount = std::min((int)mLights.size(), (int)kPtMaxLights);
+   int lTypes[kPtMaxLights] = {};
+   float lPos[kPtMaxLights * 3] = {};
+   float lAim[kPtMaxLights * 3] = {};
+   float lCol[kPtMaxLights * 3] = {};
+   float lArea[kPtMaxLights * 2] = {};
+   float lSpot[kPtMaxLights * 3] = {};
+   float lTerms[kPtMaxLights * 3] = {};
    for (int i = 0; i < lightCount; i++)
    {
       const PtLight& l = mLights[(size_t)i];
@@ -1666,13 +1789,13 @@ bool Render3DPathTrace::StepSamples(int width, int height, int numSamples, bool 
       {
          glActiveTexture(GL_TEXTURE0);
          glBindTexture(GL_TEXTURE_2D, prevTex);
-         glUniform1i(glGetUniformLocation(mProgTrace, "uPrevAccum"), 0);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uPrevAccum"), 0);
 
          auto bindBuf = [&](int unit, unsigned int tex, const char* name)
          {
             glActiveTexture(GL_TEXTURE0 + unit);
             glBindTexture(GL_TEXTURE_BUFFER, tex);
-            glUniform1i(glGetUniformLocation(mProgTrace, name), unit);
+            glUniform1i(GLUtil::UniformLoc(mProgTrace, name), unit);
          };
          bindBuf(1, mTlasNodesBuf.tex, "uTlasNodes");
          bindBuf(2, mTlasInstBuf.tex, "uTlasInstances");
@@ -1683,45 +1806,50 @@ bool Render3DPathTrace::StepSamples(int width, int height, int numSamples, bool 
          bindBuf(8, mBlasUvsBuf.tex, "uBlasUvs");
          glActiveTexture(GL_TEXTURE9);
          glBindTexture(GL_TEXTURE_2D, mAtlas.tex);
-         glUniform1i(glGetUniformLocation(mProgTrace, "uAtlas"), 9);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uAtlas"), 9);
 
-         glUniform1i(glGetUniformLocation(mProgTrace, "uSampleIndex"), curSample);
-         glUniform1i(glGetUniformLocation(mProgTrace, "uMaxBounces"), maxBounces);
-         glUniform1i(glGetUniformLocation(mProgTrace, "uHasTlas"), mSceneUploaded ? 1 : 0);
-         glUniform2f(glGetUniformLocation(mProgTrace, "uResolution"), (float)width, (float)height);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uSampleIndex"), curSample);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uFldTime"), mFldTime);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uMaxBounces"), maxBounces);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uHasTlas"), mSceneUploaded ? 1 : 0);
+         glUniform2f(GLUtil::UniformLoc(mProgTrace, "uResolution"), (float)width, (float)height);
 
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uCamEye"), 1, mCamEye);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uCamForward"), 1, mCamForward);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uCamRight"), 1, mCamRight);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uCamUp"), 1, mCamUp);
-         glUniform1f(glGetUniformLocation(mProgTrace, "uTanHalfFovY"), mTanHalfFovY);
-         glUniform1f(glGetUniformLocation(mProgTrace, "uAspect"), mAspect);
-         glUniform1f(glGetUniformLocation(mProgTrace, "uOrthoHalfH"), mOrthoHalfH);
-         glUniform1f(glGetUniformLocation(mProgTrace, "uLensRadius"), mLensRadius);
-         glUniform1f(glGetUniformLocation(mProgTrace, "uFocusDist"), mFocusDist);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uBokeh"), 1, mBokeh);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uWorldColor"), 1, mWorldColor);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uCamEye"), 1, mCamEye);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uCamForward"), 1, mCamForward);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uCamRight"), 1, mCamRight);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uCamUp"), 1, mCamUp);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uTanHalfFovY"), mTanHalfFovY);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uAspect"), mAspect);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uOrthoHalfH"), mOrthoHalfH);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uLensRadius"), mLensRadius);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uFocusDist"), mFocusDist);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uBokeh"), 1, mBokeh);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uProbeMode"), mProbeMode ? 1 : 0);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uProbeLo"), 1, mProbeLo);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uProbeStep"), 1, mProbeStep);
+         glUniform3iv(GLUtil::UniformLoc(mProgTrace, "uProbeDims"), 1, mProbeDims);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uWorldColor"), 1, mWorldColor);
          glActiveTexture(GL_TEXTURE7);
          glBindTexture(GL_TEXTURE_2D, mEnvTex);
-         glUniform1i(glGetUniformLocation(mProgTrace, "uEnvMap"), 7);
-         glUniform1i(glGetUniformLocation(mProgTrace, "uEnvMode"), mEnvTex != 0 ? 2 : mEnvGradient ? 1 : 0);
-         glUniform1f(glGetUniformLocation(mProgTrace, "uEnvRotation"), mEnvRotation);
-         glUniform1f(glGetUniformLocation(mProgTrace, "uEnvIntensity"), mEnvIntensity);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uEnvSky"), 1, mEnvSky);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uEnvHorizon"), 1, mEnvHorizon);
-         glUniform3fv(glGetUniformLocation(mProgTrace, "uEnvGround"), 1, mEnvGround);
-         glUniform1i(glGetUniformLocation(mProgTrace, "uEnvAsBg"), mEnvAsBg ? 1 : 0);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uEnvMap"), 7);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uEnvMode"), mEnvTex != 0 ? 2 : mEnvGradient ? 1 : 0);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uEnvRotation"), mEnvRotation);
+         glUniform1f(GLUtil::UniformLoc(mProgTrace, "uEnvIntensity"), mEnvIntensity);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uEnvSky"), 1, mEnvSky);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uEnvHorizon"), 1, mEnvHorizon);
+         glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uEnvGround"), 1, mEnvGround);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uEnvAsBg"), mEnvAsBg ? 1 : 0);
 
-         glUniform1i(glGetUniformLocation(mProgTrace, "uLightCount"), lightCount);
+         glUniform1i(GLUtil::UniformLoc(mProgTrace, "uLightCount"), lightCount);
          if (lightCount > 0)
          {
-            glUniform1iv(glGetUniformLocation(mProgTrace, "uLightType"), lightCount, lTypes);
-            glUniform3fv(glGetUniformLocation(mProgTrace, "uLightPos"), lightCount, lPos);
-            glUniform3fv(glGetUniformLocation(mProgTrace, "uLightAim"), lightCount, lAim);
-            glUniform3fv(glGetUniformLocation(mProgTrace, "uLightColor"), lightCount, lCol);
-            glUniform2fv(glGetUniformLocation(mProgTrace, "uLightArea"), lightCount, lArea);
-            glUniform3fv(glGetUniformLocation(mProgTrace, "uLightSpot"), lightCount, lSpot);
-            glUniform3fv(glGetUniformLocation(mProgTrace, "uLightTerms"), lightCount, lTerms);
+            glUniform1iv(GLUtil::UniformLoc(mProgTrace, "uLightType"), lightCount, lTypes);
+            glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uLightPos"), lightCount, lPos);
+            glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uLightAim"), lightCount, lAim);
+            glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uLightColor"), lightCount, lCol);
+            glUniform2fv(GLUtil::UniformLoc(mProgTrace, "uLightArea"), lightCount, lArea);
+            glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uLightSpot"), lightCount, lSpot);
+            glUniform3fv(GLUtil::UniformLoc(mProgTrace, "uLightTerms"), lightCount, lTerms);
          }
       });
 
@@ -1817,11 +1945,11 @@ void Render3DPathTrace::ResolveDisplay()
    {
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, accumTex);
-      glUniform1i(glGetUniformLocation(mProgDisplay, "uAccum"), 0);
-      glUniform1f(glGetUniformLocation(mProgDisplay, "uExposure"), exposure);
-      glUniform1i(glGetUniformLocation(mProgDisplay, "uTonemap"), tonemap);
-      glUniform3fv(glGetUniformLocation(mProgDisplay, "uBgColor"), 1, mBgColor);
-      glUniform1f(glGetUniformLocation(mProgDisplay, "uBgOpacity"), mBgOpacity);
+      glUniform1i(GLUtil::UniformLoc(mProgDisplay, "uAccum"), 0);
+      glUniform1f(GLUtil::UniformLoc(mProgDisplay, "uExposure"), exposure);
+      glUniform1i(GLUtil::UniformLoc(mProgDisplay, "uTonemap"), tonemap);
+      glUniform3fv(GLUtil::UniformLoc(mProgDisplay, "uBgColor"), 1, mBgColor);
+      glUniform1f(GLUtil::UniformLoc(mProgDisplay, "uBgOpacity"), mBgOpacity);
    });
    glActiveTexture(GL_TEXTURE0);
    glBindTexture(GL_TEXTURE_2D, 0);
@@ -1851,6 +1979,31 @@ bool Render3DPathTrace::ReadDisplayRGBA8(std::vector<unsigned char>& outRgba, in
                   &raw[(size_t)(mHeight - 1 - y) * rowBytes],
                   rowBytes);
    }
+   return true;
+}
+
+bool Render3DPathTrace::TraceProbes(const float lo[3], const float step[3], const int dims[3], int dirs, int spp,
+                                    std::vector<float>& out)
+{
+   const int count = dims[0] * dims[1] * dims[2];
+   if (count <= 0 || dirs <= 0 || !mSceneUploaded)
+      return false;
+   mProbeMode = true;
+   std::memcpy(mProbeLo, lo, sizeof(mProbeLo));
+   std::memcpy(mProbeStep, step, sizeof(mProbeStep));
+   std::memcpy(mProbeDims, dims, sizeof(mProbeDims));
+   ResetAccumulation();
+   const bool ok = StepSamples(count, dirs, std::max(1, spp), false);
+   mProbeMode = false;
+   if (!ok)
+      return false;
+   out.assign((size_t)count * (size_t)dirs * 4u, 0.0f);
+   GLint prevFbo = 0;
+   glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, mAccum[mAccumReadIdx].fbo);
+   glPixelStorei(GL_PACK_ALIGNMENT, 1);
+   glReadPixels(0, 0, count, dirs, GL_RGBA, GL_FLOAT, out.data());
+   glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)prevFbo);
    return true;
 }
 

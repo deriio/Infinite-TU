@@ -1,6 +1,9 @@
 // Patch build, settings files, autosave, new patch (moved verbatim from main.cpp).
 #include "app/panels/InspectorPanel.h" // fork: inspector
+#include "app/panels/FieldPatcherPanel.h"
+#include "app/ui/design/components/PanelRail.h"
 #include <algorithm>
+#include <cmath>
 #include "app/AppShared.h"
 #include "app/panels/CurveEditorPanel.h"
 #include "app/graph/LearningLog.h"
@@ -227,6 +230,7 @@ namespace app
       data.viewport.height = gViewportPanelHeight;
       data.viewport.nodes = gViewportPanelNodes;
       data.studio = SampleStudioSerialize();
+      data.fieldPages = FieldPatcherSaveState();
       return data;
    }
 
@@ -323,6 +327,105 @@ namespace app
    }
 
 
+   // The 2D and 3D Views' open flag, dock (0 bottom, 1 right, 2 left, 3 top, 4 fill), sizes and the dock Fill
+   // returns to: one writer and one reader, so the self-test can round-trip them without the settings file.
+   void ViewDockWrite(std::ostream& file)
+   {
+      file << "panelView3DOpen=" << (gView3DOpen ? 1 : 0) << "\n";
+      file << "panelView3DH=" << gView3DHeight << "\n";
+      file << "panelView3DDock=" << gView3DDock << "\n";
+      file << "panelView3DW=" << gView3DWidth << "\n";
+      file << "panelView3DDockBack=" << gView3DDockBack << "\n";
+      file << "panelView2DOpen=" << (gView2DOpen ? 1 : 0) << "\n";
+      file << "panelView2DH=" << gView2DHeight << "\n";
+      file << "panelView2DDock=" << gView2DDock << "\n";
+      file << "panelView2DW=" << gView2DWidth << "\n";
+      file << "panelView2DDockBack=" << gView2DDockBack << "\n";
+   }
+
+   bool ViewDockReadKey(const std::string& key, const std::string& val)
+   {
+      if (key == "panelView3DOpen")
+         gView3DOpen = (val != "0");
+      else if (key == "panelView3DH")
+         gView3DHeight = std::max(300.0f, std::strtof(val.c_str(), nullptr));
+      else if (key == "panelView3DDock")
+         gView3DDock = std::clamp(atoi(val.c_str()), 0, 4);
+      else if (key == "panelView3DW")
+         gView3DWidth = std::max(320.0f, std::strtof(val.c_str(), nullptr));
+      else if (key == "panelView3DDockBack")
+         gView3DDockBack = std::clamp(atoi(val.c_str()), 0, 3);
+      else if (key == "panelView2DOpen")
+         gView2DOpen = (val != "0");
+      else if (key == "panelView2DH")
+         gView2DHeight = std::max(300.0f, std::strtof(val.c_str(), nullptr));
+      else if (key == "panelView2DDock")
+         gView2DDock = std::clamp(atoi(val.c_str()), 0, 4);
+      else if (key == "panelView2DW")
+         gView2DWidth = std::max(320.0f, std::strtof(val.c_str(), nullptr));
+      else if (key == "panelView2DDockBack")
+         gView2DDockBack = std::clamp(atoi(val.c_str()), 0, 3);
+      else
+         return false;
+      return true;
+   }
+
+   // The Mixer panel's open flag, dock and sizes: one writer and one reader, so the self-test round-trips them.
+   void MixerPanelDockWrite(std::ostream& file)
+   {
+      file << "panelMixerOpen=" << (gMixerPanelOpen ? 1 : 0) << "\n";
+      file << "panelMixerDock=" << gMixerPanelDock << "\n";
+      file << "panelMixerW=" << gMixerPanelWidth << "\n";
+      file << "panelMixerH=" << gMixerPanelHeight << "\n";
+      // The render column's settings (Block C): the next take starts where the last one was set.
+      const MixerRenderSettings& r = gMixerRender;
+      file << "mixerRenderSource=" << r.source << "\n";
+      file << "mixerRenderMode=" << r.mode << "\n";
+      file << "mixerRenderLengthUnit=" << r.lengthUnit << "\n";
+      file << "mixerRenderLength=" << r.length << "\n";
+      file << "mixerRenderTail=" << r.tail << "\n";
+      file << "mixerRenderStart=" << r.start << "\n";
+      file << "mixerRenderFormat=" << r.format << "\n";
+      file << "mixerRenderName=" << r.name << "\n";
+   }
+
+   bool MixerPanelDockReadKey(const std::string& key, const std::string& val)
+   {
+      if (key == "panelMixerOpen")
+         gMixerPanelOpen = (val != "0");
+      else if (key == "panelMixerDock")
+         gMixerPanelDock = atoi(val.c_str()) == 3 ? 3 : 0; // bottom or top only
+      else if (key == "panelMixerW")
+         gMixerPanelWidth = std::max(kMixerPanelMinWidth, std::strtof(val.c_str(), nullptr));
+      else if (key == "panelMixerH")
+         gMixerPanelHeight = std::max(kMixerPanelMinHeight, std::strtof(val.c_str(), nullptr));
+      else if (key == "mixerRenderSource")
+         gMixerRender.source = std::clamp(atoi(val.c_str()), 0, 1);
+      else if (key == "mixerRenderMode")
+         gMixerRender.mode = std::clamp(atoi(val.c_str()), 0, 1);
+      else if (key == "mixerRenderLengthUnit")
+         gMixerRender.lengthUnit = std::clamp(atoi(val.c_str()), 0, 3);
+      else if (key == "mixerRenderLength")
+      {
+         const float v = std::strtof(val.c_str(), nullptr);
+         gMixerRender.length = std::isfinite(v) ? std::clamp(v, 1.0f, 3600.0f) : 30.0f;
+      }
+      else if (key == "mixerRenderTail")
+      {
+         const float v = std::strtof(val.c_str(), nullptr);
+         gMixerRender.tail = std::isfinite(v) ? std::clamp(v, 0.0f, 30.0f) : 2.0f;
+      }
+      else if (key == "mixerRenderStart")
+         gMixerRender.start = std::clamp(atoi(val.c_str()), 0, 2);
+      else if (key == "mixerRenderFormat")
+         gMixerRender.format = std::clamp(atoi(val.c_str()), 0, 3);
+      else if (key == "mixerRenderName")
+         gMixerRender.name = val.empty() ? std::string("{patch}-{take}") : val;
+      else
+         return false;
+      return true;
+   }
+
    void LoadWorkspaceSettings()
    {
       const std::string path = WorkspaceSettingsPath();
@@ -365,6 +468,32 @@ namespace app
             gMinimapSize = std::strtof(val.c_str(), nullptr);
          else if (key == "minimapOpacity")
             gMinimapOpacity = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.miniAxes")
+            gView3DPrefs.miniAxes = atoi(val.c_str());
+         else if (key == "v3d.miniSize")
+            gView3DPrefs.miniSize = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.miniBright")
+            gView3DPrefs.miniBright = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.gizmoNavSize")
+            gView3DPrefs.gizmoNavSize = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.gizmoSize")
+            gView3DPrefs.gizmoSize = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.smoothTime")
+            gView3DPrefs.smoothTime = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.rotStep")
+            gView3DPrefs.rotStep = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.autoPerspective")
+            gView3DPrefs.autoPerspective = (val != "0");
+         else if (key == "v3d.continuousGrab")
+            gView3DPrefs.continuousGrab = (val != "0");
+         else if (key == "v3d.orbitSens")
+            gView3DPrefs.orbitSens = std::strtof(val.c_str(), nullptr);
+         else if (key == "v3d.zoomToMouse")
+            gView3DPrefs.zoomToMouse = (val != "0");
+         else if (key == "v3d.orbitSelection")
+            gView3DPrefs.orbitSelection = (val != "0");
+         else if (key == "v3d.invertZoom")
+            gView3DPrefs.invertZoom = (val != "0");
          else if (key == "cableVisibilityMask")
             gCableVisibilityMask = atoi(val.c_str());
          else if (key == "panelNodeOpen")
@@ -387,6 +516,8 @@ namespace app
             gModMatrixWidth = std::max(kModMatrixMinWidth, std::strtof(val.c_str(), nullptr));
          else if (key == "panelMatrixH")
             gModMatrixHeight = std::max(kModMatrixMinHeight, std::strtof(val.c_str(), nullptr));
+         else if (MixerPanelDockReadKey(key, val))
+            ;
          else if (key == "panelPerfOpen")
             gPerfPanelOpen = (val != "0");
          else if (key == "panelPerfDock")
@@ -409,6 +540,12 @@ namespace app
             gPianoRollHeight = std::max(240.0f, std::strtof(val.c_str(), nullptr));
          else if (key == "panelPianoRollDock")
             gPianoRollDock = (val == "3") ? 3 : 0;
+         else if (key == "panelDrumsOpen")
+            gDrumPanelOpen = (val != "0");
+         else if (key == "panelDrumsH")
+            gDrumPanelHeight = std::max(240.0f, std::strtof(val.c_str(), nullptr));
+         else if (key == "panelDrumsDock")
+            gDrumPanelDock = (val == "3") ? 3 : 0;
          else if (key == "panelCurveEditorOpen")
             gCurveEditorOpen = (val != "0");
          else if (key == "panelCurveEditorH")
@@ -417,6 +554,14 @@ namespace app
             gCurveEditorWidth = std::max(360.0f, std::strtof(val.c_str(), nullptr));
          else if (key == "panelCurveEditorDock")
             gCurveEditorDock = atoi(val.c_str()) == 3 ? 3 : 0; // bottom or top only
+         else if (key == "panelFieldPatcherOpen")
+            gFieldPatcherOpen = (val != "0");
+         else if (key == "panelFieldPatcherH")
+            gFieldPatcherHeight = std::max(220.0f, std::strtof(val.c_str(), nullptr));
+         else if (key == "panelRailOrder")
+            gRailOrder = val;
+         else if (key == "panelFieldPatcherDock")
+            gFieldPatcherDock = atoi(val.c_str()) == 3 ? 3 : 0;
          else if (key == "panelTerminalOpen")
          {
             // Inside a DAW there is no shell: keep it closed, and write the app's value back untouched.
@@ -431,12 +576,12 @@ namespace app
             gTerminalFloating = (val == "1");
          else if (key == "panelTerminalW")
             gTerminalWidth = std::max(280.0f, std::strtof(val.c_str(), nullptr));
-         else if (key == "panelView3DOpen")
-            gView3DOpen = (val != "0");
-         else if (key == "panelView3DH")
-            gView3DHeight = std::max(300.0f, std::strtof(val.c_str(), nullptr));
-         else if (key == "panelView3DDock")
-            gView3DDock = (val == "3") ? 3 : 0;
+         else if (ViewDockReadKey(key, val))
+            ;
+         else if (key == "panelView2DTools")
+            gView2DTools = val;
+         else if (key == "panelView2DSwatches")
+            gView2DSwatches = val;
          else if (key == "panelStudioDock")
             gSampleStudioDock = (val == "3") ? 3 : 0;
       }
@@ -462,6 +607,19 @@ namespace app
       file << "minimapCorner=" << gMinimapCorner << "\n";
       file << "minimapSize=" << gMinimapSize << "\n";
       file << "minimapOpacity=" << gMinimapOpacity << "\n";
+      file << "v3d.miniAxes=" << gView3DPrefs.miniAxes << "\n";
+      file << "v3d.miniSize=" << gView3DPrefs.miniSize << "\n";
+      file << "v3d.miniBright=" << gView3DPrefs.miniBright << "\n";
+      file << "v3d.gizmoNavSize=" << gView3DPrefs.gizmoNavSize << "\n";
+      file << "v3d.gizmoSize=" << gView3DPrefs.gizmoSize << "\n";
+      file << "v3d.smoothTime=" << gView3DPrefs.smoothTime << "\n";
+      file << "v3d.rotStep=" << gView3DPrefs.rotStep << "\n";
+      file << "v3d.autoPerspective=" << (gView3DPrefs.autoPerspective ? 1 : 0) << "\n";
+      file << "v3d.continuousGrab=" << (gView3DPrefs.continuousGrab ? 1 : 0) << "\n";
+      file << "v3d.orbitSens=" << gView3DPrefs.orbitSens << "\n";
+      file << "v3d.zoomToMouse=" << (gView3DPrefs.zoomToMouse ? 1 : 0) << "\n";
+      file << "v3d.orbitSelection=" << (gView3DPrefs.orbitSelection ? 1 : 0) << "\n";
+      file << "v3d.invertZoom=" << (gView3DPrefs.invertZoom ? 1 : 0) << "\n";
       file << "cableVisibilityMask=" << gCableVisibilityMask << "\n";
       file << "panelNodeOpen=" << (gNodePanelOpen ? 1 : 0) << "\n";
       file << "panelViewportOpen=" << (gViewportPanelOpen ? 1 : 0) << "\n";
@@ -473,6 +631,7 @@ namespace app
       file << "panelMatrixDock=" << gModMatrixDock << "\n";
       file << "panelMatrixW=" << gModMatrixWidth << "\n";
       file << "panelMatrixH=" << gModMatrixHeight << "\n";
+      MixerPanelDockWrite(file);
       file << "panelPerfOpen=" << (gPerfPanelOpen ? 1 : 0) << "\n";
       file << "panelPerfDock=" << gPerfPanelDock << "\n";
       file << "panelPerfW=" << gPerfPanelWidth << "\n";
@@ -482,16 +641,25 @@ namespace app
       file << "panelStudioOpen=" << (gSampleStudioOpen ? 1 : 0) << "\n";
       file << "panelStudioH=" << gSampleStudioHeight << "\n";
       file << "panelStudioDock=" << gSampleStudioDock << "\n";
-      file << "panelView3DOpen=" << (gView3DOpen ? 1 : 0) << "\n";
-      file << "panelView3DH=" << gView3DHeight << "\n";
-      file << "panelView3DDock=" << gView3DDock << "\n";
+      ViewDockWrite(file);
+      if (!gView2DTools.empty())
+         file << "panelView2DTools=" << gView2DTools << "\n";
+      if (!gView2DSwatches.empty())
+         file << "panelView2DSwatches=" << gView2DSwatches << "\n";
       file << "panelPianoRollOpen=" << (gPianoRollOpen ? 1 : 0) << "\n";
       file << "panelPianoRollH=" << gPianoRollHeight << "\n";
       file << "panelPianoRollDock=" << gPianoRollDock << "\n";
+      file << "panelDrumsOpen=" << (gDrumPanelOpen ? 1 : 0) << "\n";
+      file << "panelDrumsH=" << gDrumPanelHeight << "\n";
+      file << "panelDrumsDock=" << gDrumPanelDock << "\n";
       file << "panelCurveEditorOpen=" << (gCurveEditorOpen ? 1 : 0) << "\n";
       file << "panelCurveEditorH=" << gCurveEditorHeight << "\n";
       file << "panelCurveEditorW=" << gCurveEditorWidth << "\n";
       file << "panelCurveEditorDock=" << gCurveEditorDock << "\n";
+      file << "panelFieldPatcherOpen=" << (gFieldPatcherOpen ? 1 : 0) << "\n";
+      file << "panelFieldPatcherH=" << gFieldPatcherHeight << "\n";
+      file << "panelFieldPatcherDock=" << gFieldPatcherDock << "\n";
+      file << "panelRailOrder=" << gRailOrder << "\n";
       file << "panelTerminalOpen=" << ((Platform::PluginModeActive() ? gTerminalOpenInApp : gTerminalOpen) ? 1 : 0) << "\n";
       file << "panelTerminalH=" << gTerminalHeight << "\n";
       file << "panelTerminalDock=" << gTerminalDock << "\n";
@@ -514,7 +682,10 @@ namespace app
                     gSampleStudioDock, gPianoRollDock, gTerminalDock,
                     gViewportPanelWidth, gViewportPanelHeight, gModMatrixWidth, gModMatrixHeight, gPerfPanelWidth,
                     gPerfPanelHeight, gHistoryWidth, gSampleStudioHeight, gPianoRollHeight, gTerminalHeight, gTerminalWidth);
-      std::snprintf(buf + strlen(buf), sizeof buf - strlen(buf), "|%llu", (unsigned long long)InspectorLayoutHash()); // fork
+      std::snprintf(buf + std::strlen(buf), sizeof buf - std::strlen(buf), "|%d%d %.0f %.0f", gMixerPanelOpen, gMixerPanelDock,
+                    gMixerPanelWidth, gMixerPanelHeight);
+      std::snprintf(buf + std::strlen(buf), sizeof buf - std::strlen(buf), "|%d%d %.0f", gDrumPanelOpen, gDrumPanelDock, gDrumPanelHeight);
+      std::snprintf(buf + std::strlen(buf), sizeof buf - std::strlen(buf), "|%llu", (unsigned long long)InspectorLayoutHash()); // fork
       static std::string sSaved = buf;   // what is on disk (or was loaded) at startup
       static std::string sSeen = buf;
       static double sSeenAt = 0.0;
@@ -1084,6 +1255,8 @@ namespace app
       gViewportPanelDock = 1;
       gViewportPanelWidth = 320.0f;
       gViewportPanelHeight = 260.0f;
+      gPerfLayout = Patch::PerfLayoutRecord(); // a new patch starts with one empty Performance page
+      gPerfActivePage = 0;
       gNextIndex = 1;
       // Unlike gNextIndex, this does NOT restart: uids are only useful because
       // they are never reused, and a fresh document that started minting 1, 2,

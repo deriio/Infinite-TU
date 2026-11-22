@@ -59,7 +59,7 @@ namespace OscPortHub
       Hub* h = hub.get();
       h->thread = std::thread([h, fd]() {
          std::vector<uint8_t> buffer(65536); // max UDP datagram
-         std::vector<OscMessage::Message> msgs;
+         std::vector<OscMessage::PacketMessage> msgs;
          for (;;)
          {
             NetSsize n = NetCompat::NetRecv(fd, buffer.data(), buffer.size(), 0);
@@ -71,7 +71,7 @@ namespace OscPortHub
             if (!OscMessage::DecodePacket(buffer.data(), static_cast<size_t>(n), msgs))
                continue;
             std::lock_guard<std::mutex> hl(h->mutex);
-            for (const OscMessage::Message& m : msgs)
+            for (const OscMessage::PacketMessage& m : msgs)
                for (OscPortListener* ln : h->listeners)
                   ln->OnOscMessage(m);
          }

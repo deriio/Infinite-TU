@@ -18,6 +18,7 @@ Usage:
   scripts/ibuild.py linux [build|test|shell]    OrbStack container, started on demand, stopped after
 
 Modes: dev (build-dev, Debug, arm64) | asan (build-asan, +address,undefined) |
+       bench (build-bench, Release, arm64 - local M2 A/B) |
        release (build, universal arm64+x86_64 - shipping only)
 Exit: 0 ok, 1 build failed, 2 usage/lock timeout.
 """
@@ -30,10 +31,11 @@ LOCK = "/tmp/infinite-build.lock"          # machine-wide, shared by every workt
 os.environ.setdefault("CCACHE_BASEDIR", os.path.dirname(ROOT))
 os.environ.setdefault("CCACHE_NOHASHDIR", "1")
 MODES = {  # dir, cmake args, per-compile RAM estimate (MB), -j cap
-    "dev":     ("build-dev",  ["-DCMAKE_BUILD_TYPE=Debug", "-DCMAKE_OSX_ARCHITECTURES=arm64"], 450, 4),
-    "asan":    ("build-asan", ["-DCMAKE_BUILD_TYPE=Debug", "-DCMAKE_OSX_ARCHITECTURES=arm64",
-                               "-DINFINITE_SANITIZE=address,undefined"], 800, 3),
-    "release": ("build",      ["-DCMAKE_BUILD_TYPE=Release"], 600, 3),
+    "dev":     ("build-dev",   ["-DCMAKE_BUILD_TYPE=Debug", "-DCMAKE_OSX_ARCHITECTURES=arm64"], 450, 4),
+    "asan":    ("build-asan",  ["-DCMAKE_BUILD_TYPE=Debug", "-DCMAKE_OSX_ARCHITECTURES=arm64",
+                                "-DINFINITE_SANITIZE=address,undefined"], 800, 3),
+    "bench":   ("build-bench", ["-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_OSX_ARCHITECTURES=arm64"], 500, 3),
+    "release": ("build",       ["-DCMAKE_BUILD_TYPE=Release"], 600, 3),
 }
 
 
@@ -51,12 +53,22 @@ def machine():
     return avail, swap, load, os.cpu_count() or 4
 
 
+def pressure():
+    """The kernel's live memory pressure: 1 normal, 2 warn, 4 critical. Swap *used* is not this: macOS keeps
+    swap allocated long after the pressure is gone, so a calm machine can show 6 GB of it until a reboot."""
+    try:
+        return int(sh(["sysctl", "-n", "kern.memorystatus_vm_pressure_level"]).strip() or 1)
+    except ValueError:
+        return 1
+
+
 def pick_jobs(mode):
     avail, swap, load, ncpu = machine()
     _, _, per_job, cap = MODES[mode]
     j = min(cap, ncpu - 2, int(avail // per_job))
-    if swap > 4096: j = min(j, 2)           # already swapping: go gentle
-    if swap > 8192: j = 1
+    p = pressure()
+    if p >= 2 or swap > 4096: j = min(j, 2)   # under pressure, or swap left over from it: go gentle
+    if p >= 4: j = 1
     if load > ncpu * 1.5: j = min(j, 2)     # something else is hammering the CPU
     return max(1, j)
 
@@ -98,10 +110,29 @@ def release():
     shutil.rmtree(LOCK, ignore_errors=True)
 
 
+def build_types(mode):
+    """(wanted, cached) CMAKE_BUILD_TYPE for a mode's build dir; cached is None before the first configure."""
+    d, args, _, _ = MODES[mode]
+    cache = os.path.join(ROOT, d, "CMakeCache.txt")
+    want = next((a.split("=", 1)[1] for a in args if a.startswith("-DCMAKE_BUILD_TYPE=")), None)
+    have = None
+    if os.path.exists(cache):
+        have = next((l.split("=", 1)[1].strip() for l in open(cache) if l.startswith("CMAKE_BUILD_TYPE:")), None)
+    return want, have
+
+
 def configure(mode):
     d, args, _, _ = MODES[mode]
     path = os.path.join(ROOT, d)
-    if os.path.exists(path + "/CMakeCache.txt"):
+    cache = path + "/CMakeCache.txt"
+    if os.path.exists(cache):
+        want, have = build_types(mode)
+        if want is None or want == have:
+            return path
+        # A cache left as another build type (build/ once configured Debug) would ship debug-only UI as "release".
+        print(f"ibuild: {d} is configured {have}, want {want}: reconfiguring", flush=True)
+        if subprocess.run(["cmake", "-B", path, f"-DCMAKE_BUILD_TYPE={want}"]).returncode:
+            sys.exit(1)
         return path
     extra = [f"-DCMAKE_{lang}_COMPILER_LAUNCHER=ccache" for lang in ("C", "CXX", "OBJC", "OBJCXX")] if shutil.which("ccache") else []
     print(f"ibuild: configuring {d} (first build in this dir compiles everything once)", flush=True)
@@ -144,7 +175,8 @@ def stale_count(path, target):
 
 def cmd_status(a):
     avail, swap, load, ncpu = machine()
-    print(f"cores {ncpu} | avail RAM ~{avail:.0f} MB | swap used {swap:.0f} MB | load {load:.1f}")
+    p = pressure()
+    print(f"cores {ncpu} | avail RAM ~{avail:.0f} MB | swap used {swap:.0f} MB | pressure {p} | load {load:.1f}")
     for m in MODES:
         print(f"  recommended -j for {m:8s}: {pick_jobs(m)}")
     h = lock_holder()
@@ -152,7 +184,7 @@ def cmd_status(a):
     ob = other_builds()
     print("other build processes:", *(ob or ["none"]), sep="\n  ")
     print("ccache:", "yes" if shutil.which("ccache") else "NO (brew install ccache: worktrees recompile everything without it)")
-    if swap > 4096 or load > ncpu * 1.5:
+    if p >= 2 or load > ncpu * 1.5:
         print("VERDICT: machine is stressed. Do not start a build; wait or stop what is running.")
 
 
@@ -170,7 +202,8 @@ def cmd_plan(a):
 
 def cmd_build(a):
     d, *_ = MODES[a.mode]
-    if not a.force:
+    want, have = build_types(a.mode)
+    if not a.force and (want is None or have is None or want == have):
         r = stale_count(os.path.join(ROOT, d), a.target)
         if r == (0, 0):
             print(f"ibuild: {d} up to date, nothing to do.")

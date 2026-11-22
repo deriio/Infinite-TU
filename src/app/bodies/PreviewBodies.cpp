@@ -359,6 +359,17 @@ namespace app
       {
          if (other.index == gn.index || dynamic_cast<GroupNode*>(other.node.get()) != nullptr)
             continue;
+         // Not yet placed: the editor reports (0,0) with no size, which can sit inside a group near the origin and
+         // stretch it across the canvas for a frame.
+         if (other.needsPosition)
+            continue;
+         if (other.noGroupAdoptUntilMoved)
+         {
+            const ImVec2 at = ed::GetNodePosition(other.NodeId());
+            if (std::abs(at.x - other.spawnX) < 1.0f && std::abs(at.y - other.spawnY) < 1.0f)
+               continue;
+            other.noGroupAdoptUntilMoved = false;
+         }
          GroupNode* owner = GroupOwning(other.index);
          if (owner != nullptr && owner != n)
             continue;
@@ -603,7 +614,7 @@ namespace app
    const char* EmptyPreviewLabel(INode* node, const char* fallback)
    {
       if (node->bypassed)
-         return "bypassed";
+         return T("Bypassed");
       return fallback;
    }
 
@@ -632,7 +643,7 @@ namespace app
       // An off group sends nothing on, so its last frame would be a stale picture.
       if (node->blockOff)
       {
-         EmptyState::DrawCaption(origin, ImVec2(origin.x + size, origin.y + size), "block off");
+         EmptyState::DrawCaption(origin, ImVec2(origin.x + size, origin.y + size), T("Block off"));
       }
       else if (tex != 0 && shown->GetOutputWidth() > 0)
       {
@@ -647,7 +658,7 @@ namespace app
       }
       else
       {
-         EmptyState::DrawCaption(origin, ImVec2(origin.x + size, origin.y + size), EmptyPreviewLabel(node, "no input"));
+         EmptyState::DrawCaption(origin, ImVec2(origin.x + size, origin.y + size), EmptyPreviewLabel(node, T("No input")));
       }
 
       if (!node->bypassed && !node->blockOff)

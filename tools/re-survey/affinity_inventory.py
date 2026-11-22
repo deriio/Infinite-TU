@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+"""re-survey affinity_inventory: Affinity's tools and their settings against the 2D View's, black-box.
+
+Sources (nothing executable is read):
+  - Affinity's public help, one page per tool (affinity.help/photo2, static HTML): the context toolbar settings.
+    Pages are cached in ~/re-output/affinity/help/.
+  - The macOS accessibility menu map of the running app (ui_map's ax_dump): adjustment and live filter names.
+  - Bundle metadata: the Brush Editor's localized strings (its "Associated Tool" list and dynamics labels).
+  - Infinite: View2DPanel.cpp, through the hand-kept INF table below. Every label in it must appear as a string
+    literal in that file, so the table cannot drift from the code without the check failing.
+
+Usage:
+  python3 tools/re-survey/affinity_probe.py inventory      (same as running this file)
+  python3 tools/re-survey/affinity_inventory.py --self-test
+Writes ~/re-output/affinity/inventory.md and inventory.json; exit 1 when an INF label is no longer in the code.
+"""
+
+import html
+import json
+import os
+import re
+import subprocess
+import sys
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from common import RE_OUTPUT  # noqa: E402
+
+REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
+OUT = os.path.join(RE_OUTPUT, "affinity")
+HELP = os.path.join(OUT, "help")
+HELP_URL = "https://affinity.help/photo2/en-US.lproj/pages/Tools/tools_%s.html"
+PANEL = os.path.join(REPO, "src", "app", "panels", "View2DPanel.cpp")
+SCENE = os.path.join(REPO, "src", "nodes", "Scene2DNode.cpp")
+BRUSH_STRINGS = "/Applications/Affinity.app/Contents/Frameworks/libcocoaui.framework/Versions/A/Resources/" \
+                "en-GB.lproj/BrushEditPanel.strings"
+
+# Affinity tool (help slug, name) -> the 2D View tool that does the same job, or None.
+TOOLS = [
+    ("move", "Move", "move"), ("pan", "View", "hand"), ("zoom", "Zoom", "zoom"), ("crop", "Crop", "crop"),
+    ("clrpicker", "Colour Picker", "pick"), ("stylePicker", "Style Picker", "stylepick"), ("measure", "Measure", "measure"),
+    ("selectionBrush", "Selection Brush", "selbrush"), ("objectSelection", "Object Selection", "objsel"),
+    ("floodSelect", "Flood Select", "wand"), ("marquee", "Marquee (+ Freehand)", "marquee"),
+    ("floodFill", "Flood Fill", "fill"), ("gradient", "Gradient", "gradient"),
+    ("paintBrush", "Paint Brush", "brush"), ("pixel", "Pixel", "brush"), ("clrReplacementBrush", "Colour Replacement", "colourreplace"),
+    ("paintMixerBrush", "Paint Mixer", "mixer"), ("eraseBrush", "Erase Brush", "eraser"),
+    ("backgroundEraseBrush", "Background Erase", "bgerase"), ("floodErase", "Flood Erase", "flooderase"),
+    ("dodgeBrush", "Dodge", "dodge"), ("burnBrush", "Burn", "burn"), ("spongeBrush", "Sponge", "sponge"),
+    ("cloneBrush", "Clone", "clone"), ("undoBrush", "Undo Brush", "undobrush"), ("blurBrush", "Blur", "blur"),
+    ("sharpenBrush", "Sharpen", "sharpen"), ("medianBrush", "Median", "median"), ("smudgeBrush", "Smudge", "brush"),
+    ("healingBrush", "Healing", "heal"), ("patch", "Patch", "patch"), ("blemishRemoval", "Blemish Removal", "blemish"),
+    ("inpaintingBrush", "Inpainting", "inpaint"), ("redEye", "Red Eye", "redeye"),
+    ("pen", "Pen", "pen"), ("node", "Node", "node"), ("rectangle", "Shapes (Rectangle)", "shape"),
+    ("artText", "Artistic Text", "text"), ("frameText", "Frame Text", "text"),
+    ("meshWarp", "Mesh Warp", "meshwarp"), ("perspective", "Perspective", "perspective"),
+]
+
+# The 2D View's settings per tool, as the bar and its More.. popup label them (View2DPanel.cpp).
+_BRUSH = ["Size %.0f px", "Hardness %.0f%%", "Opacity %.0f%%", "Flow %.0f%%", "Smoothing", "Spacing", "Roundness", "Angle", "Hard edge", "Scatter",
+          "Follow stroke", "Stabiliser", "Taper in", "Taper out", "Size jitter", "Flow jitter", "Hue jitter",
+          "Saturation jitter", "Brightness jitter", "Hardness jitter", "Rotation jitter", "Shape jitter", "Scatter Y",
+          "Accumulation", "Accumulation jitter", "Wet edges", "Pen pressure", "Mode", "Lock alpha", "Paint the mask", "Symmetry"]
+_RETOUCH = ["Size %.0f px", "Hardness %.0f%%", "Opacity %.0f%%", "Flow %.0f%%", "Spacing", "Roundness", "Angle", "Smoothing",
+            "Stabiliser", "Wet edges", "Pen pressure", "Symmetry"]
+_SOURCE = ["Aligned", "All layers", r"Rotation %.0f\xC2\xB0", "Scale %.0f%%", "Flip X##v2dsflipx"]
+_SELOP = ["New selection", "Add to selection (Shift)", "Subtract from selection (Alt)", "Intersect with selection (Shift+Alt)"]
+INF = {
+    "move": ["Auto-select", "Align left edges", "Distribute horizontally", "Flip horizontal"],
+    "hand": [], "zoom": ["Fit on screen (Ctrl+0)", "Actual pixels (Ctrl+1)"],
+    "crop": ["Free", "Original", "Thirds", "Apply", "Cancel", "Darken##v2dcdark", "Reveal##v2dcrev"],
+    "pick": ["Point", "3x3 average", "All layers", "Current layer"],
+    "wand": _SELOP + ["Tolerance %.0f%%", "Contiguous", "All layers", "Expand", "Contract", "Border", "Smooth",
+                      "Antialias##v2dwaa"],
+    "marquee": _SELOP + ["Rectangle", "Ellipse", "Freehand", "Polygon", "Feather %.0f px", "Fixed size",
+                         "From centre##v2dmcentre", "Antialias##v2dmaa"],
+    "fill": ["Tolerance %.0f%%", "Contiguous", "All layers"],
+    "gradient": ["Linear", "Radial", "Angle", "Reflected", "Diamond", "Opacity %.0f%%", "Reverse", "##v2dgext", "Dither##v2dgdither"],
+    "brush": _BRUSH + ["Normal", "Behind", "Multiply", "Screen", "Smudge"], "eraser": _BRUSH,
+    "dodge": _RETOUCH + ["Shadows", "Midtones", "Highlights", "Protect hue##v2dphue"],
+    "burn": _RETOUCH + ["Shadows", "Midtones", "Highlights", "Protect hue##v2dphue"],
+    "clone": _RETOUCH + _SOURCE + ["##v2dsblend"], "heal": _RETOUCH + _SOURCE,
+    "blur": _RETOUCH, "sharpen": _RETOUCH + ["##v2dsharpmode"],
+    "sponge": _RETOUCH + ["Saturate", "Desaturate", "Vibrance"], "median": _RETOUCH, "undobrush": _RETOUCH + ["Protect alpha##v2dupa", "##v2dublend"],
+    "colourreplace": _RETOUCH + ["Tolerance %.0f%%"], "bgerase": _RETOUCH + ["Tolerance %.0f%%"],
+    "inpaint": _RETOUCH, "redeye": [], "flooderase": ["Tolerance %.0f%%", "Contiguous"],
+    "mixer": ["Size %.0f px", "Hardness %.0f%%", "Opacity %.0f%%", "Flow %.0f%%", "Wet %.0f%%", "Refill %.0f%%",
+              "Auto clean##v2dxclean", "Symmetry", "Pen pressure", "Lock alpha"],
+    "selbrush": ["Size %.0f px", "Hardness %.0f%%", "Add##v2dsbadd", "Subtract##v2dsbsub", "Soft edges##v2dsbsoft"],
+    "objsel": _SELOP + ["All layers", "Soft edges"], "blemish": ["Size %.0f px"], "patch": ["Selection is source##v2dpsrc", "Transparent##v2dpclear"],
+    "meshwarp": ["Nearest"], "perspective": [], "stylepick": ["Stroke##v2dsp0", "Fill##v2dsp1", "Opacity##v2dsp2", "Effects##v2dsp3", "Character##v2dsp4",
+                  "Paragraph##v2dsp5", "Object##v2dsp6"], "measure": ["Clear##v2dmclear"],
+    "pen": ["Fill", "Stroke", "Stroke options", "Dash", "Gap %.0f"],
+    "node": ["Fill", "Stroke", "Stroke options"],
+    "shape": ["Rectangle", "Rounded", "Ellipse", "Polygon", "Star", "Line", "Fill", "Stroke", "Radius %.0f", "Inner %.2f",
+              "Stroke options", "Same for all##v2dvcrall", "Absolute##v2dvrabs"],
+    "text": ["##v2dfont", "Bold", "Italic", "Underline", "All caps", "Leading %.2f", "Tracking %.0f", "%.0f px"],
+}
+
+# Affinity setting -> the 2D View label that does it (None: a button / popup, not a setting to match).
+SAME = {
+    "Width": "Size", "Force pressure": "Pen pressure", "Force pressure to control size": "Pen pressure",
+    "Stabilizer": "Stabiliser", "Mirror": "Symmetry", "Lock": "Symmetry", "Protect Alpha": "Lock alpha",
+    "Blend Mode": "Mode", "Blend mode": "Mode", "Tonal Range": "Shadows", "Mode": "New selection",
+    "Source": "All layers", "Auto-select": "Auto-select", "Align Horizontal": "Align left edges",
+    "Align Vertical": "Align left edges", "Type": "Linear", "Feather": "Feather", "Tolerance": "Tolerance",
+    "Unconstrained": "Free", "Original Ratio": "Original", "Overlay": "Thirds", "Radius": "3x3 average",
+    "Fill": "Fill", "Stroke": "Stroke", "Stroke properties": "Stroke options", "Corner": "Radius",
+    "Freehand": "Freehand", "Polygonal": "Polygon", "Width (marquee)": "Fixed size", "Height": "Fixed size",
+    "Strength": "Strength", "Aligned": "Aligned", "Opacity": "Opacity", "Flow": "Flow", "Hardness": "Hardness", "Font Family": "##v2dfont", "Bold": "Bold",
+    "Contiguous": "Contiguous", "Paragraph Leading": "Leading", "Font Size": "%.0f px", "Mode (sharpen)": None,
+    "Wet Edges": "Wet edges", "Protect Hue": "Protect hue", "Rotation": "Rotation",
+    "Scale": "Scale", "Flip": "Flip X", "Antialias": "Antialias", "Antialiased": "Antialias", "From Center": "From centre",
+    "Saturate": "Saturate", "Desaturate": "Desaturate", "Vibrance": "Vibrance", "Auto Load Brush": "Refill",
+}
+# Per-tool overrides of SAME, where one Affinity word means a different control in that tool.
+TOOL_SAME = {("objectSelection", "Soft Edges"): "Soft edges", ("meshWarp", "Resampling"): "Nearest",
+             ("sharpenBrush", "Mode"): "##v2dsharpmode", ("undoBrush", "Protect Alpha"): "Protect alpha", ("cloneBrush", "Blend mode"): "##v2dsblend",
+             ("undoBrush", "Blend Mode"): "##v2dublend", ("gradient", "Extend"): "##v2dgext", ("gradient", "Quality"): "Dither",
+             ("paintMixerBrush", "Auto Clean Brush"): "Auto clean", ("selectionBrush", "Mode"): "Subtract",
+             ("selectionBrush", "Soft edges"): "Soft edges",
+             ("stylePicker", "Layer Opacity"): "Opacity", ("stylePicker", "Layer Effects"): "Effects",
+             ("stylePicker", "Character Settings"): "Character", ("stylePicker", "Paragraph Settings"): "Paragraph",
+             ("stylePicker", "Object Settings"): "Object", ("rectangle", "Single radius"): "Same for all",
+             ("rectangle", "Absolute sizes"): "Absolute", ("rectangle", "Stroke properties"): "Stroke options",
+             ("node", "Stroke properties"): "Stroke options"}
+# Affinity adjustment -> the 2D View adjustment that covers it, where the names differ.
+ADJ_SAME = {"Brightness / Contrast": "Brightness", "HSL": "Hue", "LUT": "Colour Lookup", "Lens Filter": "Photo Filter"}
+# Context-bar entries that are actions, panels or document-level options rather than tool settings.
+NOT_SETTING = {"More", "Apply", "Cancel", "Reset", "Settings", "Group", "Ungroup", "Lock Children", "Edit Image",
+               "Replace Image", "Convert", "Hide Mesh", "Tools>Tool Handle Size", "Keep selected", "Action",
+               "Transform", "Snap", "View", "Default", "Layers", "Groups", "Drag", "Unload", "Clean Brush", "Load Brush"}
+
+
+def fetch(slug):
+    os.makedirs(HELP, exist_ok=True)
+    p = os.path.join(HELP, "tools_%s.html" % slug)
+    if not os.path.exists(p):
+        req = urllib.request.Request(HELP_URL % slug, headers={"User-Agent": "re-survey"})
+        with urllib.request.urlopen(req, timeout=20) as r, open(p, "wb") as f:
+            f.write(r.read())
+    return open(p, encoding="utf-8", errors="replace").read()
+
+
+def top_settings(page):
+    """First span of each top-level <li> in the list after 'context toolbar' (nested lists hold option values)."""
+    i = page.find("context toolbar")
+    if i < 0:
+        return []
+    j = page.find("<ul", i)
+    if j < 0:
+        return []
+    out, depth = [], 0
+    for m in re.finditer(r"<(/?)(ul|li)\b[^>]*>", page[j:]):
+        close, tag = m.group(1) == "/", m.group(2)
+        if tag == "ul":
+            depth += -1 if close else 1
+            if depth == 0:
+                break
+        elif not close and depth == 1:
+            s = re.match(r'\s*<span class="ui">([^<]+)</span>', page[j + m.end():])
+            if s:
+                out.append(html.unescape(s.group(1)).strip().rstrip(":"))
+    return list(dict.fromkeys(out))
+
+
+def bare(label):
+    """A code literal as the user reads it: no ImGui id, no printf format ("Flow %.0f%%" -> "Flow")."""
+    return label.split("##")[0].split("%")[0].strip() or label
+
+
+def code_labels():
+    src = open(PANEL, encoding="utf-8").read()
+    lits = set(re.findall(r'"((?:[^"\\]|\\.)*)"', src))
+    lits |= {l.split("##")[0] for l in lits}
+    return lits
+
+
+def brush_tools():
+    """The Brush Editor's 'Associated Tool' choices: Affinity's pixel brush tools, from bundle strings."""
+    if not os.path.exists(BRUSH_STRINGS):
+        return [], []
+    raw = open(BRUSH_STRINGS, "rb").read()
+    txt = raw.decode("utf-16") if raw[:2] in (b"\xff\xfe", b"\xfe\xff") else raw.decode("utf-8", "replace")
+    vals = sorted(set(re.findall(r'=\s*"([^"]+)"', txt)))
+    tools = [v for v in vals if v.endswith("brush tool") or v == "Pixel tool"]
+    dyn = [v.rstrip(":") for v in vals if v.endswith("Jitter:") or v in ("Accumulation", "Wet edges:", "Scatter X:",
+                                                                          "Base Texture:", "Brush Nozzles:")]
+    return tools, dyn
+
+
+def menu_adjustments():
+    """Adjustment-layer names from the running app's menu bar (accessibility tree, read-only)."""
+    try:
+        import ui_map
+        pid = subprocess.run(["pgrep", "-f", "Affinity.app/Contents/MacOS/Affinity"], capture_output=True, text=True).stdout.split()
+        if not pid:
+            return []
+        tree = ui_map.dump(int(pid[0]))
+    except Exception:
+        return []
+    found = []
+
+    def walk(n, path):
+        t = n.get("title")
+        p = path + ([t] if t else [])
+        if n.get("role") == "AXMenuItem" and t and len(p) == 3 and p[:2] == ["Pixel", "New Adjustment Layer"]:
+            found.append(t.rstrip("…").strip())
+        for k in n.get("kids", []):
+            walk(k, p)
+    walk(tree.get("menubar") or {}, [])
+    return found
+
+
+def inf_adjustments():
+    src = open(SCENE, encoding="utf-8").read()
+    m = re.search(r"kNames\[kAdjCount\]\s*=\s*\{([^}]*)\}", src)
+    return re.findall(r'"([^"]+)"', m.group(1)) if m else []
+
+
+def build():
+    lits = code_labels()
+    stale = sorted({l for v in INF.values() for l in v if l not in lits})
+    rows, missing_all = [], {}
+    for slug, name, inf in TOOLS:
+        aff = [s for s in top_settings(fetch(slug)) if s not in NOT_SETTING]
+        have = {bare(l) for l in INF.get(inf, [])} if inf else set()
+        if slug == "marquee":
+            aff = [("Width (marquee)" if s == "Width" else s) for s in aff]
+        matched, missing = [], []
+        for s in aff:
+            t = TOOL_SAME.get((slug, s), SAME.get(s, s))
+            (matched if inf and t in have else missing).append(s)
+        if inf:
+            missing_all[name] = missing
+        rows.append({"tool": name, "infinite": inf, "affinity": aff, "matched": matched, "missing": missing})
+    btools, dyn = brush_tools()
+    adj_a, adj_i = menu_adjustments(), inf_adjustments()
+    norm = lambda s: s.lower().replace("colour", "color").replace(" / ", "/").replace(" ", "")
+    adj_missing = [a for a in adj_a if norm(ADJ_SAME.get(a, a)) not in {norm(x) for x in adj_i}]
+    return {"rows": rows, "stale": stale, "brushTools": btools, "brushDynamics": dyn,
+            "adjAffinity": adj_a, "adjInfinite": adj_i, "adjMissing": adj_missing}
+
+
+def report(d):
+    n_tool = len(d["rows"])
+    n_have = sum(1 for r in d["rows"] if r["infinite"])
+    n_set = sum(len(r["affinity"]) for r in d["rows"] if r["infinite"])
+    n_match = sum(len(r["matched"]) for r in d["rows"] if r["infinite"])
+    L = ["Tools: %d of %d Affinity photo tools have a 2D View tool; their settings: %d of %d matched." % (n_have, n_tool, n_match, n_set), "",
+         "| Affinity tool | 2D View tool | Settings matched | Settings missing |", "|---|---|---|---|"]
+    for r in d["rows"]:
+        L.append("| %s | %s | %s | %s |" % (r["tool"], r["infinite"] or "**none**",
+                                             "%d/%d" % (len(r["matched"]), len(r["affinity"])) if r["infinite"] else "-",
+                                             ", ".join(r["missing"]) if r["infinite"] else "(whole tool)"))
+    L += ["", "Brush tools (Brush Editor, bundle strings): " + ", ".join(d["brushTools"]),
+          "Brush dynamics: " + ", ".join(d["brushDynamics"]),
+          "Adjustments (menu): %d in Affinity, %d in the 2D View; missing: %s" % (
+              len(d["adjAffinity"]), len(d["adjInfinite"]), ", ".join(d["adjMissing"]) or "none")]
+    if d["stale"]:
+        L += ["", "STALE INF labels (not in View2DPanel.cpp): " + ", ".join(d["stale"])]
+    return "\n".join(L)
+
+
+# ---- Layer settings: per layer, per layer kind, per group -------------------------------------------------------
+# Affinity side: the SDK's own setters (doc copy in ~/re-output/affinity/sdk, read as text, never run), plus short
+# hand lists for what the Layers panel shows but the SDK spreads over getters. 2D View side: LAYER_SAME maps each
+# Affinity setting to the Scene2DNode.h field (or View2DPanel.cpp label) that does the same job, None = missing.
+# Every mapped name must exist in one of those two files, or the run reports it as stale.
+SDK = os.path.join(OUT, "sdk")
+HEADER = os.path.join(REPO, "src", "nodes", "Scene2DNode.h")
+LAYER_HAND = {
+    "Layer": ["blendMode", "globalOpacity", "fillOpacity", "isVisible", "masterSourceLayerRanges",
+              "masterUnderlyingCompositionRanges", "gamma", "antialiasingMode", "lock", "userDescription", "tagColour",
+              "mask", "clip", "layerEffects", "position", "rotation", "scale", "shear", "isVisibleInExport"],
+    "Group": ["blendMode passThrough", "globalOpacity", "layerEffects", "mask", "blend ranges", "lock", "expanded",
+              "isolate children 3D"],
+    "Pixel / image": ["protectAlpha", "placed image fit", "resampling", "crop to frame"],
+    "Fill layer": ["solid", "linear", "elliptical", "radial", "conical", "bitmap", "gradient stops", "noise"],
+    "Vector fill": ["solid", "linear", "elliptical", "radial", "conical", "bitmap", "mesh", "gradient stops", "noise"],
+    "Vector shape": ["corner radius", "corner type per corner", "sides", "star inner radius", "boolean op", "curve nodes"],
+}
+# (area, sdk file, class or None for the whole file, "set" or "get")
+LAYER_SDK = [
+    ("Effects: common", "layereffects.js", "LayerEffect", "get"),
+    ("Effects: Gaussian blur", "layereffects.js", "GaussianBlurLayerEffect", "set"),
+    ("Effects: outer shadow", "layereffects.js", "OuterShadowLayerEffect", "set"),
+    ("Effects: inner shadow", "layereffects.js", "InnerShadowLayerEffect", "set"),
+    ("Effects: outer glow", "layereffects.js", "OuterGlowLayerEffect", "set"),
+    ("Effects: inner glow", "layereffects.js", "InnerGlowLayerEffect", "set"),
+    ("Effects: outline", "layereffects.js", "OutlineLayerEffect", "set"),
+    ("Effects: bevel/emboss", "layereffects.js", "BevelEmbossLayerEffect", "set"),
+    ("Effects: 3D", "layereffects.js", "PhongBevelLayerEffect", "set"),
+    ("Effects: colour overlay", "layereffects.js", "ColourOverlayLayerEffect", "set"),
+    ("Effects: gradient overlay", "layereffects.js", "GradientOverlayLayerEffect", "set"),
+    ("Vector stroke", "linestyle.js", "LineStyle", "set"),
+    ("Vector stroke", "linestyle.js", "LineStyleDescriptor", "get"),
+    ("Text: character", "glyphatts.js", None, "set"),
+    ("Text: paragraph", "paragraphatts.js", None, "set"),
+]
+# SDK names that are not a layer setting a person edits (type tags, publishing-only, internal handles).
+LAYER_SKIP = {"isLayerEffect", "type", "lineStyle", "styleName", "tocRoleType", "pdfExportTagType", "isBookEndnotes",
+              "isIndex", "spellingLanguageId", "hyphenationLanguageId", "openTypeScriptTag", "isResolutionIndependent",
+              "isSolidLine", "brushFill", "autoKernMinHeight", "leadingOverrideType", "useModernLeading", "leadingType",
+              "relativeLeading", "useSpaceBeforeMode", "lineBreakModeType", "startAtHardBreakType"}
+LAYER_SAME = {
+    ("Layer", "blendMode"): "blend", ("Layer", "globalOpacity"): "opacity", ("Layer", "fillOpacity"): "fill",
+    ("Layer", "isVisible"): "visible", ("Layer", "masterSourceLayerRanges"): "bifT",
+    ("Layer", "masterUnderlyingCompositionRanges"): "bifU", ("Layer", "lock"): "kLockAll",
+    ("Layer", "userDescription"): "name", ("Layer", "tagColour"): "label", ("Layer", "mask"): "maskOn",
+    ("Layer", "clip"): "clip", ("Layer", "layerEffects"): "fx", ("Layer", "position"): "x",
+    ("Layer", "rotation"): "angle", ("Layer", "scale"): "sx",
+    ("Group", "blendMode passThrough"): "kPassThrough", ("Group", "globalOpacity"): "opacity",
+    ("Group", "layerEffects"): "fx", ("Group", "mask"): "maskOn", ("Group", "blend ranges"): "bifT",
+    ("Group", "lock"): "kLockAll", ("Group", "expanded"): "open", ("Group", "isolate children 3D"): "collapse",
+    ("Pixel / image", "protectAlpha"): "kLockAlpha", ("Pixel / image", "placed image fit"): "fit",
+    ("Pixel / image", "resampling"): "nearest", ("Pixel / image", "crop to frame"): "cropOn",
+    ("Fill layer", "solid"): "fillType", ("Fill layer", "linear"): "fillAngle", ("Fill layer", "radial"): "Radial",
+    ("Fill layer", "elliptical"): "Radial", ("Fill layer", "gradient stops"): "stops",
+    ("Vector fill", "solid"): "fillC", ("Vector fill", "linear"): "fillAngle", ("Vector fill", "radial"): "fillType",
+    ("Vector fill", "elliptical"): "fillType", ("Vector fill", "gradient stops"): "fillStops",
+    ("Vector shape", "corner radius"): "radius", ("Vector shape", "sides"): "sides",
+    ("Vector shape", "star inner radius"): "inner", ("Vector shape", "boolean op"): "kAdd",
+    ("Vector shape", "curve nodes"): "pts",
+    ("Effects: common", "enabled"): "on", ("Effects: common", "opacity"): "Opacity",
+    ("Effects: Gaussian blur", "radius"): "Add effect",
+    ("Effects: outer shadow", "radius"): "size", ("Effects: outer shadow", "colour"): "Colour",
+    ("Effects: outer shadow", "offset"): "dist", ("Effects: outer shadow", "angle"): "Angle",
+    ("Effects: outer shadow", "intensity"): "spread",
+    ("Effects: inner shadow", "radius"): "size", ("Effects: inner shadow", "colour"): "Colour",
+    ("Effects: inner shadow", "offset"): "dist", ("Effects: inner shadow", "angle"): "Angle",
+    ("Effects: inner shadow", "intensity"): "spread",
+    ("Effects: outer glow", "radius"): "size", ("Effects: outer glow", "colour"): "Colour",
+    ("Effects: outer glow", "intensity"): "spread",
+    ("Effects: inner glow", "radius"): "size", ("Effects: inner glow", "colour"): "Colour",
+    ("Effects: inner glow", "intensity"): "spread",
+    ("Effects: outline", "radius"): "Width", ("Effects: outline", "colour"): "Colour",
+    ("Effects: outline", "alignment"): "Position",
+    ("Effects: bevel/emboss", "radius"): "size", ("Effects: bevel/emboss", "depth"): "Depth",
+    ("Effects: bevel/emboss", "bevelProfile"): "contour", ("Effects: bevel/emboss", "azimuth"): "Angle",
+    ("Effects: bevel/emboss", "highlightColour"): "Highlight", ("Effects: bevel/emboss", "shadowColour"): "c2",
+    ("Effects: 3D", "depth"): "reliefDepth", ("Effects: 3D", "azimuth"): "reliefLight",
+    ("Effects: 3D", "elevation"): "reliefElev", ("Effects: 3D", "shininess"): "reliefMat",
+    ("Effects: colour overlay", "colour"): "Colour",
+    ("Effects: gradient overlay", "fillDescriptor"): "Location",
+    ("Vector stroke", "cap"): "cap", ("Vector stroke", "join"): "join", ("Vector stroke", "weight"): "width",
+    ("Vector stroke", "dashPattern"): "dash", ("Vector stroke", "strokeAlignment"): "align",
+    ("Text: character", "font"): "font", ("Text: character", "height"): "fontSize",
+    ("Text: character", "absoluteLeading"): "leading", ("Text: character", "characterSpacing"): "tracking",
+    ("Text: character", "capsType"): "caps", ("Text: character", "underlineType"): "underline",
+    ("Text: character", "penFill"): "textC", ("Text: character", "shearX"): "italic",
+    ("Text: paragraph", "alignXType"): "Align", ("Text: paragraph", "absoluteLeading"): "leading",
+    # Block A-C (2026-11-16): vector fills and strokes, character and paragraph basics, layer settings.
+    ("Layer", "gamma"): "blendGamma", ("Layer", "antialiasingMode"): "aaMode", ("Layer", "shear"): "shear",
+    ("Layer", "isVisibleInExport"): "noExport",
+    ("Fill layer", "conical"): "Conical", ("Fill layer", "bitmap"): "fillImage", ("Fill layer", "noise"): "fillNoise",
+    ("Vector fill", "conical"): "Conical", ("Vector fill", "bitmap"): "fillImage", ("Vector fill", "mesh"): "meshC",
+    ("Vector fill", "noise"): "noise", ("Vector shape", "corner type per corner"): "cornerType",
+    ("Vector stroke", "miterLimit"): "miter", ("Vector stroke", "dashPhase"): "dashPhase",
+    ("Vector stroke", "hasBalancedDashes"): "balanced", ("Vector stroke", "frontArrowHead"): "arrowS",
+    ("Vector stroke", "backArrowHead"): "arrowE", ("Vector stroke", "pressure"): "pressMin",
+    ("Vector stroke", "isBehind"): "behind", ("Vector stroke", "isScale"): "scaleStroke",
+    ("Text: character", "strikeoutType"): "strike", ("Text: character", "superSubType"): "script",
+    ("Text: character", "baselineAdvance"): "baseShift", ("Text: character", "offsetY"): "baseShift",
+    ("Text: character", "manualKerning"): "kerning", ("Text: character", "scaleX"): "textSX",
+    ("Text: character", "scaleY"): "textSY", ("Text: character", "highlightFill"): "highlightC",
+    ("Text: character", "transparency"): "textC",
+    ("Text: character", "underlineFill"): "ulC", ("Text: character", "strikeoutFill"): "stC",
+    ("Text: character", "isNoBreak"): "noBreak", ("Text: character", "offsetX"): "offsetX",
+    ("Text: character", "opticalAlignmentType"): "optical", ("Text: character", "openTypeLanguageTag"): "lang",
+    ("Text: character", "lineStyleDescriptor"): "outlineW",
+    ("Text: paragraph", "leftIndent"): "indentL", ("Text: paragraph", "rightIndent"): "indentR",
+    ("Text: paragraph", "firstLineIndent"): "indentFirst", ("Text: paragraph", "spaceBefore"): "spaceBefore",
+    ("Text: paragraph", "spaceAfter"): "spaceAfter",
+}
+# 2D View layer settings Affinity has no direct twin for (kept so the report shows both directions).
+LAYER_EXTRA = ["satin effect", "pattern overlay effect", "per-effect contour curve", "relief materials",
+               "lock pixels / lock position as separate locks", "node layers (any node as a layer)",
+               "layer as node output", "effect on the picture below", "3D layer depth and X/Y rotation",
+               "mask channel (luminance / alpha) and density", "vector mask", "layer modulation slots"]
+
+
+def sdk_members(fname, cls, kind):
+    try:
+        src = open(os.path.join(SDK, fname)).read()
+    except OSError:
+        return []
+    if cls:
+        m = re.search(r"^class %s\b.*?(?=^class |\Z)" % cls, src, re.S | re.M)
+        src = m.group(0) if m else ""
+    out = []
+    for n in re.findall(r"^ +%s ([a-zA-Z]+)\(" % kind, src, re.M):
+        if n not in out and n not in LAYER_SKIP and not n.startswith("is" + (cls or "x")):
+            out.append(n)
+    return out
+
+
+def layer_areas():
+    areas = {k: list(v) for k, v in LAYER_HAND.items()}
+    for area, f, cls, kind in LAYER_SDK:
+        for n in sdk_members(f, cls, kind):
+            if n not in areas.setdefault(area, []):
+                areas[area].append(n)
+    return areas
+
+
+def build_layers():
+    words = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", open(HEADER).read())) | code_labels()
+    rows, stale = [], []
+    for area, names in layer_areas().items():
+        matched, missing = [], []
+        for n in names:
+            t = LAYER_SAME.get((area, n))
+            if t and t not in words:
+                stale.append("%s/%s -> %s" % (area, n, t))
+            (matched if t else missing).append(n)
+        rows.append({"area": area, "affinity": names, "matched": matched, "missing": missing})
+    # Wiring: a mapped setting whose model field has a UI / save / engine gap (field_wiring_audit.py) is not parity.
+    unwired = []
+    try:
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "parity"))
+        import field_wiring_audit
+        wiring = {r[0].split(".", 1)[1]: r for r in field_wiring_audit.audit()[0]}
+        for (area, n), f in sorted(LAYER_SAME.items()):
+            r = wiring.get(f)
+            if r and r[4] != "ok" and not r[5]:
+                unwired.append("%s/%s -> %s (%s)" % (area, n, f, r[4]))
+    except Exception as e:   # the audit is a cross-check; its failure is reported, not fatal
+        unwired.append("wiring audit failed: %s" % e)
+    return {"rows": rows, "stale": stale, "extra": LAYER_EXTRA, "unwired": unwired}
+
+
+def report_layers(d):
+    n = sum(len(r["affinity"]) for r in d["rows"])
+    m = sum(len(r["matched"]) for r in d["rows"])
+    L = ["", "Layer settings (per layer, per kind, per group): %d of %d matched (%.0f%%)." % (m, n, 100.0 * m / max(n, 1)), "",
+         "| Area | Matched | Missing |", "|---|---|---|"]
+    for r in d["rows"]:
+        L.append("| %s | %d/%d | %s |" % (r["area"], len(r["matched"]), len(r["affinity"]), ", ".join(r["missing"]) or "-"))
+    L += ["", "2D View only: " + ", ".join(d["extra"])]
+    if d.get("unwired"):
+        L += ["", "UNWIRED layer mappings (field_wiring_audit.py gap): " + ", ".join(d["unwired"])]
+    if d["stale"]:
+        L += ["", "STALE layer mappings (not in Scene2DNode.h or View2DPanel.cpp): " + ", ".join(d["stale"])]
+    return "\n".join(L)
+
+
+def self_test():
+    page = ('<p>from the context toolbar:</p><ul><li><span class="ui">Width</span>&mdash;x<ul><li><span class="ui">Inner'
+            '</span></li></ul></li><li><span class="ui">Mode:</span> y</li></ul><ul><li><span class="ui">Later</span></li></ul>')
+    ok = top_settings(page) == ["Width", "Mode"]
+    ok &= "Contiguous" in code_labels()
+    print("self-test", "ok" if ok else "FAILED")
+    return 0 if ok else 1
+
+
+def main():
+    if "--self-test" in sys.argv:
+        return self_test()
+    d = build()
+    d["layers"] = build_layers()
+    os.makedirs(OUT, exist_ok=True)
+    md = report(d) + "\n" + report_layers(d["layers"])
+    with open(os.path.join(OUT, "inventory.md"), "w") as f:
+        f.write(md + "\n")
+    with open(os.path.join(OUT, "inventory.json"), "w") as f:
+        json.dump(d, f, indent=1)
+    print(md)
+    return 1 if d["stale"] or d["layers"]["stale"] or d["layers"]["unwired"] else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -9,8 +9,10 @@ real GUI sizes vary; the table is deliberately generous). Comment nodes are not 
 `# near <id>` on the line before a `node ... Comment` block and it is placed just above that node;
 `# band <Picture|Sound|Modulation>` places it as the band's header. Any node that already has a `pos`
 is left where it is only with --keep. Wire lines and everything else pass through untouched.
---wide: for big patches. Each node moves right to sit just before the node it feeds (sources no longer pile up in
-column 0), a column is ordered by where its targets sit, and a column taller than WIDE_CAP wraps into sub-columns."""
+Landscape by default (owner rule: patches read left to right, never as one tall column). Each node moves right to sit
+just before the node it feeds (sources no longer pile up in column 0), a column is ordered by where its targets sit,
+and a column taller than the band's cap wraps into sub-columns. The cap is chosen so each band comes out about
+16:9 wide. --tall: the old plain depth columns, no wrapping."""
 import re, sys
 
 GAP_X, GAP_Y, BAND_GAP, NOTE_GAP = 160, 110, 260, 36
@@ -24,10 +26,10 @@ SIZES = {  # (w, h) canvas units, generous
     "FieldPixel": (340, 380), "Output": (340, 340), "Audio Out": (300, 220),
     "Render 3D": (360, 420), "Material": (320, 520), "Camera": (300, 320), "Light": (300, 320),
 }
-CAT_DEFAULT = {"Source": (300, 300), "Effects": (280, 240), "Compositing": (280, 240), "3D": (300, 320),
+CAT_DEFAULT = {"Source": (300, 300), "Effects": (280, 240), "Compositing": (280, 240), "3D": (300, 320), "Shader": (280, 260),
                "Utility": (320, 280), "Modulators": (250, 320), "Notes": (330, 300), "Synths": (700, 800),
                "AudioEffects": (460, 480), "Macros": (260, 260), "Prediction": (360, 360)}
-BAND_OF = {"Source": "Picture", "Effects": "Picture", "Compositing": "Picture", "3D": "Picture",
+BAND_OF = {"Source": "Picture", "Effects": "Picture", "Compositing": "Picture", "3D": "Picture", "Shader": "Picture",
            "Notes": "Sound", "Synths": "Sound", "AudioEffects": "Sound", "Modulators": "Modulation",
            "Macros": "Modulation", "Prediction": "Modulation"}
 ORDER = ["Picture", "Sound", "Modulation"]
@@ -36,7 +38,7 @@ WIRE = ("cable", "geo", "aud", "note")
 
 def main():
     keep = "--keep" in sys.argv
-    wide = "--wide" in sys.argv
+    wide = "--tall" not in sys.argv   # --wide kept as a no-op for old scripts
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     src = args[0]
     dst = args[1] if len(args) > 1 else src
@@ -127,12 +129,15 @@ def main():
                 key = lambda d: (sum(rank.get(t, 1.0) for t in succ[d["idx"]]) / len(succ[d["idx"]]) if succ[d["idx"]] else 2.0)
                 cols[k].sort(key=key)
                 for j, d in enumerate(cols[k]): rank[d["idx"]] = j / max(1, len(cols[k]) - 1)
+            # landscape: band height ~ sqrt(area * 9/16), never shorter than its tallest node
+            area = sum((d["w"] + GAP_X) * (d["h"] + GAP_Y) for d in mem)
+            cap = max(max(d["h"] + GAP_Y for d in mem), min(WIDE_CAP, (area * 9.0 / 16.0) ** 0.5))
             wrapped, n = {}, 0
             for k in sorted(cols):
                 cur, h = [], 0.0
                 for d in cols[k]:
                     dh = d["h"] + GAP_Y + ((note_of(d)["h"] + NOTE_GAP) if note_of(d) else 0)
-                    if cur and h + dh > WIDE_CAP:
+                    if cur and h + dh > cap:
                         wrapped[n] = cur; n += 1; cur, h = [], 0.0
                     cur.append(d); h += dh
                 wrapped[n] = cur; n += 1

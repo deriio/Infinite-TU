@@ -10,6 +10,24 @@ namespace app
          GraphNode* gn = FindNodeByUid(uid);
          return gn != nullptr ? gn->node.get() : nullptr;
       };
+      Scene2DNode::ResolveUid = Scene3DNode::ResolveUid;
+      Scene2DNode::NodeViewOf = [](uint64_t uid, float& az, float& el) -> bool
+      {
+         GraphNode* gn = FindNodeByUid(uid);
+         if (gn == nullptr)
+            return false;
+         auto it = gNodeCameras.find(gn->index);
+         if (it == gNodeCameras.end())
+            return false;
+         az = it->second.azimuth;
+         el = it->second.elevation;
+         return true;
+      };
+      Scene2DNode::ImageInputOf = [](uint64_t uid) -> ImageCable*
+      {
+         GraphNode* gn = FindNodeByUid(uid);
+         return gn != nullptr && dynamic_cast<Scene2DNode*>(gn->node.get()) == nullptr ? CableFor(*gn, 0) : nullptr;
+      };
 #ifndef NDEBUG
       if (getenv("INFINITE_PREDBINDTEST") != nullptr)
          REGISTER_NODE(StubPredictorNode, Stub Predictor, "Modulators");
@@ -57,6 +75,27 @@ namespace app
       REGISTER_NODE(AudioDisplacementNode, Audio Displacement, "3D");
       REGISTER_NODE(AudioRibbonNode, Audio Ribbon, "3D");
       REGISTER_NODE(MappingNode, Mapping, "3D");
+      REGISTER_NODE(ShadeCoordNode, Shade Coord, "Shader");
+      REGISTER_NODE(ShadeMappingNode, Shade Mapping, "Shader");
+      REGISTER_NODE(ShadeCheckerNode, Shade Checker, "Shader");
+      REGISTER_NODE(ShadeNoiseNode, Shade Noise, "Shader");
+      REGISTER_NODE(ShadeVoronoiNode, Shade Voronoi, "Shader");
+      REGISTER_NODE(ShadeGradientNode, Shade Gradient, "Shader");
+      REGISTER_NODE(ShadeBrickNode, Shade Brick, "Shader");
+      REGISTER_NODE(ShadeImageNode, Shade Image, "Shader");
+      REGISTER_NODE(ShadeMathNode, Shade Math, "Shader");
+      REGISTER_NODE(ShadeVectorMathNode, Shade Vector Math, "Shader");
+      REGISTER_NODE(ShadeMixNode, Shade Mix, "Shader");
+      REGISTER_NODE(ShadeRampNode, Shade Ramp, "Shader");
+      REGISTER_NODE(ShadeMapRangeNode, Shade Map Range, "Shader");
+      REGISTER_NODE(ShadeSeparateNode, Shade Separate, "Shader");
+      REGISTER_NODE(ShadeCombineNode, Shade Combine, "Shader");
+      REGISTER_NODE(ShadeCurvesNode, Shade Curves, "Shader");
+      REGISTER_NODE(ShadeBumpNode, Shade Bump, "Shader");
+      REGISTER_NODE(ShadeNormalMapNode, Shade Normal Map, "Shader");
+      REGISTER_NODE(ShadeFresnelNode, Shade Fresnel, "Shader");
+      REGISTER_NODE(ShadeLayerWeightNode, Shade Layer Weight, "Shader");
+      REGISTER_NODE(ShadeGeometryNode, Shade Geometry, "Shader");
       REGISTER_NODE(ParticleSystemNode, Particle System, "3D");
       REGISTER_NODE(ClothNode, Cloth, "3D");
       REGISTER_NODE(RigidBodyNode, Rigid Bodies, "3D");
@@ -136,6 +175,7 @@ namespace app
       REGISTER_NODE(GroupNode, Group, "Compositing");
       REGISTER_NODE(NullNode, Null, "Compositing");
       REGISTER_NODE(ViewportNode, Viewport, "Compositing");
+      REGISTER_NODE(Scene2DNode, Scene 2D, "Compositing");
       // Color, Mask and Feedback all merged into Compositing - each was a
       // small category whose nodes are, in practice, ways of combining or
       // managing image flow, same as Compositing's original members.
@@ -162,9 +202,12 @@ namespace app
       REGISTER_NODE(ProjectionNode, Projection, "Utility");
       REGISTER_NODE(LFONode, LFO, "Modulators");
       REGISTER_NODE(RandomNode, Random, "Modulators");
+      REGISTER_NODE(FieldModulatorNode, Field Modulator, "Modulators");
       REGISTER_NODE(PatternNode, Pattern, "Modulators");
       REGISTER_NODE(MathNode, Math, "Modulators");
       REGISTER_NODE(CompareNode, Compare, "Modulators");
+      REGISTER_NODE(LogicGateNode, Logic Gate, "Modulators");
+      REGISTER_NODE(BrainSourceNode, Brain Source, "Modulators");
       REGISTER_NODE(RangeToRangeNode, Range to Range, "Modulators");
       REGISTER_NODE(SmoothNode, Smoothing, "Modulators");
       REGISTER_NODE(InvertNode, Invert, "Modulators");
@@ -176,6 +219,7 @@ namespace app
       REGISTER_NODE(DriftNode, Drift, "Prediction");
       REGISTER_NODE(MovesNode, Moves, "Prediction");
       REGISTER_NODE(PredictiveModulatorNode, Predictive Modulator, "Prediction");
+      REGISTER_NODE(BrainSculptNode, Brain Sculpt, "Prediction");
       REGISTER_NODE(PredictiveColoringNode, Predictive Coloring, "Prediction");
       REGISTER_NODE(CVToPitchNode, CV to Pitch, "Modulators");
       REGISTER_NODE(MacroKnobNode, Macro Knob, "Macros");
@@ -230,6 +274,7 @@ namespace app
       REGISTER_NODE(FieldSynthNode, Field Synth, "Synths");
       REGISTER_NODE(FieldNotesNode, Field Notes, "Notes");
       REGISTER_NODE(FieldSampleNode, Field Effect, "AudioEffects");
+      REGISTER_NODE(SpectralFieldNode, Spectral Field, "AudioEffects");
       // Field Graph: registered so NodeFactory::MakeNode still resolves it
       // for loading a patch saved before this pass, but excluded from every
       // spawn-menu/search enumeration via IsUserSpawnable below - it can no
@@ -494,7 +539,9 @@ namespace app
          if (la.id != lb.id || la.type != lb.type || la.blendMode != lb.blendMode || la.opacity != lb.opacity ||
              la.gainDb != lb.gainDb || la.pan != lb.pan || la.enabled != lb.enabled || la.groupId != lb.groupId ||
              la.mute != lb.mute || la.solo != lb.solo || la.rowHeight != lb.rowHeight ||
-             la.name != lb.name || la.noteNodeUid != lb.noteNodeUid || la.scaleSnap != lb.scaleSnap || la.drumRows != lb.drumRows ||
+             la.name != lb.name || la.noteNodeUid != lb.noteNodeUid || la.scaleSnap != lb.scaleSnap || la.drumRows != lb.drumRows || la.pageOrder != lb.pageOrder ||
+             // Page colour: without it a colour picked in a gesture (the Piano Roll inspector) left no undo step.
+             la.colorR != lb.colorR || la.colorG != lb.colorG || la.colorB != lb.colorB ||
              la.clips.size() != lb.clips.size())
             return false;
          for (size_t k = 0; k < la.clips.size(); k++)

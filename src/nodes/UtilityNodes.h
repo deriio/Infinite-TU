@@ -7,6 +7,8 @@
 #include "GeometryOpNodes.h"
 #include "Mesh.h"
 
+struct ShadeOutput;
+
 // --- Comment --------------------------------------------------------------
 // A free-floating annotation. Not part of the signal graph at all - no
 // inputs, no outputs, CookIfNeeded does nothing - so it can be dropped
@@ -305,7 +307,10 @@ public:
    unsigned long long CurveStamp() override { return input ? input->CurveStamp() : 0; }
    float PointBaseSize() const override { return input ? input->PointBaseSize() : 1.0f; }
    IGeometrySource* input = nullptr;
-   IGeometrySource** GeometryInputSlot(int slot) override { return slot == 0 ? &input : nullptr; }
+   IGeometrySource** GeometryInputSlot(int slot) override
+   {
+      return slot == 0 ? &input : slot == kLayerSlot ? &layer : nullptr;
+   }
    ImageCable& TextureInput() { return mMaps[kMapAlbedo]; }
    // Slot 0 is geometry; slots 1..5 are the material channels, in MaterialMap
    // order, so the existing 2D generators can author a whole surface.
@@ -314,9 +319,23 @@ public:
    {
       static const char* kNames[] = { "geo", "albedo", "roughness", "metallic",
                                       "normal", "ao", "emission", "clearcoat", "sheen",
-                                      "opacity", "transmission" };
-      return (slot >= 0 && slot < (1 + kMapCount)) ? kNames[slot] : nullptr;
+                                      "opacity", "transmission", "field", "layer", "mask" };
+      return (slot >= 0 && slot < (4 + kMapCount)) ? kNames[slot] : nullptr;
    }
+   // OPUS_PLAN row 1.3: the last pin takes a Field Pixel in Material domain; its program runs in the Render 3D
+   // shaders after the maps are read.
+   ImageCable& FieldInput() { return mField; }
+   // Row 2.6: the Shade nodes wired into the field pin (base) and the albedo, roughness, metallic, normal, emission
+   // and opacity pins, as the outputs one composed program writes. False when there is none.
+   bool ShadeOutputs(std::vector<ShadeOutput>& outs) const;
+   static constexpr int kFieldSlot = 1 + kMapCount;
+   // Row 4.1: `layer` takes a second Material, laid over this one where `mask` is 1 (a picture's red, a Shade chain's
+   // x, 1 when unwired) times layerMix. Base, roughness, metallic, normal, emission, opacity and height blend before
+   // lighting, in one composed program; a layer may carry its own layer, 4 materials deep.
+   static constexpr int kLayerSlot = kFieldSlot + 1, kMaskSlot = kFieldSlot + 2;
+   IGeometrySource* layer = nullptr;
+   ImageCable& LayerMaskInput() { return mLayerMask; }
+   float layerMix = 1.0f;
    size_t TriangleCount() const;
 
    float normalStrength = 1.0f;
@@ -350,9 +369,11 @@ public:
    float subsurface = 0.0f;
    float subsurfaceColor[3] = { 1.0f, 0.2f, 0.1f };
    float subsurfaceRadius = 0.5f;
+   float translucency = 0.0f;
    float sheen = 0.0f;
    float sheenColor[3] = { 1.0f, 1.0f, 1.0f };
    float sheenRoughness = 0.5f;
+   float sheenDirection = 0.0f; // row 5.1: nap lean along the uv tangent, -1..1
    float iridescence = 0.0f;
    float iridescenceIor = 1.33f;
    float iridescenceThickness = 400.0f;
@@ -360,13 +381,23 @@ public:
    float anisotropyRotation = 0.0f;
    float dispersion = 0.0f;
    float alphaCutoff = 0.0f;
+   float detailScale = 0.0f;
+   float detailStrength = 1.0f;
+   // Model: 0 Principled, 1 Hair (Chiang fibre BSDF; hairColour 0 Melanin, 1 the base colour).
+   int model = 0;
+   int hairColour = 0;
+   float melanin = 0.8f, melaninRedness = 1.0f;
+   float hairTint[3] = { 1.0f, 1.0f, 1.0f };
+   float radialRoughness = 0.3f;
+   float hairShift = 2.0f;
    bool textureAlpha = false;
    // Normal slot holds a height map (grayscale), not a tangent-space normal.
    bool normalBump = false;
    // How the albedo/roughness/metallic/normal/ao/emission/clearcoat/sheen
-   // maps sample outside 0..1 UV - 0=Clamp (smear edge pixel, matches every
-   // saved patch before this param existed), 1=Repeat, 2=Mirror.
-   int wrapMode = 0;
+   // maps sample outside 0..1 UV - 0=Clamp (smear edge pixel), 1=Repeat, 2=Mirror.
+   // Repeat by default, as Blender's image textures: a Mapping scale > 1 tiles the map instead of
+   // smearing its edge pixel over the rest of the surface.
+   int wrapMode = 1;
    static const std::vector<std::string>& WrapModeNames()
    {
       static const std::vector<std::string> kNames = { "clamp", "repeat", "mirror" };
@@ -385,8 +416,9 @@ public:
       v.Float("clearcoat", clearcoat); v.Float("clearcoatRoughness", clearcoatRoughness);
       v.Float("subsurface", subsurface); v.Color("subsurfaceColor", subsurfaceColor);
       v.Float("subsurfaceRadius", subsurfaceRadius);
+      v.Float("translucency", translucency);
       v.Float("sheen", sheen); v.Color("sheenColor", sheenColor);
-      v.Float("sheenRoughness", sheenRoughness);
+      v.Float("sheenRoughness", sheenRoughness); v.Float("sheenDirection", sheenDirection);
       v.Float("iridescence", iridescence); v.Float("iridescenceIor", iridescenceIor);
       v.Float("iridescenceThickness", iridescenceThickness);
       v.Float("anisotropy", anisotropy); v.Float("anisotropyRotation", anisotropyRotation);
@@ -394,11 +426,30 @@ public:
       v.Bool("textureAlpha", textureAlpha);
       v.Bool("normalBump", normalBump);
       v.Float("normalStrength", normalStrength);
+      v.Float("detailScale", detailScale); v.Float("detailStrength", detailStrength);
+      v.Float("layerMix", layerMix);
+      v.Int("model", model); v.Int("hairColour", hairColour);
+      v.Float("melanin", melanin); v.Float("melaninRedness", melaninRedness);
+      v.Color("hairTint", hairTint); v.Float("radialRoughness", radialRoughness); v.Float("hairShift", hairShift);
    }
 private:
    ImageCable mMaps[kMapCount];
+   ImageCable mField;
+   ImageCable mLayerMask;
    Mesh mEmpty;
+   struct LayerBuild;
+   struct LayerSurf;
+   LayerSurf EmitLayer(const MaterialNode& L, const std::string& p, int depth, LayerBuild& lb) const;
+   std::string EmitLayerMask(const MaterialNode& L, const std::string& p, LayerBuild& lb) const;
+   bool ComposeLayered(Material& m) const;
    int mLastCookFrame = -1;
+   // Row 2.3: the program composed from a Shade chain on `field`, re-registered only when its text changes.
+   mutable std::string mShadeSource;
+   mutable int mShadeProgram = 0;
+   mutable std::vector<float> mShadeValues;
+   mutable unsigned long long mShadeBoundsRev = ~0ull;
+   mutable float mShadeLo[3] = { 0.0f, 0.0f, 0.0f };
+   mutable float mShadeHi[3] = { 1.0f, 1.0f, 1.0f };
    mutable unsigned long long mMaterialRevision = 0;
    mutable size_t mLastMaterialHash = 0;
    mutable unsigned long long mMappingRevision = 0;
@@ -501,6 +552,7 @@ public:
    float rotateX = 0.0f, rotateY = 0.0f, rotateZ = 0.0f;
    float scaleX = 1.0f, scaleY = 1.0f, scaleZ = 1.0f;
    float triplanarBlend = 0.0f;
+   float breakup = 0.0f;
 
    static const std::vector<std::string>& SpaceNames();
 
@@ -511,6 +563,7 @@ public:
       v.Float("rotateX", rotateX); v.Float("rotateY", rotateY); v.Float("rotateZ", rotateZ);
       v.Float("scaleX", scaleX); v.Float("scaleY", scaleY); v.Float("scaleZ", scaleZ);
       v.Float("triplanarBlend", triplanarBlend);
+      v.Float("breakup", breakup);
    }
 
 private:

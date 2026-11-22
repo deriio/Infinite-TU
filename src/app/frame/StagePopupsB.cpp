@@ -1,5 +1,6 @@
 // Split out of main(): see docs/plans/main-split/README.md (Block C)
-#include <unordered_set>
+#include "app/frame/CanvasLink.h"
+#include <set>
 #include "app/ui/design/components/MenuParts.h"
 #include "app/ui/design/components/ChipButton.h"
 #include "app/ui/design/components/FieldWell.h"
@@ -7,6 +8,7 @@
 #include "imgui_internal.h"
 #include "app/ui/design/components/LibraryParts.h"
 #include "app/ui/design/TokenColors.h"
+#include "app/ui/design/UiType.h"
 #include "app/frame/FrameCtx.h"
 #include "app/graph/PortProbeCache.h"
 #include "app/panels/CurveEditorPanel.h"
@@ -171,12 +173,12 @@ void DrawPopupsB(FrameCtx& fc)
             ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f * commentZoom, 8.0f * commentZoom));
             ImGui::PushStyleVar(ImGuiStyleVar_ScrollbarSize, 6.0f * commentZoom);
-            ImGui::SetWindowFontScale(commentZoom * fontScale);
+            ImGui::PushFont(UiType::Font(UiType::Weight::Regular), UiType::Px(UiType::Size::Body) * commentZoom * fontScale);
 
             // Filling the whole popup cleanly at 1:1 scale with the canvas card
             FieldWell::InputTextMultiline("##commenttext", &c->text, ImVec2(gCommentEditRect.z, gCommentEditRect.w));
 
-            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopFont();
             ImGui::PopStyleVar(3);
             ImGui::PopStyleColor(6);
 
@@ -258,38 +260,6 @@ void DrawPopupsB(FrameCtx& fc)
       WarmPortProbeCache(3.0);   // fork: fill the port cache a few ms per frame after startup
       if (MenuParts::BeginPopup("search"))
       {
-         // fork: while a cable is being dropped, node types that cannot take it are drawn at ~30% alpha (still
-         // clickable: the node is then created without a connection). A modulator cable is exempt - nearly every
-         // node accepts it through a parameter pin, so the "Suggested" set would dim almost everything wrongly.
-         static std::unordered_set<std::string> sCompatible;
-         static std::size_t sCompatKey = 0;
-         static bool sDimIncompatible = false;
-         {
-            std::size_t key = (std::size_t)(gLinkDragSourcePin + 2) * 1000003u + gLinkDragSuggestions.size();
-            if (!gLinkDragSuggestions.empty())
-               key ^= std::hash<std::string>()(gLinkDragSuggestions.front().first) * 31u ^
-                      std::hash<std::string>()(gLinkDragSuggestions.back().first);
-            if (key != sCompatKey)
-            {
-               sCompatKey = key;
-               sCompatible.clear();
-               for (const auto& t : gLinkDragSuggestions)
-                  sCompatible.insert(t.first);
-               bool modulatorSource = false;
-               if (gLinkDragSourcePin >= 0 && GraphNode::IsOutputPin(gLinkDragSourcePin))
-               {
-                  GraphNode* src = FindNodeByIndex(GraphNode::NodeIndexFromPin(gLinkDragSourcePin));
-                  if (src != nullptr && src->node)
-                     modulatorSource = dynamic_cast<IModulator*>(src->node.get()) != nullptr ||
-                                       ModulatorForOutput(src->node.get(),
-                                                          GraphNode::OutputIndexFromPin(gLinkDragSourcePin)) != nullptr;
-               }
-               sDimIncompatible = gLinkDragSourcePin >= 0 && !sCompatible.empty() && !modulatorSource;
-            }
-         }
-         const auto isDimmed = [&](const std::string& name) {
-            return sDimIncompatible && sCompatible.find(name) == sCompatible.end();
-         };
          searchPopupCentered = false;
          searchPopupOpen = true;
          // Shift+N pressed again while the picker was up - see searchRequestClose.
@@ -311,7 +281,7 @@ void DrawPopupsB(FrameCtx& fc)
             ImGui::GetCurrentContext()->NavCursorVisible = false;  // no focus ring until the keyboard navigates
             searchJustOpened = false;
          }
-         LibraryParts::SearchField("nodepicker", T("search nodes..."), searchBuf, sizeof(searchBuf));
+         LibraryParts::SearchField("nodepicker", T("Search nodes"), searchBuf, sizeof(searchBuf));
          MenuParts::Separator();
 
          std::string q(searchBuf);
@@ -321,16 +291,48 @@ void DrawPopupsB(FrameCtx& fc)
          std::string spawnName, spawnCategory;
          int shown = 0;
 
+         // #53: dim incompatible node types on cable drop (except modulator cables),
+         // keeping every item clickable. Fold gLinkDragSuggestions into a set once per frame.
+         bool isModulatorCable = false;
+         if (gLinkDragSourcePin >= 0)
+         {
+            if (GraphNode::IsParamPin(gLinkDragSourcePin))
+               isModulatorCable = true;
+            else if (GraphNode::IsOutputPin(gLinkDragSourcePin))
+            {
+               if (GraphNode* dragSrc = FindNodeByIndex(GraphNode::NodeIndexFromPin(gLinkDragSourcePin)))
+               {
+                  const int outSlot = GraphNode::OutputIndexFromPin(gLinkDragSourcePin);
+                  isModulatorCable = (dynamic_cast<IModulator*>(dragSrc->node.get()) != nullptr ||
+                                      ModulatorForOutput(dragSrc->node.get(), outSlot) != nullptr);
+               }
+            }
+         }
+         const std::set<std::pair<std::string, std::string>> suggestedSet(
+            gLinkDragSuggestions.begin(), gLinkDragSuggestions.end());
+         const bool dimByPort = !isModulatorCable && !suggestedSet.empty();
+         auto drawMenuItem = [&](const char* label, const char* shortcut, bool dimmed) -> bool
+         {
+            if (dimmed)
+               ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+            const bool picked = MenuParts::Item(label, shortcut);
+            if (dimmed)
+               ImGui::PopStyleColor();
+            return picked;
+         };
+
          if (q.empty())
          {
-            // Link-drag search: a cable was just dropped on empty canvas, so
-            // lead with the node types compatible with the pin it came from
-            // rather than making the user scroll every category to find one.
+            // Link-drag search: show a compact top-N Suggested section so the popup
+            // keeps the same height and category-first layout as the normal node picker.
             if (!gLinkDragSuggestions.empty())
             {
+               constexpr size_t kMaxInlineSuggestions = 8;
+               const size_t nShow = std::min(gLinkDragSuggestions.size(), kMaxInlineSuggestions);
                ImGui::TextDisabled("%s", T("Suggested"));
-               for (const auto& t : gLinkDragSuggestions)
+               for (size_t i = 0; i < nShow; ++i)
                {
+                  const auto& t = gLinkDragSuggestions[i];
                   ++shown;
                   const std::string title = DisplayName(t.first);
                   const std::string category = DisplayName(t.second);
@@ -356,21 +358,33 @@ void DrawPopupsB(FrameCtx& fc)
 
             for (const std::string& category : cats)
             {
-               ImGui::SetNextWindowSizeConstraints(ImVec2(180, 0), ImVec2(320, 440));
-               if (MenuParts::SubMenu(DisplayName(category).c_str()))
+               std::vector<std::string> catNodes;
+               for (const std::string& name : NodeFactory::Instance().GetNodesInCategory(category))
+                  if (IsUserSpawnable(name))
+                     catNodes.push_back(name);
+               bool anyCompatible = !dimByPort;
+               if (dimByPort)
                {
-                  for (const std::string& name : NodeFactory::Instance().GetNodesInCategory(category))
+                  std::stable_partition(catNodes.begin(), catNodes.end(), [&](const std::string& name) {
+                     const bool ok = suggestedSet.find({ name, category }) != suggestedSet.end();
+                     if (ok)
+                        anyCompatible = true;
+                     return ok;
+                  });
+               }
+               ImGui::SetNextWindowSizeConstraints(ImVec2(180, 0), ImVec2(320, 440));
+               if (!anyCompatible)
+                  ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
+               const bool openCat = MenuParts::SubMenu(DisplayName(category).c_str());
+               if (!anyCompatible)
+                  ImGui::PopStyleColor();
+               if (openCat)
+               {
+                  for (const std::string& name : catNodes)
                   {
-                     if (!IsUserSpawnable(name))
-                        continue;
                      ++shown;
-                     const bool dimmed = isDimmed(name);   // fork
-                     if (dimmed)
-                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.3f);
-                     const bool picked = MenuParts::Item(DisplayName(name).c_str());
-                     if (dimmed)
-                        ImGui::PopStyleVar();
-                     if (picked)
+                     const bool dimmed = dimByPort && suggestedSet.find({ name, category }) == suggestedSet.end();
+                     if (drawMenuItem(DisplayName(name).c_str(), nullptr, dimmed))
                      {
                         spawnName = name;
                         spawnCategory = category;
@@ -382,35 +396,31 @@ void DrawPopupsB(FrameCtx& fc)
          }
          else
          {
-            // fork: matches first, compatible ones ahead of the rest (stable, so each group keeps its order)
-            std::vector<const std::pair<std::string, std::string>*> matches;
+            std::vector<std::pair<std::string, std::string>> matches;
             for (const auto& t : allTypes)
             {
                std::string hay = DisplayName(t.first) + " " + DisplayName(t.second);
                if (I18n::CurrentLanguage() != "en")
                   hay += " " + NodeSearchHaystack(t.first, t.second);
                if (NodeSearchMatches(hay, q))
-                  matches.push_back(&t);
+                  matches.push_back(t);
             }
-            if (sDimIncompatible)
-               std::stable_partition(matches.begin(), matches.end(),
-                                     [&](const auto* t) { return !isDimmed(t->first); });
-            for (const auto* tp : matches)
+            if (dimByPort)
+               std::stable_partition(matches.begin(), matches.end(), [&](const auto& t) {
+                  return suggestedSet.find(t) != suggestedSet.end();
+               });
+
+            for (const auto& t : matches)
             {
-               const auto& t = *tp;
                ++shown;
                const std::string title = DisplayName(t.first);
                const std::string category = DisplayName(t.second);
+               const bool dimmed = dimByPort && suggestedSet.find(t) == suggestedSet.end();
                // Two node types can share a display name ("Invert" is both a Modulator and a Compositing effect); the
                // row id comes from the label, so the type name keeps each row's id unique.
                ImGui::PushID(t.first.c_str());
                ImGui::PushID(t.second.c_str());
-               const bool dimmed = isDimmed(t.first);
-               if (dimmed)
-                  ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.3f);
-               bool activate = MenuParts::Item(title.c_str(), category.c_str());
-               if (dimmed)
-                  ImGui::PopStyleVar();
+               bool activate = drawMenuItem(title.c_str(), category.c_str(), dimmed);
                ImGui::PopID();
                ImGui::PopID();
                if (shown == 1 && pickFirst)
@@ -422,12 +432,14 @@ void DrawPopupsB(FrameCtx& fc)
                }
             }
             if (shown == 0)
-               ImGui::TextDisabled("%s", T("no matches"));
+               ImGui::TextDisabled("%s", T("No matches"));
          }
 
          if (!spawnName.empty())
          {
             GraphNode* spawned = SpawnNode(spawnName, spawnCategory, gSpawnPos.x, gSpawnPos.y);
+            if (spawned != nullptr && gLinkDragSourcePin >= 0)
+               spawned->noGroupAdoptUntilMoved = true;
             if (gLinkDragSourcePin >= 0 && spawned != nullptr && !GraphNode::IsOutputPin(gLinkDragSourcePin))
                WireSpawnedNodeToPin(*spawned, gLinkDragSourcePin);
             else if (gLinkDragSourcePin >= 0 && spawned != nullptr)
@@ -453,13 +465,14 @@ void DrawPopupsB(FrameCtx& fc)
                      dynamic_cast<INoteSource*>(dragSrcNode->node.get()) != nullptr;
                   const bool srcIsPredictor =
                      dynamic_cast<IPredictor*>(dragSrcNode->node.get()) != nullptr;
+                  const bool srcIsShade = IsShadeSource(dragSrcNode->node.get());
 
                   const int slotCount = InputCountFor(*spawned);
                   for (int slot = 0; slot < slotCount; ++slot)
                   {
                      if (IsInputSlotCompatible(spawned, slot, srcIsModulator, srcPalette, srcGeometry,
                                                 srcCamera, srcLight, srcIsEnvironment,
-                                                srcIsAudioNode, srcIsNoteSource, srcIsPredictor))
+                                                srcIsAudioNode, srcIsNoteSource, srcIsPredictor, srcIsShade))
                      {
                         // No PushUndoCheckpoint() here: SpawnNode() above already
                         // pushed one capturing the state before the node existed,
@@ -579,7 +592,7 @@ void DrawPopupsB(FrameCtx& fc)
          ImGui::OpenPopup("##fielddevicesave");
          gFieldDeviceSave.justOpened = false;
       }
-      if (ImGui::BeginPopup("##fielddevicesave"))
+      if (MenuParts::BeginPopup("##fielddevicesave"))
       {
          ImGui::TextDisabled("%s", T("Save device as:"));
          ImGui::SetNextItemWidth(220.0f);
@@ -602,7 +615,7 @@ void DrawPopupsB(FrameCtx& fc)
             }
             ImGui::CloseCurrentPopup();
          }
-         ImGui::EndPopup();
+         MenuParts::EndPopup();
       }
 
       if (gAudioDropPicker.justOpened)
@@ -833,6 +846,27 @@ void DrawPopupsB(FrameCtx& fc)
             gRequestSelectNodeIndex = -1;
          }
       }
+      // A page spawned nodes (New Drum Page, Add Piano Roll Page...): once drawn, select them and glide the canvas there,
+      // so the new node is never lost off-screen. Gives up after a second if a node never lays out.
+      if (!gRequestRevealUids.empty())
+      {
+         static int sRevealWait = 0;
+         bool ready = true;
+         for (uint64_t uid : gRequestRevealUids)
+            if (GraphNode* n = FindNodeByUid(uid))
+               ready = ready && ed::GetNodeSize(n->NodeId()).x > 0.0f;
+         if (ready || ++sRevealWait > 60)
+         {
+            ed::ClearSelection();
+            for (uint64_t uid : gRequestRevealUids)
+               if (GraphNode* n = FindNodeByUid(uid))
+                  ed::SelectNode(n->NodeId(), true);
+            if (ed::GetSelectedObjectCount() > 0)
+               ed::NavigateToSelection(false, 0.25f);
+            gRequestRevealUids.clear();
+            sRevealWait = 0;
+         }
+      }
       if (getenv("INFINITE_PALETTETEST") != nullptr && frameId == 3)
          gRequestFitView = true; // dev screenshot: frame the whole fixture
       if ((getenv("INFINITE_AUDIOUITEST") != nullptr || getenv("INFINITE_FXGALLERY") != nullptr || getenv("INFINITE_NODEGALLERY") != nullptr) && frameId == 3)
@@ -924,258 +958,157 @@ void DrawPopupsB(FrameCtx& fc)
           getenv("INFINITE_PREDBINDTEST") != nullptr) && frameId == 3)
          gRequestFitView = true;
 
-      if (gPerfAssigningElemIdx >= 0 && gPerfAssigningElemIdx < (int)gPerfElements.size())
+      // Knob picks from panels (Perf element, Curve assign / record, Drift follow) all go through Canvas Link: one
+      // hit-test, one ring, one banner naming the knob under the pointer, Esc / right-click cancels.
       {
-         const auto& assignElem = gPerfElements[gPerfAssigningElemIdx];
-         // imgui-node-editor remaps io.MousePos into its own local/zoomed
-         // canvas space for the duration of ed::Begin()/ed::End() (see
-         // ImGuiEx::Canvas::EnterLocalSpace), so both GetMousePos() and
-         // GetIO().MousePos are canvas-space here, not real screen pixels.
-         // gGraphScreenTL/gGraphScreenSize were captured before ed::Begin(),
-         // in real screen space, so they have to be converted with
-         // ed::ScreenToCanvas before comparing against the mouse - comparing
-         // them directly (as this used to) left mouseOverGraph false at any
-         // pan/zoom other than the coincidental default, which silently
-         // broke every canvas-click parameter assignment.
-         const ImVec2 mp = ImGui::GetMousePos();
-         int hoveredPinIdx = -1;
-
-         const ImVec2 graphTL = ed::ScreenToCanvas(gGraphScreenTL);
-         const ImVec2 graphBR = ed::ScreenToCanvas(
-            ImVec2(gGraphScreenTL.x + gGraphScreenSize.x, gGraphScreenTL.y + gGraphScreenSize.y));
-         const bool mouseOverGraph = (mp.x >= graphTL.x && mp.x <= graphBR.x &&
-                                      mp.y >= graphTL.y && mp.y <= graphBR.y);
-
-         if (mouseOverGraph)
-         {
-            for (size_t pi = 0; pi < gParamPinScreenList.size(); pi++)
-            {
-               const auto& pInfo = gParamPinScreenList[pi];
-               bool inBounds = (mp.x >= pInfo.rowMin.x && mp.x <= pInfo.rowMax.x &&
-                                mp.y >= pInfo.rowMin.y && mp.y <= pInfo.rowMax.y);
-               float dx = mp.x - pInfo.screenPos.x;
-               float dy = mp.y - pInfo.screenPos.y;
-               if (inBounds || (dx * dx + dy * dy < 20.0f * 20.0f))
-               {
-                  hoveredPinIdx = (int)pi;
-               }
-            }
-         }
-
-         if (hoveredPinIdx >= 0)
-         {
-            const auto& pInfo = gParamPinScreenList[hoveredPinIdx];
-            // Glowing box + ring around the hovered control, drawn while still
-            // inside ed::Begin/End so it rides the same local-space vertex
-            // transform as the row rect it's outlining - drawing it after
-            // ed::Suspend() below would place it in real screen space and it
-            // would land in the wrong spot at any pan/zoom.
-            {
-               ImDrawList* hoverDl = ImGui::GetWindowDrawList();
-               if (pInfo.isCircle)
-                  StateRing::DrawCircle(hoverDl, pInfo.shapeCenter, pInfo.shapeRadius, StateRing::Kind::Target, IsThemeLight());
-               else
-                  StateRing::Draw(hoverDl, pInfo.rowMin, pInfo.rowMax, StateRing::Kind::Target, IsThemeLight(), tok::radius_field);
-            }
-            ed::Suspend();
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            ImGui::SetTooltip(T("Assign to '%s' (%s) -> %s: %s"),
-                              assignElem.label.c_str(),
-                              gPerfAssigningAxis == 1 ? "Y Axis" : (assignElem.kind == 4 ? "X Axis" : "Param"),
-                              pInfo.nodeTitle.c_str(), pInfo.paramName.c_str());
-            ed::Resume();
-
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-            {
-               PushUndoCheckpoint();
-               auto& el = gPerfElements[gPerfAssigningElemIdx];
-               if (gPerfAssigningAxis == 0)
-               {
-                  el.dstIndex = pInfo.nodeIndex;
-                  el.dstParam = pInfo.paramIndex;
-                  el.targets.clear();
-                  el.targets.push_back({ pInfo.nodeIndex, pInfo.paramIndex, "" });
-                  if (el.label.empty() || el.label == "Knob" || el.label == "Fader" || el.label == "Slider" || el.label == "Toggle" || el.label == "XY Pad" || el.label == "Trigger" || el.label == "NumBox" || el.label == "Selector" || el.label == "Pan/Detent" || el.label == "Step Gate")
-                     el.label = pInfo.paramName;
-               }
-               else if (gPerfAssigningAxis == 1)
-               {
-                  el.dstParam2 = pInfo.paramIndex;
-                  el.targetsY.clear();
-                  el.targetsY.push_back({ pInfo.nodeIndex, pInfo.paramIndex, "" });
-               }
-               gPerfAssigningElemIdx = -1;
-            }
-         }
-
-         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-         {
-            gPerfAssigningElemIdx = -1;
-         }
+         const bool perfOn = gPerfAssigningElemIdx >= 0 && gPerfAssigningElemIdx < (int)gPerfElements.size();
+         CanvasLink::Sync("perf.assign", perfOn ? "perf." + std::to_string(gPerfAssigningElemIdx) + "." + std::to_string(gPerfAssigningAxis) : "",
+            [] {
+               CanvasLink::Spec sp;
+               sp.target = CanvasLink::Target::Param;
+               sp.kind = T("knob");
+               const int elemIdx = gPerfAssigningElemIdx, axis = gPerfAssigningAxis;
+               const std::string key = "perf." + std::to_string(elemIdx) + "." + std::to_string(axis);
+               sp.onPickedParam = [elemIdx, axis](int n, int pi) {
+                  if (elemIdx < 0 || elemIdx >= (int)gPerfElements.size())
+                     return;
+                  const ParamPinScreenInfo* info = nullptr;
+                  for (const ParamPinScreenInfo& q : gParamPinScreenList)
+                     if (q.nodeIndex == n && q.paramIndex == pi)
+                        info = &q;
+                  PushUndoCheckpoint();
+                  auto& el = gPerfElements[elemIdx];
+                  if (axis == 0)
+                  {
+                     el.dstIndex = n;
+                     el.dstParam = pi;
+                     el.targets.clear();
+                     el.targets.push_back({ n, pi, "" });
+                     static const char* kDefaults[] = { "Knob", "Fader", "Slider", "Toggle", "XY Pad", "Trigger", "NumBox", "Selector", "Pan/Detent", "Step Gate" };
+                     bool generic = el.label.empty();
+                     for (const char* d : kDefaults)
+                        generic = generic || el.label == d;
+                     if (generic && info != nullptr)
+                        el.label = info->paramName;
+                  }
+                  else if (axis == 1)
+                  {
+                     el.dstParam2 = pi;
+                     el.targetsY.clear();
+                     el.targetsY.push_back({ n, pi, "" });
+                  }
+                  gPerfAssigningElemIdx = -1;
+               };
+               sp.onCancel = [key] {
+                  if ("perf." + std::to_string(gPerfAssigningElemIdx) + "." + std::to_string(gPerfAssigningAxis) == key)
+                     gPerfAssigningElemIdx = -1;
+               };
+               return sp;
+            });
       }
 
-      // Curve Editor Assign (docs/plans/curve-editor/README.md §8.6): the same click-to-pick UX, binding the armed
-      // MSEG to the knob clicked. Shift keeps it armed for more; Esc or right-click stops.
-      const ImGuiPayload* curvePayload = ImGui::GetDragDropPayload();
-      const bool curveDragged = curvePayload != nullptr && curvePayload->IsDataType("INFINITE_CURVE_PAGE") &&
-                                curvePayload->DataSize == sizeof(uint64_t);
-      const uint64_t curveUid = curveDragged ? *static_cast<const uint64_t*>(curvePayload->Data) : gCurveAssignUid;
-      if (curveUid != 0)
+      // Curve Editor Assign (docs/plans/curve-editor/README.md §8.6): binds the armed MSEG to the knob clicked. Shift
+      // keeps it armed for more. A curve page dragged onto a knob does the same on release (a drag, not a pick).
       {
-         GraphNode* srcGn = FindNodeByUid(curveUid);
-         if (srcGn == nullptr || dynamic_cast<MSEGNode*>(srcGn->node.get()) == nullptr)
-            gCurveAssignUid = 0;
-         else
+         auto curveAccepts = [](uint64_t uid) {
+            return [uid](int n, int) {
+               GraphNode* src = FindNodeByUid(uid);
+               return src != nullptr && n != src->index; // a curve never drives its own controls
+            };
+         };
+         auto bindCurve = [](uint64_t uid, int n, int pi) {
+            GraphNode* src = FindNodeByUid(uid);
+            if (src == nullptr)
+               return;
+            PushUndoCheckpoint("Assign Curve");
+            Modulation::Instance().Bind(n, pi, src->index, 0);
+            gPatchDirty = true;
+         };
+         if (gCurveAssignUid != 0)
          {
-            const ImVec2 mp = ImGui::GetMousePos();
-            const ImVec2 graphTL = ed::ScreenToCanvas(gGraphScreenTL);
-            const ImVec2 graphBR = ed::ScreenToCanvas(
-               ImVec2(gGraphScreenTL.x + gGraphScreenSize.x, gGraphScreenTL.y + gGraphScreenSize.y));
-            int hoveredPinIdx = -1;
-            if (mp.x >= graphTL.x && mp.x <= graphBR.x && mp.y >= graphTL.y && mp.y <= graphBR.y)
-               for (size_t pi = 0; pi < gParamPinScreenList.size(); pi++)
-               {
-                  const auto& pInfo = gParamPinScreenList[pi];
-                  if (pInfo.nodeIndex == srcGn->index)
-                     continue; // a curve never drives its own controls
-                  const bool inBounds = mp.x >= pInfo.rowMin.x && mp.x <= pInfo.rowMax.x && mp.y >= pInfo.rowMin.y && mp.y <= pInfo.rowMax.y;
-                  const float dx = mp.x - pInfo.screenPos.x, dy = mp.y - pInfo.screenPos.y;
-                  if (inBounds || dx * dx + dy * dy < 20.0f * 20.0f)
-                     hoveredPinIdx = (int)pi;
-               }
-            if (hoveredPinIdx >= 0)
-            {
-               const auto& pInfo = gParamPinScreenList[hoveredPinIdx];
-               ImDrawList* hoverDl = ImGui::GetWindowDrawList();
-               if (pInfo.isCircle)
-                  StateRing::DrawCircle(hoverDl, pInfo.shapeCenter, pInfo.shapeRadius, StateRing::Kind::Target, IsThemeLight());
-               else
-                  StateRing::Draw(hoverDl, pInfo.rowMin, pInfo.rowMax, StateRing::Kind::Target, IsThemeLight(), tok::radius_field);
-               const std::string srcTitle = NodeTitleWithInstance(*srcGn);
-               ed::Suspend();
-               ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-               ImGui::SetTooltip(T("Assign %s -> %s: %s"), srcTitle.c_str(), pInfo.nodeTitle.c_str(), pInfo.paramName.c_str());
-               ed::Resume();
-               if (curveDragged ? ImGui::IsMouseReleased(ImGuiMouseButton_Left) : ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-               {
-                  PushUndoCheckpoint("Assign Curve");
-                  Modulation::Instance().Bind(pInfo.nodeIndex, pInfo.paramIndex, srcGn->index, 0);
-                  gPatchDirty = true;
-                  if (!ImGui::GetIO().KeyShift)
-                     gCurveAssignUid = 0;
-               }
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+            GraphNode* srcGn = FindNodeByUid(gCurveAssignUid);
+            if (srcGn == nullptr || dynamic_cast<MSEGNode*>(srcGn->node.get()) == nullptr)
                gCurveAssignUid = 0;
          }
-      }
-
-      // Curve Editor Record, Any knob (§8.9): the knob clicked becomes the take's source; the same click starts its drag.
-      if (gCurveRecordPicking)
-      {
-         const ImVec2 mp = ImGui::GetMousePos();
-         int hoveredPinIdx = -1;
-         for (size_t pi = 0; pi < gParamPinScreenList.size(); pi++)
+         CanvasLink::Sync("curve.assign", gCurveAssignUid != 0 ? "curve." + std::to_string(gCurveAssignUid) : "", [&] {
+            CanvasLink::Spec sp;
+            sp.target = CanvasLink::Target::Param;
+            sp.kind = T("knob");
+            const uint64_t uid = gCurveAssignUid;
+            sp.acceptsParam = curveAccepts(uid);
+            sp.onPickedParam = [uid, bindCurve](int n, int pi) {
+               bindCurve(uid, n, pi);
+               if (!ImGui::GetIO().KeyShift && gCurveAssignUid == uid)
+                  gCurveAssignUid = 0;
+            };
+            sp.onCancel = [uid] {
+               if (gCurveAssignUid == uid)
+                  gCurveAssignUid = 0;
+            };
+            return sp;
+         });
+         const ImGuiPayload* curvePayload = ImGui::GetDragDropPayload();
+         if (curvePayload != nullptr && curvePayload->IsDataType("INFINITE_CURVE_PAGE") && curvePayload->DataSize == sizeof(uint64_t))
          {
-            const auto& pInfo = gParamPinScreenList[pi];
-            const bool inBounds = mp.x >= pInfo.rowMin.x && mp.x <= pInfo.rowMax.x && mp.y >= pInfo.rowMin.y && mp.y <= pInfo.rowMax.y;
-            const float dx = mp.x - pInfo.screenPos.x, dy = mp.y - pInfo.screenPos.y;
-            if (inBounds || dx * dx + dy * dy < 20.0f * 20.0f)
-               hoveredPinIdx = (int)pi;
-         }
-         if (hoveredPinIdx >= 0)
-         {
-            const auto& pInfo = gParamPinScreenList[hoveredPinIdx];
-            ImDrawList* hoverDl = ImGui::GetWindowDrawList();
-            if (pInfo.isCircle)
-               StateRing::DrawCircle(hoverDl, pInfo.shapeCenter, pInfo.shapeRadius, StateRing::Kind::Target, IsThemeLight());
-            else
-               StateRing::Draw(hoverDl, pInfo.rowMin, pInfo.rowMax, StateRing::Kind::Target, IsThemeLight(), tok::radius_field);
-            ed::Suspend();
-            ImGui::SetTooltip(T("Record %s: %s"), pInfo.nodeTitle.c_str(), pInfo.paramName.c_str());
-            ed::Resume();
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-               CurveEditorRecordPicked(pInfo.nodeIndex, pInfo.paramIndex);
-         }
-         if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-            gCurveRecordPicking = false;
-      }
-
-      // Predictive Drift Follow leader picker - identical click-to-assign UX to the
-      // performance-matrix picker just above, but resolves to a DriftNode's leaderNodeIndex/
-      // leaderParamIndex instead of a perf element target. Deliberately stores the target's
-      // *uid* (gNodes[nodeIndex].uid), not its index - an index is reused by
-      // RemoveNodeByIndex and would silently repoint Follow at a different node after an
-      // unrelated delete/undo, exactly the stability trap Modulation.h's own uid comment
-      // (ParamRef::uid) warns about.
-      if (gDriftFollowPickingUid != 0)
-      {
-         GraphNode* pickingGn = FindNodeByUid(gDriftFollowPickingUid);
-         DriftNode* pickingDrift = pickingGn != nullptr ? dynamic_cast<DriftNode*>(pickingGn->node.get()) : nullptr;
-         if (pickingDrift == nullptr)
-         {
-            gDriftFollowPickingUid = 0; // the node was deleted while picking
-         }
-         else
-         {
-            const ImVec2 mp = ImGui::GetMousePos();
-            int hoveredPinIdx = -1;
-            const ImVec2 graphTL = ed::ScreenToCanvas(gGraphScreenTL);
-            const ImVec2 graphBR = ed::ScreenToCanvas(
-               ImVec2(gGraphScreenTL.x + gGraphScreenSize.x, gGraphScreenTL.y + gGraphScreenSize.y));
-            const bool mouseOverGraph = (mp.x >= graphTL.x && mp.x <= graphBR.x &&
-                                         mp.y >= graphTL.y && mp.y <= graphBR.y);
-            if (mouseOverGraph)
+            const uint64_t uid = *static_cast<const uint64_t*>(curvePayload->Data);
+            const int hit = CanvasLink::HoveredParam(curveAccepts(uid));
+            if (hit >= 0)
             {
-               for (size_t pi = 0; pi < gParamPinScreenList.size(); pi++)
-               {
-                  const auto& pInfo = gParamPinScreenList[pi];
-                  // Can't follow yourself - a self-target would drive the same slot
-                  // it's reading, an infinite feedback loop with no way to break it.
-                  if (pInfo.nodeIndex >= 0 && pInfo.nodeIndex < (int)gNodes.size() &&
-                      gNodes[pInfo.nodeIndex].uid == gDriftFollowPickingUid)
-                     continue;
-                  const bool inBounds = (mp.x >= pInfo.rowMin.x && mp.x <= pInfo.rowMax.x &&
-                                         mp.y >= pInfo.rowMin.y && mp.y <= pInfo.rowMax.y);
-                  const float dx = mp.x - pInfo.screenPos.x;
-                  const float dy = mp.y - pInfo.screenPos.y;
-                  if (inBounds || (dx * dx + dy * dy < 20.0f * 20.0f))
-                     hoveredPinIdx = (int)pi;
-               }
+               CanvasLink::RingParam(hit);
+               if (ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+                  bindCurve(uid, gParamPinScreenList[hit].nodeIndex, gParamPinScreenList[hit].paramIndex);
             }
-            if (hoveredPinIdx >= 0)
-            {
-               const auto& pInfo = gParamPinScreenList[hoveredPinIdx];
-               {
-                  ImDrawList* hoverDl = ImGui::GetWindowDrawList();
-                  const ImU32 glowCol = tok::U32(tok::pal::c_78C8FF1C);
-                  const ImU32 ringCol = tok::U32(tok::pal::c_78C8FFAA);
-                  if (pInfo.isCircle)
-                  {
-                     hoverDl->AddCircleFilled(pInfo.shapeCenter, pInfo.shapeRadius, glowCol, 24);
-                     hoverDl->AddCircle(pInfo.shapeCenter, pInfo.shapeRadius, ringCol, 24, 1.0f);
-                  }
-                  else
-                  {
-                     hoverDl->AddRectFilled(pInfo.rowMin, pInfo.rowMax, glowCol, 4.0f);
-                     hoverDl->AddRect(pInfo.rowMin, pInfo.rowMax, ringCol, 4.0f, 0, 1.0f);
-                  }
-               }
-               ed::Suspend();
-               ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-               ImGui::SetTooltip(T("Follow leader -> %s: %s"), pInfo.nodeTitle.c_str(), pInfo.paramName.c_str());
-               ed::Resume();
-               if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && pInfo.nodeIndex >= 0 &&
-                   pInfo.nodeIndex < (int)gNodes.size())
+         }
+      }
+
+      // Curve Editor Record, Any knob (§8.9): the knob clicked becomes the take's source.
+      CanvasLink::Sync("curve.record", gCurveRecordPicking ? "curve.record" : "", [] {
+         CanvasLink::Spec sp;
+         sp.target = CanvasLink::Target::Param;
+         sp.kind = T("knob");
+         sp.onPickedParam = [](int n, int pi) { CurveEditorRecordPicked(n, pi); };
+         sp.onCancel = [] { gCurveRecordPicking = false; };
+         return sp;
+      });
+
+      // Predictive Drift Follow leader: stores the leader's *uid*, not its index - an index is reused by
+      // RemoveNodeByIndex and would repoint Follow at another node after an unrelated delete/undo (ParamRef::uid).
+      {
+         if (gDriftFollowPickingUid != 0)
+         {
+            GraphNode* pickingGn = FindNodeByUid(gDriftFollowPickingUid);
+            if (pickingGn == nullptr || dynamic_cast<DriftNode*>(pickingGn->node.get()) == nullptr)
+               gDriftFollowPickingUid = 0; // the node was deleted while picking
+         }
+         CanvasLink::Sync("drift.follow", gDriftFollowPickingUid != 0 ? "drift." + std::to_string(gDriftFollowPickingUid) : "", [] {
+            CanvasLink::Spec sp;
+            sp.target = CanvasLink::Target::Param;
+            sp.kind = T("knob");
+            const uint64_t self = gDriftFollowPickingUid;
+            // Can't follow yourself: a self-target would drive the slot it reads, a loop with no way out.
+            sp.acceptsParam = [self](int n, int) {
+               GraphNode* g = FindNodeByIndex(n);
+               return g != nullptr && g->uid != self;
+            };
+            sp.onPickedParam = [self](int n, int pi) {
+               GraphNode* me = FindNodeByUid(self);
+               DriftNode* drift = me != nullptr ? dynamic_cast<DriftNode*>(me->node.get()) : nullptr;
+               GraphNode* leader = FindNodeByIndex(n);
+               if (drift != nullptr && leader != nullptr)
                {
                   PushUndoCheckpoint();
-                  pickingDrift->leaderNodeIndex = (int)gNodes[pInfo.nodeIndex].uid;
-                  pickingDrift->leaderParamIndex = pInfo.paramIndex;
-                  gDriftFollowPickingUid = 0;
+                  drift->leaderNodeIndex = (int)leader->uid;
+                  drift->leaderParamIndex = pi;
                }
-            }
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-               gDriftFollowPickingUid = 0;
-         }
-      }}
+               if (gDriftFollowPickingUid == self)
+                  gDriftFollowPickingUid = 0;
+            };
+            sp.onCancel = [self] {
+               if (gDriftFollowPickingUid == self)
+                  gDriftFollowPickingUid = 0;
+            };
+            return sp;
+         });
+      }
+      }
 }

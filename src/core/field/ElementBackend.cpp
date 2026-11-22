@@ -1,7 +1,9 @@
 #include "ElementBackend.h"
 #include "FieldRandom.h"
+#include "FieldNoise.h"
 #include "FieldState.h"
 #include "ReduceOps.h"
+#include "core/bci/BciTypes.h"
 #include "../../audio/PhaseShape.h"
 
 #include <cmath>
@@ -831,6 +833,14 @@ namespace Field
                   EmitExpr(stmt->expr);
                   break;
                }
+
+               case IRStmtKind::DeclOutput:
+               case IRStmtKind::DeclInput:
+               case IRStmtKind::Emit:
+               case IRStmtKind::Connect:
+               case IRStmtKind::SetParam:
+               case IRStmtKind::Place:
+                  break;
             }
          }
       };
@@ -968,6 +978,19 @@ namespace Field
             return (a < inst.argLanes.size() && inst.argLanes[a] == 1) ? r.v[0] : r.v[l];
          };
          auto scalar = [&](size_t a) -> double { return regs[inst.argRegs[a]].v[0]; };
+
+         if (IsNoiseBuiltin(fn)) // row 2.1
+         {
+            double flat[8] = { 0 }, res[3] = { 0, 0, 0 };
+            int n = 0;
+            for (size_t a = 0; a < nArgs; ++a)
+               for (int l = 0; l < std::max(inst.argLanes[a], 1) && n < 8; ++l)
+                  flat[n++] = regs[inst.argRegs[a]].v[l];
+            EvalNoiseBuiltin(fn, flat, n, res);
+            for (int l = 0; l < dst.lanes && l < 3; ++l)
+               dst.v[l] = res[l];
+            return;
+         }
 
          if (fn == "rand" || fn == "noise" || fn == "sh")
          {
@@ -1151,6 +1174,11 @@ namespace Field
             auto it = env.siblings->find(name);
             if (it != env.siblings->end()) { outValue = (double)it->second; return true; }
          }
+         if (name.rfind("brain.", 0) == 0 && Bci::IsBrainGlobalField(name.substr(6)))
+         {
+            outValue = (double)Bci::ReadBrainGlobal(name);
+            return true;
+         }
          outValue = 0.0;
          return false;
       }
@@ -1195,9 +1223,46 @@ namespace Field
 
       // One name-resolution order for both banks: state cell, then element attrib, then
       // a value hoisted into the prologue, then the frame-domain environment.
-      auto loadByName = [&](const ElemInstruction& inst)
+      auto loadByName = [&](const ElemInstruction& inst, size_t pcIdx)
       {
          VectorResult& dst = regs[inst.dst];
+
+         // In the element loop the first element resolves the name and records where it
+         // lives; later elements skip the string-keyed lookups.
+         ElementLoadBind* bind = (ctx.inElementLoop && ctx.binds != nullptr) ? &ctx.binds[pcIdx] : nullptr;
+         if (bind != nullptr && bind->kind != ElementLoadBind::Unresolved)
+         {
+            switch (bind->kind)
+            {
+               case ElementLoadBind::ElementCell:
+                  dst.lanes = bind->lanes;
+                  for (int l = 0; l < bind->lanes; ++l)
+                  {
+                     const std::vector<float>* laneVec = bind->lane[l];
+                     dst.v[l] = (laneVec && ei < laneVec->size()) ? (*laneVec)[ei] : 0.0;
+                  }
+                  return;
+               case ElementLoadBind::FrameCell:
+                  dst.lanes = bind->lanes;
+                  for (int l = 0; l < bind->lanes; ++l)
+                     dst.v[l] = bind->frame[l] ? *bind->frame[l] : 0.0;
+                  return;
+               case ElementLoadBind::Attrib:
+                  dst.lanes = bind->lanes;
+                  for (int l = 0; l < bind->lanes; ++l)
+                     dst.v[l] = bind->lane[l] ? (*bind->lane[l])[ei] : 0.0;
+                  return;
+               case ElementLoadBind::FrameVar:
+                  dst = *bind->frameVar;
+                  return;
+               case ElementLoadBind::EnvScalar:
+                  dst.lanes = 1;
+                  dst.v[0] = bind->scalar;
+                  return;
+               default:
+                  break;
+            }
+         }
 
          if (env.state && env.state->HasCell(inst.stringData))
          {
@@ -1205,16 +1270,25 @@ namespace Field
             if (cell)
             {
                dst.lanes = cell->lanes;
+               if (bind != nullptr)
+               {
+                  bind->lanes = cell->lanes;
+                  bind->kind = cell->domain == Domain::Element ? ElementLoadBind::ElementCell : ElementLoadBind::FrameCell;
+               }
                for (int l = 0; l < cell->lanes; ++l)
                {
                   if (cell->domain == Domain::Element && ctx.inElementLoop)
                   {
                      auto* laneVec = env.state->GetElementLane((size_t)(cell->slotOffset + l));
+                     if (bind != nullptr && l < 4)
+                        bind->lane[l] = laneVec;
                      dst.v[l] = (laneVec && ei < laneVec->size()) ? (*laneVec)[ei] : 0.0;
                   }
                   else
                   {
                      const float* fVal = env.state->GetFrameValue((size_t)(cell->slotOffset + l));
+                     if (bind != nullptr && l < 4)
+                        bind->frame[l] = fVal;
                      dst.v[l] = fVal ? *fVal : 0.0;
                   }
                }
@@ -1226,9 +1300,16 @@ namespace Field
          {
             int lanes = inst.lanes;
             dst.lanes = lanes;
+            if (bind != nullptr)
+            {
+               bind->kind = ElementLoadBind::Attrib;
+               bind->lanes = lanes;
+            }
             for (int l = 0; l < lanes; ++l)
             {
                auto laneVec = ctx.store->GetAttribLane(inst.stringData, l);
+               if (bind != nullptr && l < 4)
+                  bind->lane[l] = laneVec;
                dst.v[l] = laneVec ? (*laneVec)[ei] : 0.0;
             }
             return;
@@ -1237,6 +1318,11 @@ namespace Field
          auto it = mFrameVars.find(inst.stringData);
          if (it != mFrameVars.end())
          {
+            if (bind != nullptr)
+            {
+               bind->kind = ElementLoadBind::FrameVar;
+               bind->frameVar = &it->second;
+            }
             dst = it->second;
             return;
          }
@@ -1248,6 +1334,12 @@ namespace Field
          LoadEnvScalar(inst.stringData, env, ctx.count, val);
          dst.lanes = 1;
          dst.v[0] = val;
+         // Cacheable only when nothing in the loop can start defining a frame variable of this name.
+         if (bind != nullptr && ctx.bindEnvScalars)
+         {
+            bind->kind = ElementLoadBind::EnvScalar;
+            bind->scalar = val;
+         }
       };
 
       size_t pc = 0;
@@ -1273,7 +1365,7 @@ namespace Field
             case ElemOpcode::OpLoadAttrib:
             case ElemOpcode::OpLoadState:
             case ElemOpcode::OpLoadFrameVar:
-               loadByName(inst);
+               loadByName(inst, pc);
                break;
 
             case ElemOpcode::OpStoreFrameVar:
@@ -1834,6 +1926,18 @@ namespace Field
          elemCtx.cr = store.Cr().data();
          elemCtx.cg = store.Cg().data();
          elemCtx.cb = store.Cb().data();
+
+         // Per-instruction resolution cache for this cook's loop loads. An environment scalar is
+         // only cached when no loop instruction can write a frame variable of that name.
+         mLoadBinds.assign(prog.loop.code.size(), ElementLoadBind {});
+         elemCtx.binds = mLoadBinds.data();
+         elemCtx.bindEnvScalars = true;
+         for (const ElemInstruction& li : prog.loop.code)
+            if (li.op == ElemOpcode::OpStoreFrameVar)
+            {
+               elemCtx.bindEnvScalars = false;
+               break;
+            }
 
          for (size_t elemIdx = 0; elemIdx < count; ++elemIdx)
          {

@@ -45,7 +45,8 @@ SketchNode::SketchNode() { code = Presets()[0].code; }
 
 SketchNode::~SketchNode()
 {
-   if (mTex != 0) glDeleteTextures(1, &mTex);
+   for (unsigned int& t : mRing)
+      if (t != 0) glDeleteTextures(1, &t);
 }
 
 void SketchNode::LoadPreset(int index)
@@ -56,7 +57,8 @@ void SketchNode::LoadPreset(int index)
       code = p[index].code;
       svg = p[index].svg ? p[index].svg : "";
       svgName = svg.empty() ? "" : "example";
-      Apply();
+      if (Apply())
+         mParamTable.ResetDeclaredToDefaults(); // a preset starts at its own declared values
    }
 }
 
@@ -154,15 +156,23 @@ void SketchNode::CookIfNeeded(int frameId)
    }
    mLastError.clear();
 
+   // An animated sketch whose picture did not change (draw() ignores t, or a static mask on a material pin) costs no
+   // upload and keeps its revision, so the Render 3D engines do not read the map back again (row 3.2).
+   if (mUploadedW == w && mUploadedH == h && mPixels == mUploadedPixels) return;
+   mUploadedPixels = mPixels;
+   mUploads++;
+
    // plutovg writes the top row first; GL row 0 is the bottom (same as TextNode).
    const int stride = w * 4;
    mFlipped.resize(mPixels.size());
    for (int y = 0; y < h; y++)
       std::memcpy(&mFlipped[(size_t)y * stride], &mPixels[(size_t)(h - 1 - y) * stride], stride);
 
-   if (mTex == 0) glGenTextures(1, &mTex);
-   glBindTexture(GL_TEXTURE_2D, mTex);
-   if (mUploadedW == w && mUploadedH == h)
+   mRingAt = (mRingAt + 1) % 3;
+   unsigned int& tex = mRing[mRingAt];
+   if (tex == 0) glGenTextures(1, &tex);
+   glBindTexture(GL_TEXTURE_2D, tex);
+   if (mRingW[mRingAt] == w && mRingH[mRingAt] == h)
       glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, mFlipped.data());
    else
    {
@@ -171,8 +181,10 @@ void SketchNode::CookIfNeeded(int frameId)
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-      mUploadedW = w; mUploadedH = h;
+      mRingW[mRingAt] = w; mRingH[mRingAt] = h;
    }
+   mTex = tex;
+   mUploadedW = w; mUploadedH = h;
    glBindTexture(GL_TEXTURE_2D, 0);
    mW = w; mH = h;
    mRevision = NextTextureRevision();

@@ -101,12 +101,16 @@ namespace CliSetup
       bool folderAccess = false;  // agents may also read and edit files in the folder (else only `infinite` and attached files)
       // fork: the custom (OpenAI-compatible) agent. Its Model ID is models["custom"]; the key is never stored,
       // only the NAME of the environment variable that holds it.
-      std::string customBaseUrl, customKeyEnv = "CUSTOM_LLM_API_KEY", customPreset;
+      std::string customKeyEnv = "CUSTOM_LLM_API_KEY";
       std::map<std::string, std::string> models;  // per agent id; missing = the agent's own default
       std::vector<std::string> folders;   // more folders agents may read (and edit, with folderAccess)
       std::vector<std::string> commands;  // commands agents may run besides `infinite` ("ffprobe")
       bool introduced = false;    // the first-run folder card was answered
       bool tried = false;         // a first message was sent: the empty chat stops offering the beginner ideas
+      // Custom OpenAI-compatible agent settings (API key is stored only in Platform::SecretStore, never here)
+      std::string customPreset = "ollama";
+      std::string customBaseUrl = "http://localhost:11434/v1";
+      std::string customModel = "qwen2.5-coder:7b";
       // Tokens the chat's agents used, per agent id, since the user last reset them (Settings > Agents).
       struct Usage
       {

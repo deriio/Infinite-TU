@@ -62,6 +62,16 @@ SOURCE · IMAGE OUT. A live paint canvas right inside the node graph, soft round
 Try: paint a quick stroke and route it through Feedback so every mark trails and echoes forever.
 Chain: Draw Canvas -> Feedback -> Output
 
+### Shadertoy
+SOURCE · IMAGE OUT. Runs a shader pasted from shadertoy.com as it is: the mainImage code, Buffers A to D and the Common tab, all live. iChannel0 to iChannel3 are image inputs for feeding pictures in, and an unwired channel reads its buffer. Each 'uniform float name; // lo..hi' line in the shader becomes a knob you can modulate, so a shader's own controls work like any other dial. Also called a GLSL shader, a fragment shader or a shader toy: the way to bring generative code art into a patch.
+Try: paste a fractal shader and wire an LFO into one of its uniform knobs so it zooms on the beat.
+Chain: Shadertoy -> Bloom -> Output
+
+### VMPC
+SOURCE · IMAGE + AUDIO OUT. A 16-pad video sampler laid out like an MPC drum machine. Drop clips on the pads, then play them from a keyboard (notes 36 to 51 hit pads 1 to 16) or by clicking. Each pad has a mode: one shot plays its window once, gate plays while held and fades out on release, and loop keeps going. Transition sets how the picture changes between pads (cut, crossfade or dip to black). Every pad has its own sync and rate, start and end, speed (negative plays backwards), opacity and fade in and out, all modulatable. Also called a clip launcher, a video drum machine or a sample pad: footage you trigger live like beats.
+Try: load six loops onto the pads, sync them to a bar and gate them from a sequencer for a live video drum kit.
+Chain: Piano Roll -> VMPC -> Output
+
 ## Typography & Text
 Words, on screen or in space. Both nodes read every font already installed on your Mac.
 
@@ -111,6 +121,42 @@ Chain: XY Motion Pad -> Twirl (Angle) -> Live Video
 EFFECTS · IN/OUT. Slices the frame into mirrored wedges around a center point, instantly turning ordinary footage into a mandala.
 Try: point a webcam or Syphon feed straight into Kaleidoscope for an endless, hypnotic VJ loop.
 Chain: Live Camera -> Kaleidoscope -> Color Adjustments
+
+### gaussianblur
+EFFECTS · IN/OUT. The smooth, natural blur. It averages neighbouring pixels with a Gaussian weighting, so the softness falls off like a lens going out of focus rather than a flat box. Radius (0 to 10, default 2) sets how far it samples, and Quality set to Smooth samples every pixel for a cleaner result. Everyday use: soften a background, hide a detail or make a picture look out of focus. Also called a soft blur or defocus.
+Try: blur a busy video by 3 and wire an LFO into Radius so it racks focus on its own.
+Chain: Video -> gaussianblur -> Output
+
+### boxblur
+EFFECTS · IN/OUT. A flat box blur: each pixel becomes the average of a square of its neighbours. It is cheaper than Gaussian Blur and looks blockier, with a harder edge to the falloff. Radius (0 to 10, default 2) sets the box size. Use it for a fast, deliberately chunky soften. Also called a mean filter or an average blur.
+Try: use a high Radius inside a Feedback loop to smear a picture into a moving cloud.
+Chain: Image Source -> boxblur -> Output
+
+### twirl
+EFFECTS · IN/OUT. Twists the picture like water going down a drain: pixels rotate more the closer they sit to the centre. Angle (-2π to 2π radians, default 2) is how far they twist, Radius (0.05 to 1) how far the effect reaches, and Center X and Center Y place the whirlpool. Everyday use: a swirl or spiral distortion on a photo or logo. Also called a swirl or a whirlpool.
+Try: wire an LFO into Angle and the picture spins in and out of a whirlpool.
+Chain: Image Source -> twirl -> Output
+
+### pinchpunch
+EFFECTS · IN/OUT. Pulls pixels toward a centre point (pinch) or pushes them outward (punch). Amount below 1 pinches inward and above 1 punches outward; the default 1.5 punches. Radius (0.05 to 1) sets the reach, and Center X and Center Y set where it sits. Everyday use: a bulge or a fisheye-style lens warp. Also called a bulge, a pinch or a magnifying lens.
+Try: animate Amount between 0.5 and 2 with an LFO for a bulge that pulses in the middle of a face.
+Chain: Video -> pinchpunch -> Output
+
+### ripple
+EFFECTS · IN/OUT. Pushes pixels out from a centre in concentric waves, like a stone dropped in a pond. Amplitude (0 to 2) is the wave height, Wavelength (1 to 40) the spacing between rings, and Phase (0 to 20) moves them. Animate Phase to make the ripples travel, and move the Center to put the source anywhere. Everyday use: a water-ripple or wobble effect on a photo or video. Also called a wave distortion or a water effect.
+Try: let Phase rise slowly and the still photo becomes a looping pond.
+)AGENTDOC"
+R"AGENTDOC(Chain: Image Source -> ripple -> Output
+
+### bloom
+EFFECTS · IN/OUT. Isolates pixels brighter than Threshold (0 to 1, default 0.6), blurs them outward by Radius (0.5 to 12, default 4), and adds the glow back at Intensity (0 to 5, default 1.4). This is the classic HDR-style light bloom around hot highlights, lamps and neon. Everyday use: make lights glow, a halo or a neon haze. Compare diffuseglow, which glows the whole picture evenly.
+Try: lower Threshold until a dark scene's lamps start to bloom, then raise Intensity for a neon haze.
+Chain: Shape -> bloom -> Output
+
+### diffuseglow
+EFFECTS · IN/OUT. Screens a blurred copy of the whole picture back over itself, so everything gets a soft, dreamy haze rather than just the bright spots. Amount (0 to 1, default 0.6) sets how strong the haze is and Radius (0.5 to 12, default 4) how wide. Everyday use: a soft-focus or dreamy glow filter for photos and video. Also called a soft glow or a halation.
+Try: set Amount low on a sharp photo for a faint soft-focus look.
+Chain: Image Source -> diffuseglow -> Output
 
 ## 2D Image Effects, The Full Filter Shelf
 Infinite's image filters all share one C++ node class, but each of the 34 entries below spawns as its own node in the palette. The seven in Chapter Three got the full treatment; here's the rest of the shelf, one line each, straight from the shader source. All 34 entries live in one shared table in the app's source; here they are grouped roughly by what they do, distortion & detail, color, and compositing & glow.
@@ -162,8 +208,7 @@ Try: wire four different visual "looks" in and set it to switch every 8 beats wi
 Chain: 4x Image Sources -> Switcher -> Output
 
 ### Null
-)AGENTDOC"
-R"AGENTDOC(COMPOSITING · IN/OUT. A zero-cost reroute point: it simply reports whatever texture is plugged into it as its own output, without rendering anything itself. Meant purely for tidying up cable runs in a busy patch.
+COMPOSITING · IN/OUT. A zero-cost reroute point: it simply reports whatever texture is plugged into it as its own output, without rendering anything itself. Meant purely for tidying up cable runs in a busy patch.
 Try: insert one at a junction where several cables cross so the wiring reads cleanly instead of crisscrossing.
 Chain: Image Source -> Null -> Output
 
@@ -179,6 +224,11 @@ Try: wrap a whole "generator" section of a big patch in a Group so you can drag 
 ### Comment
 COMPOSITING · ORGANIZER. A plain annotation box, it does no image processing at all and produces no output. It just holds a block of text plus its own size and background color so you can label or explain parts of a patch.
 Try: drop one next to a complex chain to leave yourself a note about what a tricky setting does.
+
+### Scene 2D
+COMPOSITING · IMAGE OUT. The 2D View's document: a page that stacks node outputs, shapes, text, paint and groups into one picture at the document's size. Right-click a node with a picture and choose Add to 2D View, then arrange it in the 2D View panel: move, crop, scale, rotate, paint, draw vector paths and type text. Layers have blend modes, opacity, masks and clipping. Four Drive sliders (A to D) can be modulated. Everyday use: a layout or poster canvas, an artboard for a patch. Also called a 2D composition or a canvas.
+Try: add a video and a drawn shape to the 2D View, clip the video to the shape and send the page to an Output.
+Chain: Video -> Scene 2D -> Output
 
 ## Feedback, Trails & AI Vision
 Nodes that feed an image back into itself, or reach for on-device machine vision, turning one frame into an ever- evolving loop.
@@ -203,6 +253,16 @@ EFFECTS · IN/OUT. An iterative image mutator: instead of reprocessing the origi
 Try: record a slow FX-pad path with high feedback and low source-pull, then loop it so the image evolves through the same mutation journey every cycle.
 Chain: Video / Shape -> Resynthesize -> Output
 
+### Feedback
+COMPOSITING · IN/OUT. Outputs the previous frame: a one-frame delay, which is what lets a picture feed back into itself. On its own it shows nothing; it only works inside a loop, with a downstream node's output patched back into its input. Delay Frames (default 1) sets how many frames it holds. Everyday use: echo, smear and the 'video feedback' look of pointing a camera at its own screen. Also called a delay, a previous frame or a frame buffer.
+Try: route the output back in through a small zoom and colour shift for the classic infinite tunnel.
+Chain: Video In -> Feedback -> Blend -> Output
+
+### Trails
+COMPOSITING · IN/OUT. A ready-wired feedback loop with Decay (0.5 to 0.999, default 0.92), Zoom (0.9 to 1.1), Rotate, Drift X and Drift Y, Hue Shift, and a Blend of Max, Add or Screen. Decay sets how long the trail lingers, and Drift and Hue Shift push its colour. Everyday use: motion trails, light-painting streaks and a ghosting or echo look. Reach for it before wiring a Feedback loop by hand. Also called motion trails, an echo or ghosting.
+Try: set Decay to 0.98, Blend to Add and move a bright shape to paint light streaks.
+Chain: Shape -> Trails -> Output
+
 ## 3D Building Blocks & Materials
 Meshes and the surfaces they wear. These nodes speak the green Geometry cable, and everything eventually plugs into Render 3D to become a picture.
 
@@ -217,12 +277,13 @@ Try: import a character model and spin it live using a rotation modulated by an 
 Chain: Model 3D -> Material -> Render 3D
 
 ### Material
-3D · IN/OUT. Overrides the surface material of whatever geometry passes through it, so one authored look can be shared by several shapes. Exposes a full PBR set, color, metallic, roughness, opacity, emission, IOR, transmission, clearcoat, sheen, iridescence, and can take up to eight image inputs to paint any of those channels from a texture.
+3D · IN/OUT. Overrides the surface material of whatever geometry passes through it, so one authored look can be shared by several shapes. Exposes a full PBR set, color, metallic, roughness, opacity, emission, IOR, transmission, clearcoat, sheen, and iridescence: a thin-film colour shift, like a soap bubble or oil slick, set by IOR and film thickness in nanometres. The path tracer ignores iridescence. It can take up to eight image inputs to paint any of those channels from a texture.
 Try: feed a Noise texture into the roughness map input to give a single flat color a hand-worn, uneven sheen.
 Chain: Cube -> Material -> Render 3D
 
 ### Displacement
-3D · IN/OUT. Physically pushes a mesh's vertices using a texture, real 3D geometry displacement, distinct from the 2D Displace/Liquify image filters, which only warp a flat image and never move actual geometry. Offsets vertices by a strength and midlevel, with flat-shading and normal-flip options.
+)AGENTDOC"
+R"AGENTDOC(3D · IN/OUT. Physically pushes a mesh's vertices using a texture, real 3D geometry displacement, distinct from the 2D Displace/Liquify image filters, which only warp a flat image and never move actual geometry. Offsets vertices by a strength and midlevel, with flat-shading and normal-flip options.
 Try: drive it with a slow-animated Noise texture to make a flat plane ripple like disturbed water.
 Chain: Plane -> Displacement (texture: Noise) -> Render 3D
 
@@ -245,6 +306,112 @@ Chain: Curve -> Path -> Render 3D
 3D · IN/OUT. A pure pass-through for a geometry cable, forwards the mesh, material, and mapping from its single input unchanged. Exists purely to route or organize a 3D chain, the geometry equivalent of the plain Null node.
 Try: use it as a labeled junction point where a rig's main geometry chain splits off to several downstream effects.
 Chain: Torus -> Null 3D -> Material
+
+### Shade Coord
+SHADER · IMAGE OUT. A texture coordinate for the shading nodes: where on the surface each point sits. Output picks the space: UV (the mesh's own unwrap), Object, World, Generated (0 to 1 across the mesh bounds), Normal, View or Reflection. Patch it into a Shade Mapping or a texture's vector input, and end the chain in a Material's field input. Everyday use: decide how a pattern lines up on a 3D object. Also called texture coordinates or UVs.
+Try: use Generated and a Shade Checker to put a tile pattern across a sphere with no UV unwrap.
+Chain: Shade Coord -> Shade Checker -> Material
+
+### Shade Mapping
+SHADER · IMAGE OUT. Moves, turns and scales a shading coordinate. Type sets what moves: Point shifts the coordinate, Texture shifts the pattern (the inverse), Vector skips the translation and Normal keeps unit length. X, Y and Z move it (-4 to 4), and Rotate X, Y and Z turn it in degrees (-180 to 180). With nothing patched in it uses Generated coordinates. Everyday use: slide, turn or tile a texture on a surface. Also called a texture transform or UV offset and rotate.
+Try: set Type to Texture and rotate Z to 45 to turn a brick pattern on a wall.
+Chain: Shade Coord -> Shade Mapping -> Shade Brick -> Material
+
+### Shade Checker
+SHADER · IMAGE OUT. A 3D checkerboard of two colours (Color 1 and Color 2) on the coordinate patched into Vector, or Generated when that is empty, multiplied by Scale (0.1 to 32, default 5). Patch it into a Material's field input to drive the base colour. Everyday use: a checkered or tiled floor texture. Also called a checkerboard or a chequer texture.
+Try: set Scale to 2 and Color 1 to a warm colour for a big-tile floor.
+Chain: Shade Mapping -> Shade Checker -> Material
+
+### Shade Noise
+SHADER · IMAGE OUT. Layered 3D fractal noise, the kind behind cloud, marble and rock textures, on the coordinate patched into Vector (Generated when empty), times Scale (0.1 to 32, default 5). Detail (0 to 8, default 2) adds finer octaves, Roughness sets how strong each octave is, and Distortion (0 to 4) warps the coordinate before it is sampled. Output is Value (grey) or Colour (three decorrelated noises). Patch it into a Material's field input. Everyday use: cloud, marble, dirt or rock texture for a 3D surface. Also called fractal noise.
+Try: set Output to Colour and Distortion to 1 for a swirling marble.
+Chain: Shade Coord -> Shade Noise -> Material
+
+### Shade Voronoi
+SHADER · IMAGE OUT. Cell noise on the coordinate patched into Vector (Generated when empty), times Scale (0.1 to 32, default 5). Output picks what to show: Distance to the nearest cell point, Second (distance to the second nearest), Edge (the gap between the two), Cell (one grey per cell) or Colour (one colour per cell). Everyday use: cracked stone, scales, mosaics and crackle textures. Also called Worley or cellular noise.
+Try: pick Edge and feed it into a Shade Bump for cracked stone.
+Chain: Shade Coord -> Shade Voronoi -> Shade Bump -> Material
+
+### Shade Gradient
+SHADER · IMAGE OUT. A grey ramp across the coordinate patched into Vector (Generated when empty), times Scale (default 1). Type picks the shape: Linear, Quadratic, Easing, Diagonal, Spherical, Quadratic Sphere, Radial, Wave (bands along x) or Magic (interfering waves). Everyday use: a falloff or a mask for mixing two materials. Also called a gradient or a ramp mask.
+Try: use Radial and feed it into a Shade Mix factor to fade one material into another from the centre out.
+Chain: Shade Coord -> Shade Gradient -> Shade Mix -> Material
+
+### Shade Brick
+SHADER · IMAGE OUT. A brick-wall pattern on the coordinate patched into Vector (Generated when empty), times Scale (default 5). Width and Height (0.05 to 2) size one brick, Offset (0 to 1) shifts every second row, Mortar (0 to 0.125) sets the gap, and Tint (0 to 1) mixes each brick at random between Color 1 and Color 2. Everyday use: a brick, tile or stone wall texture. Also called a brick texture or masonry.
+Try: set Offset to 0.5 and Tint to 0.3 for a weathered brick wall.
+Chain: Shade Coord -> Shade Brick -> Material
+
+### Shade Image
+SHADER · IMAGE OUT. Puts any image cable on the surface as a texture. Projection Flat reads it at the vector (UV when unwired). Box projects it from three sides and blends by the normal, so it wraps a cube with no unwrap. Space Colour decodes sRGB, and Data reads raw values for masks and normal maps. Blend (default 0.2) sets the Box blend. Up to four pictures per material. Everyday use: put a photo, logo or video frame on a 3D object. Also called an image texture.
+Try: wire a video into Image, set Projection to Box and it wraps a cube with no unwrap.
+Chain: Video -> Shade Image -> Material
+
+### Shade Math
+SHADER · IMAGE OUT. Scalar maths on A, B and C: add, subtract, multiply, divide, power, logarithm, roots, absolute value, min and max, comparisons, smooth min and max, rounding, modulo, wrap, snap, ping-pong, sine, cosine, tangent and their inverses, hyperbolic functions, and degree-to-radian conversion. Only the operands the operation reads are shown. A and B (-10 to 10, default 0.5), C (default 0). Clamp limits the result to 0 to 1. Everyday use: turn one number into another, like scaling a value or wrapping an angle. Also called a calculator.
+Try: set Operation to Wrap and feed a ramp into A for a repeating stripe.
+Chain: Shade Coord -> Shade Math -> Shade Mix -> Material
+
+### Shade Vector Math
+SHADER · IMAGE OUT. Per-component vector maths on A, B and C (each an X, Y, Z triple): add, subtract, multiply, divide, cross product, project, reflect, refract, faceforward, dot product, distance, length, scale, normalize, and the per-axis rounding and trig operations. Dot, Distance and Length come out as a grey value. Scale only appears for Scale and Refract. Everyday use: bend or reflect a direction, such as a mirror direction for a reflection lookup. Also called a vector calculator.
+Try: use Reflect on the view direction and the surface normal to get a mirror direction.
+Chain: Shade Geometry -> Shade Vector Math -> Shade Image -> Material
+
+### Shade Mix
+SHADER · IMAGE OUT. Blends A into B by Factor (0 to 1, default 0.5), as a float, a vector or a colour. The Colour type runs B through one of 30 blend modes first (Normal, Multiply, Screen, Overlay, Difference, Hue, Saturation and so on). Clamp Factor holds the factor to 0 to 1. Everyday use: mix two textures or colours like a layer blend mode, or crossfade two materials with a mask. Also called a blend or a layer blend.
+Try: feed a Shade Gradient into Factor to fade a rust texture over clean metal.
+Chain: Shade Gradient -> Shade Mix -> Material
+
+### Shade Ramp
+SHADER · IMAGE OUT. A colour ramp of 2 to 8 stops (default 2), read at Factor (0 to 1). Interpolation is Linear, Ease, Constant or B-Spline, and each stop has its own position and colour. Below the first stop and above the last, the end colours hold. Everyday use: remap a grey value to a palette, like a gradient map or a heat map. Also called a colour gradient or a colour ramp.
+Try: wire a Shade Gradient into Factor and build a three-stop ramp from black through red to white.
+Chain: Shade Gradient -> Shade Ramp -> Material
+
+### Shade Map Range
+SHADER · IMAGE OUT. Remaps a value from the From Min to From Max range into the To Min to To Max range. Interpolation is Linear, Stepped (set by Steps, default 4), Smoothstep or Smootherstep. Clamp limits the output to the To range. Everyday use: rescale a number into a new range, such as a 0 to 1 signal into a 0 to 90 range. Also called a rescale or a remap.
+Try: choose Stepped with 4 steps to turn a smooth gradient into four flat bands.
+Chain: Shade Coord -> Shade Map Range -> Shade Ramp -> Material
+
+### Shade Separate
+SHADER · IMAGE OUT. Takes one channel from a vector or colour as a grey value. Mode RGB / XYZ gives R, G or B (or X, Y, Z), and HSV gives Hue, Saturation or Value. Channel picks which one. Everyday use: pull out just the red channel of a colour, or the height of a position. Also called split channels or extract channel.
+Try: take Hue from a colour and drive a colour cycle with it.
+Chain: Shade Image -> Shade Separate -> Shade Map Range -> Material
+
+### Shade Combine
+SHADER · IMAGE OUT. Builds a vector or colour from three values: X, Y and Z in RGB / XYZ mode, or Hue, Saturation and Value in HSV mode. Patch a pin to drive that channel; an unpatched channel uses its own value. Everyday use: assemble a colour from three signals, such as three knobs. Also called merge channels or compose colour.
+Try: drive Hue from an LFO and keep Saturation and Value fixed for a colour cycle.
+Chain: LFO -> Shade Combine -> Material
+
+### Shade Curves
+SHADER · IMAGE OUT. One curve through 2 to 8 points (default 2, from (0,0) to (1,1)), applied to each channel of the colour patched in and blended in by Factor (0 to 1, default 1). The default curve leaves the colour unchanged, so pull a point to lift the shadows or crush the highlights. Everyday use: a tone curve for contrast, like the curves tool in a photo editor. Also called a tone curve or RGB curves.
+Try: lift the low end of the curve to brighten the shadows on a texture.
+Chain: Shade Image -> Shade Curves -> Material
+
+### Shade Bump
+SHADER · IMAGE OUT. A height that bends the surface normal to fake small bumps. Strength (0 to 1, default 1) sets how far the normal tilts, Distance (0 to 1, default 0.1) how far the height is sampled, and Invert flips bumps into dents. Wire it into a Material's normal input. Everyday use: add fake surface detail such as bricks, dents or scratches without extra geometry. Also called bump mapping.
+Try: feed a Shade Voronoi into the height and keep Strength low for a subtle pitted surface.
+Chain: Shade Voronoi -> Shade Bump -> Material
+
+### Shade Normal Map
+)AGENTDOC"
+R"AGENTDOC(SHADER · IMAGE OUT. Turns a tangent-space normal map (the bluish texture of surface detail) into a normal for the Material's normal input. Feed it a Shade Image set to Data, since a normal map must not be colour-decoded. Strength (0 to 2, default 1) scales the tilt. Everyday use: the surface detail that artists bake from high-poly models. Also called a normal map or a bump texture.
+Try: load a normal-map PNG into Shade Image on Data and raise Strength to 1.5 for deeper relief.
+Chain: Shade Image -> Shade Normal Map -> Material
+
+### Shade Fresnel
+SHADER · IMAGE OUT. The reflectance of a clear dielectric, such as glass or water, at the IOR patched into it. It is low when you look straight on and rises toward 1 at grazing angles: the edge glow you see on a lake or a glass pane. Everyday use: make a surface read as glass, water or glossy plastic. Also called the Fresnel effect or edge reflection.
+Try: wire a constant of 1.5 into IOR (about the value of glass) and use the output to brighten the edges of a sphere.
+Chain: Shade Fresnel -> Shade Mix -> Material
+
+### Shade Layer Weight
+SHADER · IMAGE OUT. A blend weight by view angle. Output Fresnel gives the glassy-edge weighting and Facing gives 0 at the edges to 1 facing the camera. Blend (0 to 1, default 0.5) sets how much of the surface is weighted. Everyday use: a rim or edge highlight, like an edge-lit look on a product render. Also called a rim weight or facing ratio.
+Try: use Facing to fade a second colour in at the silhouette of a sphere.
+Chain: Shade Layer Weight -> Shade Mix -> Material
+
+### Shade Geometry
+SHADER · IMAGE OUT. Reads the surface itself. Output picks one of Position, Normal, Tangent, Incoming (the view direction), Backfacing, Curvature, Cavity or a per-object Random value. Curvature and Cavity come from Mesh Wear, which scores each mesh's ridges, creases and occlusion, and only works out when a material reads them. Everyday use: make a material react to the shape of the object, such as dirt in creases or wear on edges. Also called geometry info.
+Try: pick Cavity into a Shade Mix to darken the creases on a sculpted mesh.
+Chain: Cube -> Shade Geometry -> Shade Mix -> Material
 
 ## 3D Points, Instancing & Mesh Ops
 Scatter, stamp, and clean up geometry at scale, the toolkit for turning one shape into a thousand, or a cloud of points into solid form.
@@ -299,6 +466,36 @@ Chain: Particle System -> Metaballs -> Render 3D
 Try: set a high displace weight and low smooth weight, then auto-step it to slowly grow an organic, coral-like form from a simple starting mesh.
 Chain: Icosphere -> Resynthesize 3D -> Render 3D
 
+### Array
+3D · IN/OUT. Duplicates the input mesh in a line, or in a radial ring when Radial is on. Count (1 to 128, default 5) sets how many copies. Radial spaces them around by Radius (default 1); linear spacing uses Offset X, Y and Z (X defaults to 0.6). Rot / Step and Scale / Step add a little rotation and scale to each copy, so every copy differs from the last, and Pivot and Spin place the rotation. The Operation dropdown holds the whole mesh-operator family and opens on Array. Everyday use: repeat an object into a row, a fence, a ring of columns or a spiral. Also called a repeat, a clone or copy-and-offset.
+Try: set Count to 12, turn Radial on and set Radius to 2 for a ring of twelve cubes.
+Chain: Cube -> Array -> Render 3D
+
+### Select
+3D · IN/OUT. Marks a subset of faces so the operations after it act on just those. Mode picks the test: All, By index (a start and a stride), By position (between two values on an X, Y or Z axis), By normal (faces pointing within a facing threshold, with a sign), Random (a chance) or By radius (within a distance of a centre). Invert flips the selection and Add to Selection unions it with what was already selected. Mesh operators act on the marked faces when Selection only is on. The older Delete, Transform and Extrude Selected nodes are deprecated; use Selection only instead. Everyday use: pick only the top of a box, or a random scatter of faces, to change. Also called face selection.
+Try: select the faces that point up (By normal, facing 0.5), then turn on Selection only on Inset to bevel just the tops.
+Chain: Cube -> Select -> Inset -> Render 3D
+
+### Inset
+3D · IN/OUT. Shrinks each face region inward by Width and raises or sinks it by Depth, leaving a wall around it, like pressing a stamp into clay. Width (0.001 to 0.5, default 0.05) is how far in, Depth (-0.5 to 0.5, default 0) how far up (negative sinks it), and Patch angle (1 to 120 degrees, default 30). Selection only (off by default) limits it to the faces marked by Select; with it off, every face is inset. Everyday use: a panel or recessed-frame look on a box. Also called a face inset or a recess.
+Try: select the top faces, set Width to 0.1 and Depth to -0.05, and the top is pressed into a panel.
+Chain: Cube -> Select -> Inset -> Render 3D
+
+### Fur
+3D · IN/OUT. Grows strands on the faces as thin ribbons: fur, fleece, grass or hair. Density (1 to 400, default 40) sets strands per area and Max Strands caps the total (default 150,000). Length (0 to 0.5, default 0.012) and Length Jitter vary the strand length, and Width sets how thick each ribbon is. Gravity droops the tips, Clump pulls them together, Curl twists them, and Comb X, Y and Z lean the roots. Plug a curve into the guide input and every strand follows its shape, for styled long hair. Normals is Ribbon or Tangent (Tangent is for a Hair material). Selection only limits the fur to Select's faces. Everyday use: a furry, hairy or grassy surface on any 3D object. Also called a hair or grass generator.
+Try: plug a curve into guide, raise Clump and Gravity, and render with a Hair material for a styled ponytail.
+Chain: Sphere -> Fur -> Render 3D
+
+### Point Trails
+3D · IN/OUT. Draws where each point has been. Points go in and a mesh of tails comes out, so Particle System, then Point Trails, then Render 3D gives comet-style tails you can fly the camera through. Length (2 to 240, default 30) is how many past positions each tail keeps, and Sample Every (1 to 10) takes every Nth frame for longer tails at the same cost. Width, Fade and Taper shape the tail. Colour is From points or a head-to-tail gradient over age. Match By Particle ID starts a new tail when a particle is reborn; Index follows each slot. Point Limit (default 10000) caps the points. It draws only the tails, so wire the source into Render 3D too to see the points. Everyday use: light trails, sparks and streaks behind moving particles. Also called motion trails or particle tails.
+Try: feed a particle emitter into Point Trails with Length 80 and Gradient over age for glowing comet streaks.
+Chain: Particle System -> Point Trails -> Render 3D
+
+### Sweep
+3D · IN/OUT. Carries a profile shape along a path curve to make a surface: pipes, rails, rims, cables and ribbons. Patch the profile into the first input and the route into the second. With no profile it sweeps a round one, so a path alone gives a tube (Profile Radius 0.002 to 2, default 0.1; Profile Sides 3 to 64, default 12). Start Scale and End Scale (0 to 4) taper it, Twist (-1080 to 1080) turns it along the way, and Caps closes the ends of a closed profile on an open path. Everyday use: a pipe, cable or neon tube along a drawn curve. Also called extrude along a path.
+Try: draw a curve, sweep a tube with End Scale 0 and get a wire that fades to a point.
+Chain: Sweep -> Render 3D
+
 ## 3D Simulation, Scene & Render
 Physics, the camera, the lights, and the render pass that turns geometry into a picture.
 
@@ -349,9 +546,29 @@ Try: route a vocal track in and place several ribbons at different rotations to 
 Chain: Audio In -> Audio Ribbon -> Render 3D
 
 ### Render 3D
-3D · IMAGE OUT. The camera and lighting engine that turns every 3D node into a real picture, physically-based Cook-Torrance/GGX materials, ACES tonemapping, and MSAA antialiasing, all live, with up to 4 geometry inputs plus camera, light, and HDRI. This is where the green Geometry cables turn back into a peach Image cable.
+3D · IMAGE OUT. The camera and lighting engine that turns every 3D node into a real picture, physically-based Cook-Torrance/GGX materials, ACES tonemapping, and MSAA antialiasing, all live, with up to 4 geometry inputs plus camera, light, and HDRI. This is where the green Geometry cables turn back into a peach Image cable. The path trace engine denoises its picture as it settles, with no setting of its own.
 Try: plug in geometry, a material, a light, and an HDRI, then send the result straight into Bloom.
 Chain: Geometry + Material + Light + HDRI -> Render 3D -> Bloom
+
+### Ocean
+3D · GEOMETRY OUT. A simulated ocean surface mesh built from Gerstner-style waves. Resolution (8 to 300, default 96) sets the grid and Size (0.5 to 20, default 4) its footprint. Amplitude (0 to 1, default 0.12) is the wave height, Wavelength (0.1 to 8, default 2) the spacing, Steepness (0 to 2) how peaked the crests get, and Choppiness (0 to 2) how far they pinch. Direction (degrees, default 34.4) is the heading, Octaves (1 to 8, default 4) layers finer swell on top, Speed (-3 to 3) sets how fast it moves, and Horizon (1 to 100) how far the surface reaches. Everyday use: a sea or lake behind a boat in a 3D scene. Also called water, waves or a sea surface.
+Try: raise Octaves to 6 and Steepness to 1.4 for a choppy sea under a sky.
+Chain: Ocean -> Render 3D
+
+### Cloth
+3D · GEOMETRY OUT. A cloth simulation over an input mesh: fabric, flags, sails. Pinned sets which part stays fixed (None, Top edge, Corners or Border). Stiffness (0 to 1, default 0.9) and Bending (0 to 1, default 0.1) set how the fabric holds, Iterations (1 to 40, default 6) sets solver accuracy, and Damping and Mass set how it settles. Gravity X, Y and Z (Y defaults to -9.8), Wind X, Y and Z (-20 to 20) and Turbulence (0 to 20) push it. Collide with ground turns on ground contact; Hold Shape (0 to 1) keeps it near its rest pose. An optional collider mesh drapes it over an object, with Distance and Friction for the contact. Reset re-drops the cloth. Everyday use: a flag, a tablecloth or a dress draped over a body. Also called fabric simulation.
+Try: pin the top edge, add wind on X and feed a box into the collider to drape a flag over it.
+Chain: Plane -> Cloth -> Render 3D
+
+### Feedback 3D
+3D · GEOMETRY OUT. A one-frame delay for geometry, so a 3D chain can loop back on itself. Patch the starting shape into Seed and the end of the chain into Loop. Each frame it outputs what the loop made from the frame before, so shapes can grow, drift and build up, a home-made growth or particle sim. It restarts from Seed on a rewind, holds while the transport is paused, and resets if the loop blows up to infinity. Reset starts over from the seed; with nothing in Loop it passes the seed through. Everyday use: a shape that grows or evolves over time. Also called geometry feedback or a 3D delay.
+Try: seed a small cube and loop a transform that scales it up each frame for a shape that grows.
+Chain: Cube -> Feedback 3D -> Transform -> Render 3D
+
+### 3D View
+3D · IMAGE OUT. The final stage of a 3D patch: it holds the objects you bring in and renders them to a picture. Right-click any 3D node and choose Add to 3D View, then arrange it in the 3D View panel (G moves, R rotates, S scales; Shift+3 opens the panel). Its settings are the picture's: Width and Height (1920 by 1080 by default), Samples for anti-aliasing (default 2), Shadows, Exposure, Bloom, ambient occlusion, depth of field and motion blur. Projection options include a dome, a fisheye and a lat-long panorama (Lat and Lon min and max). An optional path-traced Engine takes Path Samples (default 128) and Bounces (default 6). It stays transparent until you set a world in its World tab. F12 renders a picture through an Output node. Everyday use: the camera and render settings for a 3D scene. Also called a 3D viewport or a 3D stage.
+Try: add a cube and a sphere to the 3D View, turn on Shadows and Bloom, then press F12 through an Output node.
+Chain: Cube -> Sphere -> 3D View -> Output
 
 ## Audio Synthesizers
 Where sound is born. These nodes turn silence, or notes coming in from an arpeggiator or MIDI controller, into audio you can hear and process.
@@ -404,7 +621,8 @@ Chain: Recorded Sample -> Granular -> Audio Out
 ### PaulStretch
 SYNTHS · AUDIO OUT. Stretches any audio file up to 1000 times longer without changing its pitch, turning a two-second vocal snippet into an hours-long, slowly shifting ambient texture. The classic "everything sounds like a choir of angels" trick.
 Try: stretch a spoken-word sample 20x and drown it in reverb for an instant soundscape bed.
-Chain: Vocal Sample -> PaulStretch (20x) -> Reverb
+)AGENTDOC"
+R"AGENTDOC(Chain: Vocal Sample -> PaulStretch (20x) -> Reverb
 
 ### Molder
 SYNTHS · AUDIO OUT. An evolving sound-design tool: it decomposes a recorded sample into tracked harmonic partials plus residual noise, then Roll mutates a parameter genome and re-renders a new sample from that, each roll drifting further from the last, not from the original source.
@@ -420,6 +638,16 @@ Chain: Audio Loop -> Grain Molder (Amount) -> Reverb
 SYNTHS · AUDIO OUT. An 8-track, 8-step sequencer for your own samples, complete with swing groove, mutes, and solos, build a full beat without leaving the canvas, and tap any lane's trigger to drive visuals too.
 Try: send the kick lane's trigger into a Glitch node so the picture stutters with the beat.
 Chain: Drum Sequencer -> Audio Out
+
+### Wavetable
+SYNTHS · AUDIO OUT. A two-engine wavetable synth. Each engine (A and B) reads one of about 60 named tables (Basic Shapes, Harmonics, Formant, Vocal, Bell, Choir, Vibraphone, Plucked String and more), and Mix (A to B) blends them. Per engine: Position through the table, Volume, Pan, Unison (1 to 8 voices) with Detune, Stereo Width, Octave, Semitone and Fine tune, Phase, a Warp menu (FM, AM, ring mod, hard sync, bend, mirror, quantize, and more) with Warp and Warp Ratio, and a filter (low-pass, high-pass or band-pass at 12, 24 or 36 dB per octave, notch or comb) with Cutoff and Resonance. Pitch, filter and amp envelopes (Attack, Decay, Sustain, Release in ms) shape each note. With no note cable it free-runs at Frequency (220 Hz by default) with a Glide time; wire in notes and it becomes polyphonic. An FM in input takes audio, with FM Depth (0 to 2) and FM Mode (PM or FM) setting how it modulates. Everyday use: a digital synth pad, lead, bass or bell sound. Also called a wavetable synth or a digital oscillator.
+Try: set Mix to halfway, A to Vocal and B to Bell, then wire a note cable in for a chord pad.
+Chain: Piano Roll -> Wavetable -> Audio Out
+
+### Generate Samples
+SYNTHS · AUDIO OUT. Makes a sample instead of loading one. Pick a music style (deep house, dub techno, lofi beats and about 30 more), a seed, a length of 1, 2, 4 or 8 bars, and press generate. A private patch built from that style renders a seamless loop on a background thread while the canvas keeps running. Part picks the whole mix or one layer of it from the same seed: synths, pads, plucks, percussion or drums. Variation (0 to 1, default 0.5) sets how far each part strays, the dice picks a new seed, and Follow Transport and Follow Scale take the patch's tempo and key. Every loop is normalised to -14 LUFS with a -1 dB true-peak ceiling. Pitch, Speed, Start, End, Loop, Reverse and Ping-pong then play it like any sample player. Keep as file writes the loop to a WAV. The patch saves the recipe, not the audio. Everyday use: a royalty-free loop or beat made on demand. Also called a loop maker or a beat generator.
+Try: pick a dub techno style, set Part to drums and press generate, then keep as file for a WAV.
+Chain: Piano Roll -> Generate Samples -> Audio Out
 
 ## Audio Effects & Plugin Hosting
 Shape sound after it's been made, filters, space, grit, and a doorway to Audio Units already installed on your Mac. Like the image filter shelf, every effect below shares one C++ class but spawns as its own node.
@@ -451,8 +679,7 @@ Chain: Delay -> Reverb (Cathedral) -> Audio Out
 
 ### Drive
 AUDIOEFFECTS · IN/OUT. Warm analog-style tube-and-transistor saturation with drive, bias, tone, and color controls, a gentle glow at low settings, real grit when you push it.
-)AGENTDOC"
-R"AGENTDOC(Try: hit a drum mix with a few dB of Drive for extra punch and glue.
+Try: hit a drum mix with a few dB of Drive for extra punch and glue.
 Chain: Drum Mix -> Drive -> Audio Out
 
 ### Bitcrush
@@ -532,7 +759,8 @@ Try: automate the bend knob for a slow pitch-drift or vibrato-like wobble on a s
 Chain: MIDI Notes -> Pitch Bend -> Oscillator
 
 ### Velocity Curve
-NOTES · IN/OUT. Reshapes how hard you hit the keys maps to output velocity, using a single curve exponent, below 1 boosts soft hits, above 1 favors hard hits.
+)AGENTDOC"
+R"AGENTDOC(NOTES · IN/OUT. Reshapes how hard you hit the keys maps to output velocity, using a single curve exponent, below 1 boosts soft hits, above 1 favors hard hits.
 Try: set the curve well below 1 to make a light, breathy playing style trigger notes at near-full velocity.
 Chain: MIDI Notes -> Velocity Curve -> Sampler
 
@@ -560,6 +788,11 @@ Chain: MIDI Notes -> Glide -> Wavetable
 NOTES · IN/OUT. Repeats every incoming note a set number of times, each repeat spaced further apart, getting quieter and optionally shifting in pitch. The original note always plays first unchanged.
 Try: use a short delay with a +12 semitone shift per repeat to turn single notes into an ascending octave echo trail.
 Chain: MIDI Notes -> Note Echo -> Wavetable
+
+### Piano Roll
+NOTES · NOTE OUT. Plays the notes of a Piano Roll page linked to it: a MIDI lane in the Timeline, drawn as clips you can cut and loop like any other clip. It follows the transport, plays each clip as drawn (loops unrolled, chance rolled fresh on every play), and sends pitch bend, pressure and timbre curves with its notes. Transpose (-48 to 48 semitones) and Velocity (0 to 2) act on everything it plays. Its notes input passes through and merges in unless Thru is off. Global Scale snaps every played note to the project key and scale. Everyday use: a drawn MIDI melody or chord progression you can loop and transpose. Also called a MIDI clip or a note sequencer.
+Try: draw a four-bar melody, set Transpose to +7 and route it into Wavetable for a fifth-up copy.
+Chain: Piano Roll -> Wavetable -> Audio Out
 
 ## Generative & Physical Note Nodes
 Nodes that write their own music, from a classic arpeggio pattern to a physics playground that composes melodies from bouncing balls, plus the mergers and switchers that manage several note streams at once.
@@ -607,8 +840,7 @@ Chain: Random Note Generator -> Wavetable Synth
 ### Note Stack
 NOTES · IN/OUT. Layers up to 8 extra transposed copies on top of every note that passes through, with the original note always passing through underneath. Each voice has its own semitone offset and on/off switch.
 Try: enable the +12 and +7 voice offsets to turn single played notes into instant octave-and-fifth power chords.
-)AGENTDOC"
-R"AGENTDOC(Chain: MIDI Notes -> Note Stack -> Wavetable Synth
+Chain: MIDI Notes -> Note Stack -> Wavetable Synth
 
 ### Note Capturer
 NOTES · IN/OUT. Records whatever note stream feeds it, with tempo-relative timing so it stays in sync even if the BPM changes, then loops that recording back on top of the live input, which always keeps passing through.
@@ -684,7 +916,8 @@ Chain: Macro Knob -> Mod Depth -> Reverb Mix
 ### Macro Slider
 MACROS · OUT. A plain 0-to-1 fader, the simplest possible performance control, meant to be grabbed and pushed rather than automated.
 Try: map it to Reverb Mix for a single fader that wets or dries the whole patch.
-Chain: Macro Slider -> Mod Depth -> Reverb Mix
+)AGENTDOC"
+R"AGENTDOC(Chain: Macro Slider -> Mod Depth -> Reverb Mix
 
 ### Macro Bipolar Knob
 MACROS · OUT. A center-detent knob that swings -1 to +1 rather than 0 to 1, so its resting position genuinely means "no effect", ideal for anything you want to push both directions from a neutral center, like a pan or a pitch bend.
@@ -780,8 +1013,7 @@ Try: patch it into an oscillator's fine-tune modulation input for a subtle, cont
 Chain: Vibrato -> Oscillator Fine-Tune
 
 ### Envelope
-)AGENTDOC"
-R"AGENTDOC(MODULATORS · OUT. Applies a classic ADSR contour to a continuous modulation signal rather than a note trigger, the "gate" is derived from the input crossing a threshold rather than a note-on/off.
+MODULATORS · OUT. Applies a classic ADSR contour to a continuous modulation signal rather than a note trigger, the "gate" is derived from the input crossing a threshold rather than a note-on/off.
 Try: feed a slow LFO in to get a rhythmic swell-and-release pulse instead of a raw sine wave.
 Chain: LFO -> Envelope -> Mod Depth
 
@@ -837,7 +1069,8 @@ Try: write a kernel that reads its own state and blends in the new frame for a s
 Chain: FieldPixel -> Bloom -> Output
 
 ### Field Modifier
-3D · IN/OUT. Runs your kernel once per vertex of an incoming mesh, letting you rewrite position, normal, color, or any custom attribute with plain math instead of picking from a fixed deformer list. Leave the geometry input empty and it generates its own points instead, acting as a source.
+)AGENTDOC"
+R"AGENTDOC(3D · IN/OUT. Runs your kernel once per vertex of an incoming mesh, letting you rewrite position, normal, color, or any custom attribute with plain math instead of picking from a fixed deformer list. Leave the geometry input empty and it generates its own points instead, acting as a source.
 Try: write P.y += bass to turn any mesh into a shape that visibly pulses with the low end.
 Chain: Geometry + Audio Analyze (Bass) -> Field Modifier -> Render 3D
 
@@ -855,6 +1088,16 @@ Chain: MIDI Notes -> Field Synth -> Reverb
 AUDIOEFFECTS · IN/OUT. Runs a kernel once per audio sample as a custom effect, declare a bit of state for a delay line or filter memory, declare a param for an automatic modulatable knob, and write the DSP math yourself instead of hunting for the right built-in. Also cataloged in Chapter Twelve alongside the rest of the effects shelf.
 Try: write a simple one-pole low-pass in a few lines and compare it against the built-in Audio Filter.
 Chain: Audio Source -> Field Effect -> Audio Out
+
+### Field Modulator
+MODULATORS · OUT. A modulator written in Field code. Its code publishes a value from 0 to 1 that drives any knob it is patched into. Count and Max Elements (default 65536) set the field's size, and Size, Height, Freq and Speed are exposed controls you can modulate (Size 0.5 to 10, Height 0 to 2, Freq 0.5 to 8, Speed 0 to 5). Patch it in the Field Patcher, or start from Slow LFO, Triangle LFO, Pulse Train or Skipping Beat. Save, Export and Import keep the code. Everyday use: a custom LFO or animated curve when the built-in modulators are not enough. Also called a custom LFO or formula modulator. See the Field Language chapter.
+Try: start from Slow LFO, change the publish line to a square wave and wire it into a knob.
+Chain: Field Modulator -> Shape (Size) -> Output
+
+### Spectral Field
+AUDIOEFFECTS · IN/OUT. Runs a Field kernel once per frequency bin. Audio goes in, is cut into a spectrum (STFT), your kernel runs on every bin, and the result is turned back into sound. Inside the kernel read bin, bins, binhz, hop and sr, and write mag, phase or freq. mag.at(k) reads another bin, state keeps memory per bin, and a second audio input adds a spectrum for cross-synthesis. Size (512 to 8192, default 2048) trades time for frequency detail, and latency is one Size. Cutoff (20 to 20000 Hz, default 2000) and Mix are exposed. The starter kernel is a low-pass. Everyday use: a custom EQ, a spectral filter or a robot-voice effect. Also called an FFT effect or a spectral processor.
+Try: keep the starter low-pass, drop Size to 512 and sweep Cutoff for a fast, tight filter.
+Chain: Audio In -> Spectral Field -> Audio Out
 
 ## More Shapes & Slideshows
 Ten more 2D sources: a picture slideshow that steps on the beat, and nine vector shapes that each do one thing well. Like Shape, every one is drawn from pure math, so they stay razor sharp at any size and every control can be animated.
@@ -909,6 +1152,21 @@ SOURCE · IMAGE OUT. An angled bracket, or chevron. Stack and repeat it for arro
 Try: feed it into Mirror Tile to build a scrolling zig-zag pattern.
 Chain: Chevron -> Mirror Tile -> Output
 
+### Ring
+SOURCE · IMAGE OUT. A donut or annulus: a circle with a hole. Corner / Thick sets the ring's thickness (0 to 0.3, default 0.05). Shape is the same selector every 2D shape uses, and it opens on Ring. Width and Height (16 to 4096) set the canvas, Size X and Size Y the footprint, and Rotation, Position, Fill, Stroke and Feather the look. Background colour and opacity sit behind it. Everyday use: a ring logo, a halo, a loading spinner or a donut-shaped mask. Also called a donut, an annulus or a hoop.
+Try: animate Rotation with an LFO and thicken Corner / Thick on the beat for a pulsing halo.
+Chain: LFO -> Ring (Rotation) -> Bloom -> Output
+
+### Line
+SOURCE · IMAGE OUT. A straight stroked line with no fill inside. It uses the same size, rotation, stroke, colour and feather controls as the other 2D shapes, and its Shape selector opens on Line. Everyday use: a rule, a divider, a scan line or a graph axis. Also called a stroke or a divider.
+Try: wire an LFO into Rotation so the line sweeps like a radar scan.
+Chain: LFO -> Line (Rotation) -> Output
+
+### Arrow
+SOURCE · IMAGE OUT. An arrow shape whose direction follows Rotation. It uses the same size, fill, stroke and feather controls as the other 2D shapes, and its Shape selector opens on Arrow. Everyday use: a pointer, a direction indicator or a play icon in a graphic. Also called a pointer or a direction arrow.
+Try: tie Rotation to an LFO and the arrow circles like a compass needle.
+Chain: LFO -> Arrow (Rotation) -> Output
+
 ## Alpha, Keys & Edges
 Transparency tools and edge finders. Cut a subject out of its background, clean up the matte, and fix the dark or bright halos that show up when layers don't blend right. The last four nodes find edges and tile images seamlessly.
 
@@ -934,8 +1192,7 @@ Chain: Video -> Alpha from Luma -> Blend
 
 ### Alpha Levels
 COMPOSITING · IN/OUT. The Levels remap, applied to the alpha channel only. Low and High clamp and stretch the matte's range (choking a soft edge tighter, or spreading it wider) and Gamma bends the falloff in between. The go-to cleanup pass after Chroma Key or Alpha from Luma.
-)AGENTDOC"
-R"AGENTDOC(Try: raise Low a touch after a key to remove the faint haze left around a subject.
+Try: raise Low a touch after a key to remove the faint haze left around a subject.
 Chain: Chroma Key -> Alpha Levels -> Output
 
 ### Premultiply
@@ -959,7 +1216,8 @@ Try: tile a Noise source to make a seamless texture for a 3D material.
 Chain: Noise -> Mirror Tile -> Material
 
 ### Normal Map
-EFFECTS · IN/OUT. Works out a tangent-space normal map by treating the picture's brightness as a height field. The output switch can also show the raw normals, the source height, or the steepness of the slope.
+)AGENTDOC"
+R"AGENTDOC(EFFECTS · IN/OUT. Works out a tangent-space normal map by treating the picture's brightness as a height field. The output switch can also show the raw normals, the source height, or the steepness of the slope.
 Try: turn a Noise or Texture into a bump map for a Material's surface.
 Chain: Texture (Brick) -> Normal Map -> Material
 
@@ -1111,8 +1369,7 @@ Chain: Audio File -> Looper -> Audio Out
 
 ### MPC
 SYNTHS · AUDIO OUT. A 16-pad sample player in the spirit of an MPC. Each pad holds one sample and one play mode: One shot plays the whole sample, Gate plays while the pad is held, and Loop toggles a looping playback on and off. Hit pads with the mouse, with a MIDI controller, or with notes 36 to 51 on the note input, the usual pad-controller layout. Every pad is its own voice with its own volume, pitch, pan, speed, fine tune and fades, and a pad can be Synced to a musical division so a hit waits for the next grid line. All pads mix to one stereo output.
-)AGENTDOC"
-R"AGENTDOC(Try: load a kick, snare and hat on three pads and play them from a MIDI pad controller through a MIDI Notes node.
+Try: load a kick, snare and hat on three pads and play them from a MIDI pad controller through a MIDI Notes node.
 Chain: MIDI Notes -> MPC -> Audio Out
 
 ### Resonator Bank
@@ -1133,7 +1390,8 @@ Chain: Wavetable -> Spec Blur -> Reverb -> Audio Out
 ### Audio Meter
 UTILITY · IN/OUT. A stereo level meter with separate left and right bars on a -60 to +3 dBFS scale. Each bar shows the average level (solid) inside the peaks (faint), with a peak-hold line and the loudest peak as a number on top that turns red at 0 dBFS. Audio passes through unchanged, and it measures whatever it is patched to even with its output unconnected, so it works as a tap on any cable.
 Try: hang one off the master cable to watch your headroom as you mix.
-Chain: Audio File -> Audio Meter -> Audio Out
+)AGENTDOC"
+R"AGENTDOC(Chain: Audio File -> Audio Meter -> Audio Out
 
 ### Velocity to CV
 MODULATORS · IN/OUT. Turns the velocity of incoming notes into a 0 to 1 modulator, with an adjustable velocity range. Hit harder and the value goes higher.
@@ -1174,6 +1432,11 @@ Chain: MIDI Notes -> Predictive Velocity -> Wavetable
 PREDICTION · NOTE OUT. Works like Predictive Notes, but learns pitch as a distance from a root note instead of absolute pitches. What comes back is a repeating pattern anchored on one note with the occasional deviation, such as C2 C2 C2 D3 C2 C2 C2. Root is found automatically, and changing it afterwards transposes the whole pattern without relearning.
 Try: play a bass riff, Learn it, then change Root to move the pattern up a fifth.
 Chain: MIDI Notes -> Predictive Rhythm -> Wavetable
+
+### Moves
+PREDICTION · OUT. Your predictive macro faders. Moves learns from your multi-knob gestures: it finds the main directions you move a group of controls in (principal components of the changes, via PCA on the deltas), then lets a few macro faders (Fader 1 to 4) drive many coupled parameters together in your own style. Everyday use: one slider that moves a whole group of settings the way you usually move them, a 'macro' or 'morph' knob. Also called a macro knob or a predictive fader.
+Try: turn a few knobs the way you like, then drive Fader 1 and watch the whole group move together.
+Chain: Moves -> Wavetable (Cutoff) -> Audio Out
 
 ## Sketch, Field Notes & Signals
 Code-drawn images and meshes, a Field script that plays notes, a MIDI file player and out, and the three Tracking nodes that turn a camera into modulators. Sketch and Sketch 3D turn every param() call into a knob you can modulate, like any other control.
@@ -1262,8 +1525,7 @@ Try: send your finished patch to OBS with no capture card.
 Chain: Video -> NDI Out
 
 ## New Instruments, Effects & Modulators
-)AGENTDOC"
-R"AGENTDOC(The sound side of v0.6: four new synths, a designed-room reverb, a three-stage saturator, spectral tools, and modulators that give every note its own value.
+The sound side of the later additions: four new synths, a designed-room reverb, a three-stage saturator, spectral tools, and modulators that give every note its own value.
 
 ### FM
 AUDIO · SYNTH. A 4-operator FM synth: four sine operators wired by one of 11 algorithms, from a 4>3>2>1 stack to four carriers side by side. Each operator follows the note at a ratio or sits at a fixed frequency, and has its own level and envelope. Feedback lets operator 4 modulate itself, from a brighter sine to a buzz.
@@ -1276,7 +1538,8 @@ Try: switch the exciter to bow and hold a chord for a sustained cello pad.
 Chain: MIDI Notes -> String -> Audio Out
 
 ### Partials
-AUDIO · SYNTH. Playable resynthesis: a loaded sample is analysed once into tracked partials plus the noise they leave behind, then every note plays it back additively at the note's pitch. Transposing keeps the sample's formants where they were, so a voice an octave up still sounds like the same voice. Partials thins the stack from the top and morph crossfades between sets.
+)AGENTDOC"
+R"AGENTDOC(AUDIO · SYNTH. Playable resynthesis: a loaded sample is analysed once into tracked partials plus the noise they leave behind, then every note plays it back additively at the note's pitch. Transposing keeps the sample's formants where they were, so a voice an octave up still sounds like the same voice. Partials thins the stack from the top and morph crossfades between sets.
 Try: drop in a voice sample and play it as a keyboard that never turns into a chipmunk.
 Chain: MIDI Notes -> Partials -> Audio Out
 
@@ -1330,8 +1593,98 @@ MODULATOR · SIGNAL OUT. Learns where you leave each knob and how fast you move 
 Try: play for a minute, let go, and watch the patch keep evolving.
 Chain: Drift -> Analog (Cutoff)
 
+### Chorus
+AUDIO · EFFECT. Thickens a sound by mixing in two or three slightly detuned copies, each wobbled by an LFO. Spread widens it across the stereo field.
+Try: put Depth low and Rate slow on a pad for a lush, wider sound.
+Chain: Analog -> Chorus -> Audio Out
+
+### Flanger
+AUDIO · EFFECT. The jet-plane swoosh: a very short delay with feedback, swept in time, which makes a moving comb of notches. Feedback past zero gives a hollower, nasal tone.
+Try: turn Feedback up and sweep Rate slowly under a drum loop.
+Chain: Audio In -> Flanger -> Audio Out
+
+### Phaser
+AUDIO · EFFECT. Sweeps a chain of allpass filters to carve moving notches into the sound. Order sets how many notches, from a gentle shimmer to a deep swirl.
+Try: raise Order to 8 and set Rate to one bar on a synth chord.
+Chain: Audio In -> Phaser -> Audio Out
+
+### Limiter
+AUDIO · EFFECT. A brickwall limiter: nothing passes above its ceiling. Gain pushes the signal into it, Release sets how fast it recovers, and the meter shows how much it is holding back.
+Try: push Gain up on a finished mix to get it loud without clipping.
+Chain: Audio In -> Limiter -> Audio Out
+
+### Dynamics
+AUDIO · EFFECT. A compressor: it turns the loud peaks down so quiet and loud parts sit closer together. Threshold, Ratio, Attack, Release and Makeup set how hard it works. A sidechain input can drive the detector from another sound.
+Try: send a kick into the sidechain input so the pad ducks under every hit.
+Chain: Audio In -> Dynamics -> Audio Out
+
+### Stereo
+AUDIO · EFFECT. Widens or narrows the stereo image. Width 0 makes the sound mono, 1 leaves it as it is, 2 exaggerates it. Bass mono keeps the low end in the centre so it survives a mono speaker.
+Try: set Width to 1.6 and turn Bass Mono on for a wider mix that still folds to mono.
+Chain: Audio In -> Stereo -> Audio Out
+
+### Tremolo
+AUDIO · EFFECT. Pulses the loudness up and down with a slow LFO, so the level wobbles while the pitch stays put. Stereo phase makes left and right pulse at different times.
+Try: set Rate to a sixteenth of the tempo for a choppy, gated pulse on a pad.
+Chain: Analog -> Tremolo -> Audio Out
+
+### Pitch Shifter
+AUDIO · EFFECT. Moves the pitch up or down in semitones without changing the speed. Grain size trades smoothness for tracking. There is no formant correction, so big shifts also change the timbre: voices sound chipmunk or deep.
+Try: drop a vocal down two semitones with a small grain for fast material.
+Chain: Audio In -> Pitch Shifter -> Audio Out
+
+### Transient Shaper
+AUDIO · EFFECT. Makes the hits (the attack) louder or softer than the sustain (the body) without a threshold or ratio to set. Good for punchier drums or rounder plucks.
+Try: raise Attack on a drum loop to add snap.
+Chain: Audio In -> Transient Shaper -> Audio Out
+
+### Stutter
+AUDIO · EFFECT. A beat-repeat glitch: it captures a short slice of each cycle and loops that slice for the rest of the cycle, then records fresh audio. Grain sets how much of the cycle it captures.
+Try: set the grain to a sixteenth and let it stutter a vocal line.
+Chain: Audio In -> Stutter -> Audio Out
+
+### Ring Mod
+AUDIO · EFFECT. Multiplies the sound by an oscillator. The original pitches are replaced by sum and difference tones: a metallic, robotic, bell-like sound.
+Try: ring-modulate a sine and play a chord for a clanging bell tone.
+Chain: Analog -> Ring Mod -> Audio Out
+
+### Frequency Shifter
+AUDIO · EFFECT. Moves every partial up or down by the same number of Hz, so the harmonics no longer line up: alien, barber-pole or inharmonic. Unlike Pitch Shifter, the intervals break.
+Try: shift a drone by a few Hz so it beats and shimmers.
+Chain: Audio In -> Frequency Shifter -> Audio Out
+
+### Formant Filter
+AUDIO · EFFECT. Three bandpass filters tuned to the formants of a vowel, morphed A-E-I-O-U by the vowel knob. It makes any sound speak like a vowel, not only voices.
+Try: run a saw synth through it and sweep the vowel for a talking synth.
+Chain: Analog -> Formant Filter -> Audio Out
+
+### Wavetable Shaper
+AUDIO · EFFECT. Reshapes a sound with a wavetable used as a transfer curve: quiet and loud parts are bent by different amounts. Drive pushes it harder into the curve.
+Try: raise Drive on a sine to turn it into a rich, buzzing tone.
+Chain: Audio In -> Wavetable Shaper -> Audio Out
+
+### Piano
+AUDIO · SYNTH. A physically modelled piano: a grand, a Rhodes or a Wurlitzer. Play harder and the hammer hits harder. The electric pianos make their sound through a steel tine or reed and a pickup.
+Try: choose Rhodes and play soft chords for an electric piano.
+Chain: MIDI Notes -> Piano -> Audio Out
+
+### Metallic
+AUDIO · SYNTH. A physical model of struck and plucked metal: bells, gongs, bars, plates, chimes and tines. The material picks the body, and the strike sets how bright it rings.
+Try: pick a bell material and play one note for a chime.
+Chain: MIDI Notes -> Metallic -> Audio Out
+
+### Wind
+AUDIO · SYNTH. A physically modelled wind instrument: a clarinet reed, a sax reed, a flute's air jet or brass lips. Breath is how hard you blow.
+Try: raise Breath slowly on a held note for a swelling wind line.
+Chain: MIDI Notes -> Wind -> Audio Out
+
+### Keyboard
+NOTES · SOURCE. A note source with no hardware: click and drag the on-screen piano, or hover the node and type on the laptop keyboard, where the bottom row is one octave.
+Try: hover the node and play a melody with the Z, X and C keys.
+Chain: Keyboard -> Analog -> Audio Out
+
 ## New Compositing, 3D & Mesh Tools
-The visual side of v0.6: motion analysis, fluid and fog, physics, plants from text, and the primitives and mesh operators earlier editions of this guide missed.
+The visual side of the later additions: motion analysis, fluid and fog, physics, plants from text, and the primitives and mesh operators earlier editions of this guide missed.
 
 ### Optical Flow
 COMPOSITING · IMAGE IN/OUT. How far each part of the picture moved since the last frame, as a vector per pixel (red and green carry x and y, blue is speed). Pyramidal Lucas-Kanade on the GPU. View Colour shows direction as hue and speed as brightness.
@@ -1354,7 +1707,8 @@ Try: put fog behind a lit 3D scene for depth.
 Chain: Render 3D -> Volume -> Output
 
 ### Rigid Bodies
-3D · GEOMETRY OUT. Drops every separate piece of the input mesh as a rigid body (box, sphere or convex-hull collider) that falls, collides and stacks on a ground plane and optional walls. Mass, friction, bounce, damping, gravity, spin and a timed kick. The same patch plays back identically every time.
+)AGENTDOC"
+R"AGENTDOC(3D · GEOMETRY OUT. Drops every separate piece of the input mesh as a rigid body (box, sphere or convex-hull collider) that falls, collides and stacks on a ground plane and optional walls. Mass, friction, bounce, damping, gravity, spin and a timed kick. The same patch plays back identically every time.
 Try: scatter a field of cubes and press Reset to drop them again.
 Chain: Cube -> Rigid Bodies -> Render 3D
 
@@ -1421,8 +1775,7 @@ Chain: Sphere -> Extrude -> Render 3D
 ### Twist
 3D · GEOMETRY OUT. Twists the mesh around a chosen axis by Angle: the further a point is along the axis, the more it rotates.
 Try: animate Angle with an LFO to wring a tall box like a towel.
-)AGENTDOC"
-R"AGENTDOC(Chain: Cube -> Twist -> Render 3D
+Chain: Cube -> Twist -> Render 3D
 
 ### Cone
 3D · GEOMETRY OUT. A cone. Sides sets how many-sided it is.
@@ -1463,15 +1816,201 @@ Chain: Cross -> Extrude -> Render 3D
 3D · GEOMETRY OUT. A circular wedge. Inner Ratio controls how much of the circle is cut away.
 Try: animate it into a loading ring.
 Chain: Pie -> Render 3D
+
+### Crop
+PICTURE · EFFECT. Trims the picture from each edge: Left, Right, Top and Bottom. Outside decides what fills the cut-away area: it stays transparent, the kept part zooms to fill the frame, or it takes a Fill colour.
+Try: crop 10 percent off each side and set Outside to zoom to fill the frame.
+Chain: Image Source -> Crop -> Output
+
+### Posterize
+PICTURE · COMPOSITING. Reduces the picture to a fixed number of tone levels per colour channel, giving flat, poster-style colour bands.
+Try: set Levels to 3 for a screen-print look.
+Chain: Image Source -> Posterize -> Output
+
+### Threshold
+PICTURE · COMPOSITING. Makes the picture pure black or white: anything brighter than the Threshold goes white, the rest goes black.
+Try: raise Threshold until only the highlights of a photo are left.
+Chain: Image Source -> Threshold -> Output
+
+### Drop Shadow
+PICTURE · COMPOSITING. A soft shadow behind the picture's shape, in a chosen Colour, with Offset X and Y and an Opacity.
+Try: offset the shadow down and to the right in a dark colour for a lifted look.
+Chain: Text -> Drop Shadow -> Output
+
+### Emboss
+PICTURE · EFFECT. Turns the edges into a raised, relief-like bump by comparing the picture with a shifted copy of itself. Its style keeps the colours or goes flat grey.
+Try: set the style to Grey and the angle to 45 for a carved-stone look.
+Chain: Image Source -> Emboss -> Output
+
+### Opacity
+PICTURE · COMPOSITING. Fades the whole picture's transparency without tinting it. The fade stays with the picture as it goes down the chain.
+Try: wire an LFO into Opacity to pulse a logo in and out.
+Chain: Image Source -> Opacity -> Output
+
+### Exposure
+PICTURE · COMPOSITING. Brightens or darkens the picture in camera stops. Each stop doubles or halves the light.
+Try: nudge Exposure up one stop on a dark photo.
+Chain: Image Source -> Exposure -> Output
+
+### Lookup
+PICTURE · COMPOSITING. Recolours the picture using a second image as a colour strip: each pixel's brightness picks a colour from that strip. Offset shifts the pick, Mix blends with the original.
+Try: patch a gradient into the second input for a false-colour map.
+Chain: Image Source -> Lookup -> Output
+
+### Vignette
+PICTURE · EFFECT. Darkens the picture toward its edges to frame the centre. Radius sets the size of the clear middle and Softness the falloff.
+Try: set Radius to 0.6 and Softness high on a portrait.
+Chain: Image Source -> Vignette -> Output
+
+### Halftone
+PICTURE · EFFECT. Renders the picture as a printed dot pattern. Scale sets the dot density and Angle rotates the grid. The Colour style uses three angled colour dot layers.
+Try: switch to Colour and set Scale small for a comic print.
+Chain: Image Source -> Halftone -> Output
+
+### Pixelate
+PICTURE · EFFECT. Breaks the picture into flat square blocks. Block Size sets how big each block is.
+Try: animate Block Size with an LFO for a pixel zoom.
+Chain: Image Source -> Pixelate -> Output
+
+### Symmetry
+PICTURE · EFFECT. Mirrors the picture across the X axis, the Y axis or both, from a chosen centre point. Flip reverses the picture before mirroring.
+Try: choose both axes for a four-way mirror.
+Chain: Image Source -> Symmetry -> Output
+
+### Gradient Map
+PICTURE · COMPOSITING. Remaps the picture's brightness onto a two-colour gradient from a Shadow colour to a Highlight colour. Mix blends with the original colour.
+Try: set the shadows to deep blue and the highlights to orange for a duotone.
+Chain: Image Source -> Gradient Map -> Output
+
+### Color Overlay
+PICTURE · COMPOSITING. Tints the whole picture toward a colour at a chosen opacity. Nothing else changes.
+Try: set a warm colour at 0.3 opacity for a sunset wash.
+Chain: Image Source -> Color Overlay -> Output
+
+### Outer Glow
+PICTURE · COMPOSITING. Adds a soft glow in a colour around the outline of the picture, spreading outward. Amount sets the strength.
+Try: put a bright cyan glow around a white logo.
+Chain: Text -> Outer Glow -> Output
+
+### Displace
+PICTURE · EFFECT. Pushes each pixel by a map: the red and green of a second image, or a built-in animated wave if nothing is patched. Map Scale sets how big the map is.
+Try: feed a noise image into the map input so the picture ripples like water.
+Chain: Image Source -> Displace -> Output
+
+### Unsharp Mask
+PICTURE · EFFECT. Sharpens by adding back the difference between the picture and a blurred copy, which exaggerates the edges. Amount is the strength, Radius the width of edges it reacts to.
+Try: raise Amount to 1.5 on a soft photo.
+Chain: Image Source -> Unsharp Mask -> Output
+
+### Add Noise
+PICTURE · EFFECT. Adds random grain to every pixel, re-randomised each frame. Amount sets how strong it is.
+Try: use a small Amount over a dark gradient for film grain.
+Chain: Image Source -> Add Noise -> Output
+
+### Lens Distortion
+PICTURE · EFFECT. Simulates a camera lens. Barrel bows the picture in or out, Chromatic splits the colours for fringing, and Zoom scales the result.
+Try: set Barrel slightly negative and Chromatic small for a wide-angle lens.
+Chain: Image Source -> Lens Distortion -> Output
+
+### Convolve
+PICTURE · EFFECT. A 3 by 3 grid of numbers that defines a filter. Blur, sharpen and edge detection are all just different grids; Mix blends the result with the original.
+Try: type a grid that is all ones except the centre for a sharpen.
+Chain: Image Source -> Convolve -> Output
+
+### Circle
+PICTURE · SOURCE. A filled or stroked circle, with size, feather, stroke and background controls.
+Try: feather the edge and wire an LFO into the size for a pulsing dot.
+Chain: Circle -> Bloom -> Output
+
+### Triangle
+PICTURE · SOURCE. A filled or stroked triangle, with the same size, feather and stroke controls as the other shapes.
+Try: animate the rotation for a spinning arrow.
+Chain: Triangle -> Output
+
+### Star
+PICTURE · SOURCE. A star with Sides for the number of points and Inner Ratio for how deep the points cut in.
+Try: lower Inner Ratio for spiky stars and raise it for a flower.
+Chain: Star -> Output
+
+### Gear
+)AGENTDOC"
+R"AGENTDOC(PICTURE · SOURCE. A cogwheel silhouette. Sides sets the tooth count.
+Try: set the tooth count to 12 and turn it with an LFO.
+Chain: Gear -> Output
+
+### Mirror
+3D · MESH. Mirrors a mesh across a plane perpendicular to a chosen Axis, at a given offset. Keep original keeps the source too, and weld seam joins the halves.
+Try: mirror on X with weld seam for a symmetric character.
+Chain: Cube -> Mirror -> Output
+
+### Smooth
+3D · MESH. Relaxes each vertex toward its neighbours, so the mesh softens. Iterations and Strength control how much.
+Try: run a few iterations on a noisy displacement to calm it.
+Chain: Displacement -> Smooth -> Output
+
+### Union
+3D · MESH. Fuses two or more closed solids into one, keeping their combined outer surface.
+Try: union a cube and a sphere into one blob.
+Chain: Cube -> Sphere -> Union -> Output
+
+### Geometry
+3D · GEOMETRY OUT. The base 3D primitive: one node with 24 shapes in its Shape dropdown, from Plane, Cube and Sphere through Cylinder, Cone, Capsule, Tube, Prism, Supershape, the Platonic solids, Rounded Cube, Mobius Strip, Klein Bottle, Gear, Star, Disc and Arrow. Detail (2 to 96) sets the smoothness, Sides (3 to 64) the number of sides on prismatic shapes, Tube the thickness of ring-like ones, and Bevel rounds the edges. Position, Rotation, Scale and Spin place it. The material controls (Color, Metallic, Roughness, Emission, Glass and the rest) are shared with every 3D primitive, and an image patched into the texture input is mapped onto it. Each shape also has its own named node (Cube, Sphere, Torus and so on) that starts on that shape. Everyday use: any basic 3D object, from a box to a gear. Also called a primitive or a 3D shape generator.
+Try: set Shape to Gear 3D and Spin to 0.5 for a turning cog.
+Chain: Geometry -> Render 3D
+
+### Plane
+3D · GEOMETRY OUT. A flat subdivided plane, the Geometry node set to Plane. Detail sets how finely it is subdivided, and an image patched into its texture input becomes the surface. Everyday use: a floor, a backdrop, a screen or a sheet of cloth to drape. Also called a floor, a ground or a flat quad.
+Try: feed a video into the texture input for a flat screen in a 3D scene.
+Chain: Video -> Plane -> Render 3D
+
+### Cube
+3D · GEOMETRY OUT. A subdivided cube or box, the Geometry node set to Cube. Detail sets how finely each face is subdivided, Bevel (0 to 1) rounds the edges, and Scale, Position, Rotation and Spin place it. An image patched into the texture input wraps around it. Everyday use: a box, a block, a crate or a building. Also called a box or a block.
+Try: set Bevel to 0.2 for a soft-edged block, then Spin it.
+Chain: Image Source -> Cube -> Render 3D
+
+### Sphere
+3D · GEOMETRY OUT. A UV sphere with latitude and longitude subdivision, the Geometry node set to Sphere. Detail sets the smoothness, and an image patched into the texture input wraps over it like a globe. Everyday use: a ball, a planet, a bubble or a globe. Also called a ball or a globe.
+Try: wire a world map into the texture input for a spinning globe.
+Chain: Image Source -> Sphere -> Render 3D
+
+### Icosphere
+3D · GEOMETRY OUT. A sphere built from subdivided triangles, the Geometry node set to Icosphere. Its triangles are spread more evenly than a UV Sphere's, and Detail sets the smoothness. Everyday use: a low-poly ball or planet, or a sphere with an even mesh. Also called a geodesic sphere.
+Try: set Detail to 3 for a faceted low-poly planet.
+Chain: Icosphere -> Render 3D
+
+### Torus
+3D · GEOMETRY OUT. A ring or donut solid, the Geometry node set to Torus. Tube sets the tube radius relative to the overall ring (0.02 to 0.95, default 0.4), and Detail sets smoothness. Everyday use: a donut, a ring, a wheel or a halo. Also called a donut or a ring solid.
+Try: lower Tube and spin it for a thin wire ring.
+Chain: Torus -> Render 3D
+
+### Torus Knot
+3D · GEOMETRY OUT. A knotted torus: a tube swept along a (p, q) knot path rather than a plain circle. Knot P and Knot Q (1 to 8, defaults 2 and 3) set how many times the path winds each way, and Tube sets its thickness. Everyday use: a decorative knot, a logo or a sculpture. Also called a knot or a trefoil.
+Try: set Knot P to 3 and Knot Q to 5 for a more tangled knot, then spin it with an LFO.
+Chain: Torus Knot -> Render 3D
+
+### Helix
+3D · GEOMETRY OUT. A helical tube spiralling around an axis, the Geometry node set to Helix. Here the Tube control is labelled Wire (its radius), Knot P is Turns (1 to 8, default 2) and Knot Q is Height (1 to 8, default 3). Everyday use: a spring, a coil, a DNA strand or a screw thread. Also called a spiral, a coil or a spring.
+Try: raise Turns to 6 and lower Height to 1 for a tight coil.
+Chain: Helix -> Render 3D
+
+### Intersect
+3D · IN/OUT. Boolean intersection: keeps only the volume where all the closed, manifold input solids overlap. It opens on the Intersect mode of the boolean node, and its Mode dropdown (Merge, Union, Intersect, Difference) is shared with the Difference node. Material From picks which input's material to use. Needs closed meshes. Everyday use: keep only the overlapping part of two shapes, such as the lens shape where two discs meet. Also called a boolean AND or a common volume.
+Try: intersect a cube with a sphere for a cube with rounded corners.
+Chain: Cube -> Sphere -> Intersect -> Render 3D
+
+### Difference
+3D · IN/OUT. Boolean difference: subtracts every input after the first from the first, like a cookie cutter. It opens on the Difference mode of the same boolean node. Needs closed, manifold input. Material From picks the material. Everyday use: cut a hole or a shape out of a solid, such as drilling through a block. Also called a boolean subtract or a cut.
+Try: subtract a sphere from a cube for a scooped block.
+Chain: Cube -> Sphere -> Difference -> Render 3D
 )AGENTDOC";
 
    inline const char* kUiGuide =
-R"AGENTDOC(# Using the App: Panels, Menus & Settings
+R"AGENTDOC(# Using the App: Panels & Settings
 
 Every panel, menu, column, button and dropdown of the app, from the manual's Using the App chapter. Act through verbs, not clicks: `infinite panel <name|settings/place>` opens a panel or a Settings page, `infinite settings [key [value]]` reads and changes settings, and timeline, session, notes, perf, studio, view3d-add and node cover what the panels' buttons do. `infinite docs panels` names the verb for each panel.
 
-Everything around the nodes: the panels on the right, the strips along the bottom, the right-click menus, the dropdowns and the settings. Every picture here is a real screenshot of the app, taken by a script.
-These are the questions people ask most: what does the library do, what is the modulation matrix, how do I build a performance page, how do clips and tracks work, what is in the right-click menu. Each section shows the panel big, then explains every column, icon and control in it.
+Everything around the nodes: the panels on the right, the strips along the bottom and the settings. Every picture here is a real screenshot of the app, taken by a script.
+These are the questions people ask most: what does the library do, what is the modulation matrix, how do I build a performance page, how do clips and tracks work. Each section shows the panel big, then explains every column, icon and control in it.
 
 ## The window at a glance
 Picture: The whole window: menus and transport on top, the node canvas in the middle, the panel rail down the right edge.
@@ -1500,36 +2039,28 @@ Picture: Bottom.
 - **Terminal**: A real shell inside the app, with the infinite command.
 - **History (bottom)**: Every edit, newest first.
 - **Settings (bottom)**: The Settings window.
-
-## Menus
-The three menus at the top left. File handles patches, Edit handles undo and clipboard, Menu holds the windows, help and the show/set tools.
-Picture: File
-Picture: Edit
-Picture: Menu
-Picture: Menu, Panels: open any panel and set where it docks.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Library panel
 The top button of the panel rail opens the library: every node, sample, media file and plugin you can drop on the canvas. Click an entry, or drag it onto the canvas.
-Picture: Library, Modules tab: search box, Sort, order toggle, Filter, then the alphabetical list.
-
+Library, Modules tab: search box, Sort, order toggle, Filter, then the alphabetical list.
 - **Tabs**: Modules (every node type), Field (Field-language nodes and examples), Samples and Media (your own files), Plugins (VST3 and AU instruments and effects).
 - **Search**: Filters the list as you type.
 - **Sort**: Orders the list: favourites first, alphabetical and so on. The button beside it flips ascending and descending.
 - **Filter**: Narrows the list by category, for example only effects or only synths.
 - **List**: Click to add at the centre of the view, or drag to a spot. Star an entry to make it a favourite.
-Picture: Sort dropdown
-Picture: Filter dropdown
 Picture: Field tab
 Picture: Plugins tab
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Viewport panel
 A live preview of any image node, next to the canvas. Right-click a node and choose **Open in viewport panel** (or select it and press Shift+V). Each card follows its node in real time and has a close button at its top right. Add several cards to watch different stages of a chain at once.
 Picture: No cards yet: the panel says how to add one.
-Picture: Right-click a node for its menu.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Modulation Matrix
 Every modulation in the patch in one table: which source drives which parameter, and how. Drag the splitter above the panel to make it taller. The table is shown in two halves so each column is readable.
-Picture: Left half: Source, Destination, Parameter, Value, Confidence.
+The Mod Matrix docked under the node graph, with the Timeline below it.Picture: Left half: Source, Destination, Parameter, Value, Confidence.
 Picture: Right half: Lo, Hi, Inv, Curve, Signal and the delete button.
 
 - **Colour bar**: The cable colour of the source, so you can match a row to the cable on the canvas.
@@ -1543,6 +2074,7 @@ Picture: Right half: Lo, Hi, Inv, Curve, Signal and the delete button.
 - **Curve**: The response curve between source and parameter, drawn as a small graph.
 - **Signal**: A tiny live scope of the incoming signal, so you can see it moving.
 - **x**: Removes the route. The cable on the canvas disappears with it.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Performance panel
 Build your own control surface from knobs, faders, pads and switches, then play it live. It opens in **Edit Mode**; switch off Edit Mode (the button then reads **Perform**) to lock the layout and play it. Drag the splitter up for more room.
@@ -1550,9 +2082,8 @@ Picture: The Performance panel docked at the right, in Edit Mode, with the showc
 Picture: Edit Mode: knobs, faders, number boxes and a slider on the Showcase page.
 
 - **Edit Mode / Perform**: Edit Mode lets you add, move, resize and rename controls. Perform locks the layout so a stray drag cannot move anything.
-- **+ Add Control**: Opens the control list below and places the chosen control on the next free cell.
+- **+ Add Control**: Lists the ten control types below and places the chosen control on the next free cell.
 - **Page tabs, +**: Pages group controls into screens (here one page, Showcase). The + button adds a page.
-Picture: + Add Control menu: ten control types, with their grid size in brackets.
 
 - **Knob (1x1)**: Any single parameter.
 - **Vertical Fader (1x2)**: Levels and mixes.
@@ -1564,15 +2095,9 @@ Picture: + Add Control menu: ten control types, with their grid size in brackets
 - **Radio Selector (2x1)**: Pick one of several steps, 1 to 8.
 - **Bipolar Pan Knob (1x1)**: Centre-detent knob for pan or detune.
 - **Step Gate Ribbon (3x1)**: Eight on/off steps for a gate pattern.
-Picture: Right-click a control: Rename, Type, Assign Parameter, Clear Destination, MIDI CC Learn, Color Tint.
 Picture: The same page in Perform mode: the toolbar shrinks to Perform and the page tabs.
-
-- **Rename**: Change the label shown on the control.
-- **Type**: Swap the control for another type without losing its assignment.
-- **Assign Parameter...**: Bind the control to a node parameter, then move the control to move the parameter. The current target is shown greyed below it.
-- **Clear Destination**: Unbinds the control.
-- **MIDI CC Learn**: Move a knob on your MIDI controller to bind it to this control.
-- **Color Tint**: Colour-code the control so groups are easy to find on stage.
+Right-click a control to rename it, change its type, assign or clear its parameter, learn a MIDI CC or tint it.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Arrangement panel
 The timeline. It sequences clips of nodes over time so a patch becomes a piece with a start and an end. Each icon in the toolbar is explained below; hover any of them in the app for its tooltip.
@@ -1584,44 +2109,28 @@ Picture: Right end of the toolbar: Render, Audio and the Inspector pencil.
 - **Play / Pause (Space)**: Plays the timeline from the playhead.
 - **Return to Start (Enter)**: Jumps the playhead to the beginning.
 - **Bars / Time**: Switches the ruler between bars and beats and minutes and seconds.
-- **Tool (arrow)**: Selects the editing tool. See the dropdown below.
+- **Tool (arrow)**: Selects the editing tool: Select (A), Range Selection (R), Trim (T), Pencil (P), Cut (B), Hand (H) or Zoom (Z).
 - **Snap (magnet)**: Clip edges snap to the grid when on.
-- **1/4 (grid division)**: How fine the snap grid is. See the dropdown below.
+- **1/4 (grid division)**: How fine the snap grid is: Off, 1 bar, 1/2, 1/4, 1/8 or 1/16, each with a triplet.
 - **Loop**: Turns the loop region on or off. Shift-drag on the ruler to set the region.
 - **Flag (M)**: Drops a marker at the playhead.
 - **Row height**: Resets any resized tracks back to the default height.
 - **Render**: Renders the timeline to a video file (or a WAV when it holds only audio).
 - **Audio**: Lets the timeline drive audio as well as picture.
 - **Pencil**: Opens or closes the Inspector.
-Picture: Tool dropdown: Select (A), Range Selection (R), Trim (T), Pencil / Draw Clip (P), Cut (B), Hand (H), Zoom (Z).
-Picture: Snap grid dropdown: Off, 1 bar, 1/2, 1/4, 1/8, 1/16, each with a triplet (T).
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Tracks, clips and the inspector
 
 ### Adding tracks
 Click **+ Add Track** and choose Video Track or Audio Track. Audio tracks also carry **S** (solo), **M** (mute), a pan knob and a level knob; video tracks carry an opacity slider.
-Picture: + Add Track offers Video Track and Audio Track.
 
 ### Adding a clip
 Right-click an empty spot on a track and choose **Add Clip**. The menu shows the bar and beat it will land on, snapped to the grid. A clip with no node yet is shown hatched.
-Picture: Right-click a lane: Add Clip at the clicked bar and beat.
 
 ### Assigning a clip to a node
-Three ways: right-click a node on the canvas and choose **Add to Timeline** (creates an assigned clip at the playhead), choose **Assign Node...** in the clip's right-click menu, or use **Assign Different Node...** in the inspector. An assigned clip takes the node's name and a thumbnail, and the viewport monitor shows its output as the playhead crosses it.Picture: The Stage clip selected (outlined); the monitor on the left shows the timeline output.
-
-### Right-clicking a clip
-Picture: The clip menu.
-
-- **Rename (Cmd+R)**: Names the clip.
-- **Active**: Tick to play the clip; untick to mute it without deleting (it turns hatched).
-- **Fade In / Fade Out**: Fade length in milliseconds.
-- **Opacity**: Clip brightness against what is beneath it.
-- **Compositing**: Blend mode used to combine this clip with lower tracks.
-- **Color Grade**: A submenu of colour-grade adjustments for the clip.
-- **Color Tint**: Colour of the clip block on the timeline.
-- **Assign Node...**: Pick the node this clip plays.
-- **Group (Cmd+G) / Ungroup (Cmd+Shift+G)**: Treat several clips as one block you can move together.
-- **Delete (Backspace)**: Removes the clip.
+Three ways: right-click a node on the canvas and choose **Add to Timeline** (creates an assigned clip at the playhead), choose **Assign Node...** in the clip's right-click menu, or use **Reassign...** in the inspector. An assigned clip takes the node's name and a thumbnail, and the viewport monitor shows its output as the playhead crosses it.Picture: The Stage clip selected (outlined); the monitor on the left shows the timeline output.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}Right-click a clip to rename it, mute it (untick Active), set fades, opacity, blend mode, colour grade and tint, assign its node, group it or delete it.
 
 ### The Inspector
 The pencil icon opens a side panel for whatever is selected. Select a clip and it shows the clip; select a track and it shows the track.
@@ -1631,71 +2140,62 @@ Picture: Video Track: name, Active, opacity, Track Tint, Duplicate, Delete.
 - **Name / Active**: Rename and enable or disable the clip or track.
 - **Start / Length**: Exact position and duration in bars.beats.ticks. Type a value for sample-accurate placement.
 - **Fade In / Fade Out**: Edge fades in milliseconds.
-)AGENTDOC"
-R"AGENTDOC(- **Blend / Opacity / Bright / Contrast / Sat**: How the clip composites over tracks beneath it.
+- **Blend / Opacity / Bright / Contrast / Sat**: How the clip composites over tracks beneath it.
 - **Color Tint**: The swatches colour the clip block.
 - **Source Node**: The node and node type the clip plays.
-- **Assign Different Node... / Clear Source**: Swap the node or make the clip unassigned again.
+- **Reassign... / Clear Source**: Swap the node or make the clip unassigned again.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ### Selecting several clips and grouping
 To move or colour several clips at once, press **R** for the Range Selection tool and drag a box over them, then press **A** to return to Select. Clips grouped with Group (Cmd+G) move as one.
 
 ### Grouping tracks
 Right-click a track name. **Convert to Group** wraps the track in a collapsible folder so a whole stack of tracks can be folded away. The same menu adds and renames tracks, deletes them, and offers **Render Track** to export just that track.
-Picture: Track menu.
 Picture: After Convert to Group: Group 2 (1) holds Stage.
 
 ### Rendering
 **Render** opens the Render Timeline popup: the span (whole arrangement, loop, markers or a custom range), the video size and rate, and the output name, folder and format.
 Picture: Render Timeline popup.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## History panel
 Every edit you make is listed, newest at the top. Click any line to jump the patch back (or forward) to that moment; edits after it are kept until you make a new change.
-Picture: History before the first edit.
+)AGENTDOC"
+R"AGENTDOC(Picture: History before the first edit.
 
 - **Start**: The patch as it was loaded.
 - **Bypass**: A node was bypassed or enabled.
 - **Edit 2 settings**: Two or more parameters changed together.
 - **Edit timeline**: A change in the arrangement.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
-## Right-click menus and the Add Node palette
-Right-click does different things depending on what is under the cursor.
-Picture: On an audio node: bypass, duplicate, add to Timeline or Session, help, delete. Image nodes add viewport and window items.
-
-- **Bypass Node (B)**: Passes the input straight through.
-- **Duplicate (Cmd+D)**: Copies the node and its settings.
-- **Hide params**: Hides the node's parameter controls so it takes less room on the canvas.
-- **Open in viewport panel**: Adds a live card to the Viewport panel.
-- **Add to Timeline**: Creates an assigned clip in the Arrangement.
-- **Add to Session**: Puts the node in a Session slot.
-- **Open in new window**: Pops the node's output into its own window.
-- **Reference in chat**: Opens the chat with the node named in the message.
-- **Help**: Opens this node's help.
-- **Delete Node (Backspace)**: Removes it and its cables.
-Right-click empty canvas, or press Shift+N, to open the **Add node** palette. Type to search, or walk the categories (source, compositing, effects, 3d, notes, synths, audio effects, modulators, prediction, macros, utility). The arrow means a submenu.
+## Adding nodes
+Right-click empty canvas, or press Shift+N, to open the **Add node** palette. Type to search, or walk the categories (source, compositing, effects, 3d, notes, synths, audio effects, modulators, prediction, macros, utility).
 Picture: The Add node palette.
-Picture: Hover a category to see its nodes: compositing shown.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Settings
-The gear at the bottom of the rail (or Cmd+0) opens Settings. It has nine pages.
+The gear at the bottom of the rail (or Cmd+0) opens Settings. It has twelve pages, down the left: Appearance, Canvas & Workspace, Audio, General & Performance, Field Language, Expression Globals, Extensions, Plugins, Agents & Terminal, Infinite as VST3/AU, 3D View and Keys.
 Picture: Appearance
 Picture: Canvas & Workspace
 Picture: Audio
 Picture: General & Performance
 Picture: Field Language
 Picture: Expression Globals
-Picture: Extensions: install extension packs.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}Picture: Extensions: install extension packs.
 Picture: Plugins: VST3 folders and every scanned plugin.
 Picture: Agents & Terminal: each agent with its status and button, models, folders and saved chats.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Settings: Command line & agents
 The Agents & Terminal page of Settings has one section, **Agents**: a row per coding agent (Claude, ChatGPT, Gemini) with its status and the button that moves it on, the model each answers with, what each has used, the folders and commands agents may use, and the saved chats. The Chat chapter below explains every row.
 Setting up an agent runs a short script in the background (the Chat panel shows its progress; Settings can also run it in a Terminal tab). It puts the `infinite` command on your PATH for every terminal, checks the headless engine, makes sure Node.js is present, fetches the Infinite MCP server and registers it with the agent. When Node.js is missing it is downloaded from nodejs.org into Infinite's own folder (`~/.infinite/node` on macOS and Linux, `%LOCALAPPDATA%\Infinite\node` on Windows) and checked against nodejs.org's published checksums: no Homebrew, no winget, no administrator password. Each step checks first and is skipped when it is already done, so the button doubles as a repair. Only Linux may need your password, for a missing system package; the card then says so and opens a terminal to type it. Infinite never asks for or stores an API key: the agent's own login runs in the browser. Nothing is installed until you press a button.
 Setup is one time. It survives quitting, restarting and updating Infinite: the `infinite` command is a small launcher that finds the current Infinite, and the agent's registration points at that launcher. Each time Infinite starts it quietly checks the steps. If everything holds, nothing shows. If something broke (Infinite moved, the agent was uninstalled, the line was removed from your shell profile), a **Connection** row appears naming the step, with a **Repair** button that reruns only that step.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Chat
 The Chat panel is how you talk to Infinite. Say what you want and the patch changes while you watch. It is the Terminal panel's chat face: the Terminal opens to it, and the Terminal button in its toolbar switches to a plain shell and back. Short commands (add, connect, remove, bypass, undo, modulate, set) run at once inside Infinite with no agent. Anything else goes to the agent you picked, which changes the open patch through the `infinite` command, so every change is listed on a card and can be undone.
-Picture: The Chat panel: the agents card, a reply with its change card (live knobs for what changed) and the written list.
+The Chat panel beside the canvas: name a node with @, pick an agent, and each reply says what it looked at.
 
 ### First run
 The first time, the Chat panel walks you from a new computer to your first result, one card at a time. You need nothing installed and no terminal.
@@ -1745,8 +2245,7 @@ Infinite talks to three coding agents. The chat names them by what people call t
 - **/help**: What the chat can do, with a button per command.
 - **/shortcuts, /manuals, /languages, /about**: Answered by Infinite at once: the shortcut list, the three manuals, the built-in code languages, what Infinite is.
 - **/website, /github**: Open the website or the repository.
-)AGENTDOC"
-R"AGENTDOC(- **/agent <name>**: Switch to a connected agent by name: `/agent claude`. The model picker does the same by choosing one of its models.
+- **/agent <name>**: Switch to a connected agent by name: `/agent claude`. The model picker does the same by choosing one of its models.
 - **/model <name>**: Switch the model, for example `/model opus`.
 - **/new**: Start a new chat.
 - **/undo**: Undo the last change.
@@ -1762,7 +2261,8 @@ Press **+** (Attach files) or drop files on the panel: audio, video, images, GIF
 Pictures show as thumbnails in your message and in replies; click one to open it **full size** over the app, fitted to the window. A click or Esc closes it. Videos play in a card and stop when scrolled off screen. GIFs animate; a GIF over 16 MB shows its first frame only. Audio shows a player with a waveform, a folder button (Show in folder) and a waveform button.
 
 ### Change cards
-After each turn the chat lists what the agent did: **Looked at the patch** for a read-only turn, or **Made 3 changes** with one line per change (old → new). The card shows only this turn's changes, never the whole history. Node names and parameter names on it are links: click a node to select it and bring it into view, click a parameter to jump to that control. A name whose node is gone shows as plain text.
+)AGENTDOC"
+R"AGENTDOC(After each turn the chat lists what the agent did: **Looked at the patch** for a read-only turn, or **Made 3 changes** with one line per change (old → new). The card shows only this turn's changes, never the whole history. Node names and parameter names on it are links: click a node to select it and bring it into view, click a parameter to jump to that control. A name whose node is gone shows as plain text.
 Parameters the agent changed appear as **live knobs** on the card, only the ones that matter for the change. Turn a knob and the patch follows as you play; the agent's value stays as a dot on the track, and a double-click puts the knob back on it. **Undo** on the card reverts the whole turn; a changed line that has been undone reads Undone.
 An audio file the agent made shows as an audio card. **Open in a Sampler** (the waveform button) puts that file into a new Sampler node on the canvas, ready to play. **Show in folder** reveals the file.
 
@@ -1783,29 +2283,114 @@ Under an agent's name on each reply, a faint **count of tokens** shows what that
 
 ### Floating windows
 Chat, the Viewport, the Modulation Matrix and the Performance panel can leave the dock and float. Right-click the panel's toolbar (or use its dock menu) and choose **Floating Window** after Bottom, Right, Left and Top. The panel opens in its own window over the stage that you move and resize like Settings or Shortcuts; its X closes it. The chat's toolbar also has **Pop out**, which becomes **Dock** while it floats. Choosing any dock position puts the panel back.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Sound panels: Session, Sample Studio, Piano Roll
 Three more strips dock along the bottom. Each has its own toolbar; right-click the toolbar for its dock position.
-Picture: Session: tracks across, scenes down. Click a clip to launch it, click a scene name to launch the row. The playing scene is outlined.
-Picture: Sample Studio: a take cut into eight slices. Toolbar: open, play, input, Bars/Time/Samples, tools, Slice, Generate, Export, Convert. The Sample card on the right sets pitch, speed and fades.
-Picture: Piano Roll: pages of notes over the keyboard, with record input, quantise, Fx and Generate in the toolbar.
+Session: tracks across, scenes down, beside the Performance panel in Edit Mode. Click a clip to launch it, click a scene name to launch the row.Sample Studio with the Mod Matrix and Session. Toolbar: open, play, input, Bars/Time/Samples, tools, Slice, Generate, Export, Convert.Piano Roll: notes over the keyboard, with record input, quantise, Fx and Generate in the toolbar; an MSEG curve beside it.h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## 3D View
-The 3D View shows the scene the 3D nodes build. The toolbar holds add, select, move, rotate and scale, the pivot and orientation choices and the view toggles. Drag the axis gizmo at the top right to orbit; the four buttons at the bottom right zoom, pan, fly the camera and lock it. The Scene list at the right lists every object; the eye hides one.
-Picture: 3D View docked at the bottom with the Scene list open.
+The 3D View shows the scene the 3D nodes build. The toolbar holds add, select, move, rotate and scale, the pivot and orientation choices and the view toggles. Drag the axis gizmo at the top right to orbit; the four buttons at the bottom right zoom, pan, fly the camera and lock it. The Scene list at the right lists every object; the eye hides one. Viewport habits (orbit, zoom, gizmo sizes, mini axes) live in Settings > 3D View (`settings/3d-view`).
+3D View with the Scene list open.h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## 2D View
+The 2D View (`view2d`) is a layered 2D canvas backed by a **Scene 2D** node: compositing, paint, vector paths, live shapes, text and 3D layers in one document. Right-click any picture node and choose **Add to 2D View**, or open it from the rail. Tools include move (V), crop (C), pan (H), zoom (Z), brush (B), selection tools (M, L, W), pen (P), shapes (U), path edit (A) and text (T). Layers support blend modes, opacity, masks, clipping, effect layers (drag to reorder) and groups. **Free Transform** (Cmd+T) moves, scales and turns the selected layers as one step. **Merge Down** and **Merge Layers** (Cmd+E), **Merge Visible** (Cmd+Shift+E) and **Flatten Image** merge layers the way Photoshop does, in one undo step. Docks bottom, right, left, top or fill; driven from the CLI with `infinite view2d`.
+2D View: the Scene 2D document with its layer stack on the right and the tool rail on the left.h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Mixer panel
+The Mixer panel (`mixer`) is a hardware-style mixing desk for Mixer and audio channels. It shares the standard page strip and 7-row page menu (`Cmd+R` renames a page), and provides channel strips with faders, scribble strips, LED meters, mute/solo, sends, inserts, groups and a master section with mono/dim and snapshots. Right-click a Mixer node and choose **Open in Mixer panel**, or open it from the rail.
+Mixer panel: channel strips with trim, pan, mute/solo, fader and meter, and the master section.h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Drums panel
+The Drums panel (`drums`) is the hardware step-sequencer face for **Drum Sequencer** nodes. It shares the page strip and 7-row page menu, and provides step pads lit by velocity, lane strips with length/reverse/filter, trig conditions, probability, nudge, FILL key, and groove library presets. Right-click a Drum Sequencer node and choose **Open in Drum panel**, or dock it bottom or top.
+Drums panel: velocity-lit step pads per lane, with the Lane and Sound cards.h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Field Patcher
+The Field Patcher (`fieldpatcher`) is a visual node-box editor for building Field programs without writing code by hand. It includes pages (saved in the patch), a box canvas, a node pick menu, an inspector, starter templates and Value mode.
+Field Patcher: boxes wired into a Field Pixel program (Modulo Grid), with the Field pixel editor, the code and the live preview.h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Curve Editor
+The Curve Editor (`curveeditor`) lets you draw, record and assign multi-segment (MSEG) modulation curves to any knob, with pages managed through the shared page strip and 7-row page menu.
+Picture: Curve Editor: an MSEG curve drawn on the grid, with the tools on the left and the Source, Time and Loop cards on the right.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Canvas Link
+Canvas Link is the one way a panel takes a node from the canvas. Piano Roll pages, 2D layer sources, 3D View objects and Session clips each show a link field: choose the node from the list, or press **Pick** and click it on the canvas. While a pick is armed the canvas dims the nodes that cannot be picked and rings the one under the pointer. Esc cancels.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 ## Windows and dialogs
 Picture: All Shortcuts (Menu, All shortcuts): filter box, then every shortcut by group.
 Picture: Help and module reference: getting started, controls, then every node.
 Picture: Template library (File, Template library): opens a copy; the original never changes.
 Picture: About Infinite: version, build, credits, licence links.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Panels you have not met yet
+Six panels open from the rail or from Menu, Panels. Each one edits a kind of node, so each one is opened from that node too.
+
+- **Mixer**: MixerShift+LEvery Mixer node as a console. Right-click a Mixer node and choose **Open in Mixer panel**.
+- **Drums**: DrumsShift+JThe step-sequencer face of the Drum Sequencer nodes: step pads, lanes, conditions and groove presets.
+- **2D View**: 2D ViewShift+2Layers for a Scene 2D node: compositing, paint and shapes. Right-click a picture node and choose **Add to 2D View**.
+- **Curve Editor**: CurveShift+EDraws MSEG curves for any knob to follow.
+- **Field Patcher**: FieldShift+FBuilds a Field program from boxes, without typing it.
+- **Terminal**: Terminal (bottom of the rail)Ctrl+`A real shell in the patch folder. The Ctrl+` key is the physical key next to 1, on every keyboard layout.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Settings: the three tabs without a page
+
+- **Infinite as VST3/AU**: Plugin mode. The DAW sync section says who owns play and stop when Infinite runs inside a DAW. The plugin install section shows the status of the VST3 or AU plugin, with Install, Reinstall, Reveal and Uninstall.
+- **3D View**: Viewport defaults for the 3D View: the mini axes (Off, Simple axes, Navigation) and the navigation settings, saved as your default for every new scene.
+- **Keys**: The keyboard shortcut table. Find a command, see its key, and change it. Same list as Help, All shortcuts.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Settings: every card
+Each card is one group of settings on a Settings page. The card names are the headings you see in the window. Settings save as you change them; there is no Save button.
+
+- **Appearance**: Theme Preset & PaletteThe colour theme: preset, accent and the light or dark palette.
+- **Appearance**: Node Module Category ColorsOne colour per node category (Source, Effects, Modulators and so on).
+- **Appearance**: Cable Category ColorsOne colour per cable kind (audio, image, modulation, note and so on).
+- **Appearance**: Node Card Stylingthe look of each node card.
+- **Appearance**: DisplayInterface font and the Preview Background choice.
+- **Appearance**: Transparency Backdrophow much of the canvas shows through a floating panel.
+- **Canvas & Workspace**: Grid & Canvasgrid and canvas options.
+- **Canvas & Workspace**: MinimapWhere the minimap sits: Top left or Top right.
+- **Canvas & Workspace**: Cable VisibilityWhich cable kinds draw. The note on this card: the Image & geometry toggle also covers palette cables.
+- **Audio**: Audio Devices & FormatOutput and input device, sample rate, buffer size and the audio thread settings.
+- **Audio**: MIDI InputsWhich MIDI devices feed Infinite. Shows No MIDI inputs connected when none are.
+- **General & Performance**: AutosaveWhether autosave is working (it warns when it is failing, and why), and how many saved copies to keep.
+- **General & Performance**: Performance & RenderingThe power profile (High performance, Power saving or Low latency) and the graphics processor to use.
+- **General & Performance**: Movement LogHow much disk the kept takes and notes use, and what stays on this computer.
+- **General & Performance**: Learninglearning and tips options.
+- **General & Performance**: Diagnosticsdiagnostics options, including Collect diagnostics.
+- **General & Performance**: Application & Updatesthe version and update options.
+- **Field Language**: Topic dropdown and sectionsPick a topic (Core Principles, Domains & Reserved Names, Declarations, Types & Vectors, Operators & Math Functions), or All to see every topic. The search box filters across them.
+- **Expression Globals**: GlobalsNamed values every formula can read. Each one shows its formula.
+)AGENTDOC"
+R"AGENTDOC(- **Extensions**: Infinite / ExtensionsInstall extension packs from the catalogue or from a file. Each shows its installed and available versions.
+- **Plugins**: Plugins and Scanned pluginsThe scanned plugins list, with each plugin's status.
+- **Agents & Terminal**: ReferenceHow the chat works, the Terminal panel, and the infinite command line.
+- **3D View**: ViewportThe mini axes setting: Off, Simple axes or Navigation.
+- **3D View**: Navigationnavigation settings for the 3D View.
+- **Infinite as VST3/AU**: DAW syncWho owns play and stop when Infinite runs in a DAW: the DAW or Infinite.
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
+
+## Dialogs
+A dialog stops everything else until you answer it. Each one has a clear primary button and a Cancel.
+
+- **Unsaved changes**: You open, create or quit while the patch has unsaved changes. The title is Unsaved changes; the question is Save before closing?Save, Don't Save, Cancel
+- **Autosave recovery**: Infinite starts after it closed with unsaved work. The message says your work was saved automatically; recover it to carry on, or discard it. Your saved patch files are untouched.Recover, Discard
+- **Collect diagnostics**: Help, Collect diagnostics.Collect, Cancel; Include the open patch
+- **Check for updates**: Help, Check for updates.Check for updates, Website, Close
+- **Share Patch**: File, Share Patch. Asks for a name, an optional author and one line about the patch; file paths are removed and media is not included.Choose folder and share
+- **Program still running**: You quit while a program is still running in the Terminal. Quitting ends it.Quit Anyway, Keep Working
+h1,h2,h3{break-after:avoid}figure{break-inside:avoid}
 
 )AGENTDOC";
 
    inline const char* kFieldManual =
 R"AGENTDOC(# The Field Language Manual
 
-Everything you need to write real Field kernels and build real devices: the domains, the syntax, the declarations, and the six node types that host them. Every code example is self-contained Field code you can paste into the matching Field node.
+Everything you need to write real Field kernels and build real devices: the domains, the syntax, the declarations, and the node types that host them. Every code example is self-contained Field code you can paste into the matching Field node.
 
 ## 1. What Field is, and why it exists
 
@@ -1813,7 +2398,7 @@ Infinite is a node-based audiovisual workstation: you build patches by wiring bo
 
 The one idea underneath all of Field is the **kernel**: a short body of code run once per element of some domain, automatically, forever. Write `col = vec3(uv.x, uv.y, 0.5)` and it runs once per pixel, 60 times a second, on the GPU: a shader. Write `P.y += sin(P.x * 4.0 + t) * 0.2` and it runs once per point in a mesh: a geometry deformer. Write `out = in * 0.5` and it runs once per audio sample: a DSP effect. You never say where it runs; Field infers that from which identifiers your code touches.
 
-Every example in this manual is valid, runnable Field code written against the six node types that ship in Infinite today. Chapter 13 covers the language additions that landed after v1.
+Every example in this manual is valid, runnable Field code written against the node types that ship in Infinite today. Chapter 13 covers the language additions that landed after v1.
 
 ## 2. The five domains
 
@@ -1846,7 +2431,7 @@ This is the shape that governs what can see what. `element`, `pixel` and `sample
 - Sample kernels live in the **Field Effect** node (an `in` pin to process) or the **Field Synth** node (note-driven `freq` and `gate`, no `in` pin).
 - Graph kernels live in the **Field Graph** node.
 
-See Chapter 9 for what each of the six nodes does.
+See Chapter 9 for what each of the first six nodes does; Chapter 15 covers the seventh, Spectral Field.
 
 ## 3. Core syntax
 
@@ -2015,15 +2600,15 @@ Live params on the graph node's own knobs forward into the emitted nodes, and th
 
 ## 9. Field node reference
 
-Field is exposed to the user as six node types, each hosting one domain's kernel. All six compile the same source-text grammar covered in Chapters 1 to 8; the only thing that changes is which reserved names are in scope and which backend the kernel is compiled to.
+Field is exposed to the user as seven node types, each hosting one domain's kernel (Chapter 15 covers the seventh, Spectral Field). All of them compile the same source-text grammar covered in Chapters 1 to 8; the only thing that changes is which reserved names are in scope and which backend the kernel is compiled to.
 
 | Node | Domain | What it does |
 |---|---|---|
 | Field Modifier | element | Runs a per-vertex kernel over geometry already on the canvas, modifying `P`, `N`, `uv`, `Cd` and custom attributes. |
 | Field Primitive | element | Generates procedural point geometry from scratch, with no input required, using a per-element kernel (Circle, Spiral, Grid Lattice, Fibonacci Sphere, Helix and Torus Knot presets as starting points). |
-| Field Effect | sample | Runs a kernel once per audio sample, on the audio thread. `in` is the audio input pin, `state` declares per-voice memory, `param` exposes a knob, and `reduce.rms(in, loHz, hiHz)` publishes a band-limited RMS reading once per block. |
 )AGENTDOC"
-R"AGENTDOC(| Field Synth | sample | A polyphonic, note-driven synthesizer using the same sample-domain compiler as Field Effect, but with `freq` and `gate` in place of an `in` pin: a self-contained voice, no upstream audio required. |
+R"AGENTDOC(| Field Effect | sample | Runs a kernel once per audio sample, on the audio thread. `in` is the audio input pin, `state` declares per-voice memory, `param` exposes a knob, and `reduce.rms(in, loHz, hiHz)` publishes a band-limited RMS reading once per block. |
+| Field Synth | sample | A polyphonic, note-driven synthesizer using the same sample-domain compiler as Field Effect, but with `freq` and `gate` in place of an `in` pin: a self-contained voice, no upstream audio required. |
 | Field Pixel | pixel | Runs a kernel once per pixel, compiled to GLSL. `uv`, `col` and `res` are the reserved names; a `state` cell declared `[wrap]` plus an offset read like `A(uv + d)` supports feedback and stencils. |
 | Field Graph | graph | Runs a kernel once, at edit time, to build part of the patch itself: `emit`, `connect`, `set` and `place` spawn and wire real Infinite nodes. See Chapter 8. |
 
@@ -2226,6 +2811,101 @@ if (tick(1/8) > 0.5) {
 - Vector literals are no longer mistaken for scalars by the constant folder.
 
 Presets added since v1 include Gray-Scott reaction-diffusion and a flow and advection pair (Pixel), Verlet Rope and Buckling Ribbon (Element), and the pixel illusion, nature and Field Effect and Synth libraries.
+
+## 14. Patching Field
+
+The Field Patcher shows a Field program as boxes and wires. The code stays the program: every box you add, wire you
+)AGENTDOC"
+R"AGENTDOC(draw or number you drag is written back into the node's code, compiled, and kept as one undo step. Open the code and
+the boxes side by side and either one can be edited.
+
+```
+ Canvas: [Field Notes 1]  [Field Primitive 2]
+              |                 |
+              v   select one    v
+ +-- Field Patcher -----------------------------------------------+
+ | Field Notes 1 | Field Primitive 2 | Scratch 1 | + |       |
+ | rail | box canvas                          | Code | Box         |
+ |  o   |  [time]--->[*]--->[floor]--->[...]  | step = floor(t*4)  |
+ |  o   |                                     | ...                |
+ | Field Primitive  (ok)   9 boxes                                    |
+ +----------------------------------------------------------------+
+```
+
+### 14.1 Opening it
+
+| From | What happens |
+|---|---|
+| View > Field Patcher, the panel rail, or Shift+F | the panel docks at the bottom (or top) |
+| **Boxes** on a Field Notes, Field Primitive or Field Modifier body | the panel opens on that node's page |
+| selecting one of those nodes on the canvas | its page comes to the front, unless the front page is pinned |
+| File > Template library > Field patches | a scratch page with that starter |
+
+### 14.2 Pages
+
+One page per node. Right-click a page to pin it (it then stays in front whatever you select), close it, move it, or
+delete the node. A **scratch page** (+) belongs to no node yet. When it has an outlet, the footer offers **the down-arrow icon** to place
+it as a node:
+
+| The page has | It becomes |
+|---|---|
+| a play note box | Field Notes (with the publish output on if it also has a value or pulse outlet) |
+| a position, normal or colour outlet | Field Primitive |
+| only value or pulse outlets | Field Primitive in Value mode |
+
+Scratch pages are saved with the patch.
+
+### 14.3 Boxes
+
+The rail holds the ten families: sources, arithmetic, range, waves, logic, time and memory, random, geometry, music,
+inlets and outlets. Right-click the canvas, or drag a wire into empty space, to search every box by its name or Field
+word. Boxes the page's node cannot run are greyed out. Wire colours follow the kind: number, on/off, pulse, note,
+point, per-point. Pulse wires animate.
+
+Anything the boxes cannot show stays a **code** box with its text intact, so no program is ever lost by opening it.
+
+### 14.4 Value mode and publish
+
+**value** on Field Primitive turns it into a value source: no mesh, and its publish output carries the program's
+`publish`. Field Notes has the same **publish scalar output** toggle as the other Field nodes, so a melody page can
+also send a value or a pulse to any knob.
+
+```
+publish = 0 + (sin(t * 2) - -1) / (1 - -1) * (1 - 0) // Breathing light: 0..1, wire it to any knob
+```
+
+### 14.5 When a program breaks
+
+A broken program never silences the node: it keeps playing its last good program and the footer shows the error.
+Fix it in the boxes or the code and it takes over again.
+
+## 15. Spectral Field
+
+Spectral Field is the seventh node that hosts Field. It runs a kernel once per frequency bin: audio goes in, is cut into a spectrum by an STFT, your kernel runs on every bin, and the result is turned back into sound with a phase vocoder. The domain is **bin**, so a kernel that only touches bin identifiers compiles here and nowhere else.
+
+### 15.1 What the kernel can read and write
+
+| Name | Direction | Meaning |
+|---|---|---|
+| `bin` | read | index of this bin |
+| `bins` | read | number of bins in the frame |
+| `binhz` | read | centre frequency of this bin, in Hz |
+| `hop`, `sr` | read | hop size in samples, and the sample rate |
+| `mag`, `phase`, `freq` | read and write | the bin's magnitude, phase and true frequency; they start as the analysis values and behave like locals |
+| `mag.at(k)` | read | the magnitude of another bin `k` |
+| `state` | read and write | per-bin memory that survives from frame to frame (16 cells at most) |
+
+Writing `mag` alone is the normal case: the phase vocoder keeps the phase coherent. Writing `phase` or `freq` switches to raw mode, which resynthesises with the phase you wrote.
+
+The starter kernel that ships in the node is a low-pass built from these names: it scales `mag` by whether `binhz` is under the Cutoff control.
+
+### 15.2 Controls and cross-synthesis
+
+- **Size** is the frame length, 512 to 8192 (default 2048). A larger frame gives finer frequency detail and a longer latency; the latency is one Size.
+- **Cutoff** (20 to 20000 Hz, default 2000) and **Mix** are exposed on the node. The starter kernel is the low-pass above.
+- Declare a second audio input with `input bin audio B` and the kernel can read its spectrum as `B.mag.at(k)`, which is how you build a vocoder or a cross-synthesis effect.
+
+Everyday uses: a custom EQ, a spectral filter, a robot-voice effect. Try it first with the starter kernel: drop Size to 512 and sweep Cutoff for a fast, tight filter.
 )AGENTDOC";
 
    inline const char* kHeadlessGuide =
@@ -2233,12 +2913,34 @@ R"AGENTDOC(# Infinite Headless Engine: User Guide
 
 Render pictures, video and sound from a text file, with no window and no mouse. The headless engine is the same Infinite you already have, driven from the command line. Anything a patch can do in the app (3D, Field kernels, modulation, synths, effects) works here, and the output is deterministic: the same patch gives the same frames and the same samples.
 
+Who this guide is for:
+
+| You are | Use |
+|---|---|
+| Writing scripts, batch jobs or a render pipeline | The command line (section 4) |
+| Working in Infinite's Terminal panel | The `infinite` command (section 4.5) |
+| Connecting an AI agent (Claude Desktop, Cursor, Windsurf) | The MCP server from npm (section 4.6) |
+
+All three drive the same engine and read the same `.inf` files.
+
+New in 2.0:
+
+| Change | What it means |
+|---|---|
+| `--render --timeline` | Export the Timeline arrangement headless, not only the canvas graph |
+| `--frame --batch jobs.json` | Many frame renders in one process |
+| `--size` keeps alpha | Resized frames keep their transparency |
+| Isolated jobs | Each headless job runs on its own and gives the same result every time |
+| Sample analysis | Headless runs wait until samples are analysed before rendering |
+| New `infinite` verbs | `view2d-add`, Timeline clip copy, paste, split, duplicate and inspect, marker colour, `node drum`, `node mixer` |
+| MCP picture tools | `infinite_compare_frames`, `infinite_find_knob`, `infinite_node_effects` |
+
 ## 1. What you need
 
 | Need | Detail |
 |---|---|
 | The Infinite app | There is no separate package. The executable inside the app is the command-line tool. |
-| A graphics driver | Frames are drawn by the real GPU pipeline, so a machine with working OpenGL is required. |
+| A graphics driver | Frames are drawn by the real GPU pipeline, so a working GPU driver is required. |
 | Linux only: a virtual display | Run every render as `xvfb-run -a Infinite ...`. Without it you get `E_NO_DISPLAY`. |
 | A text editor | Patches are plain text files ending in `.inf`. |
 
@@ -2325,6 +3027,7 @@ A patch can validate and still be the wrong patch, which is why step 4 exists.
 | `--validate patch.inf [--for-render] [--lenient] [--json file]` | Check the file loads; report every problem |
 | `--explain patch.inf [--json] [--all] [--lenient]` | Print the built graph: nodes, non-default controls, wires, modulation ranges, world bounding boxes of geometry. `--all` lists every control |
 | `--frame patch.inf T[,T...] out.png or dir/` | Still images at the given times in seconds. Several times need a folder |
+| `--frame --batch jobs.json` | Run multiple frame renders in one process (`[{patch, t, out, size, node, ...}]`) |
 | `--frames-dir patch.inf out_dir --duration S` | A numbered PNG sequence. Options: `--start S`, `--fps N`, `--alpha`, `--depth 8 or 16` |
 | `--render patch.inf out.mp4 or out.mov` | A video with audio |
 | `--audio-summary patch.inf out.json` | The sound as numbers: loudness, peaks, clipping, silence, spectrum, tempo guess |
@@ -2344,13 +3047,17 @@ A patch can validate and still be the wrong patch, which is why step 4 exists.
 | `--codec h264 or prores4444` | render | Video codec. Use `prores4444` (in a `.mov`) when you need transparency |
 | `--no-audio` | render | Write a silent video |
 | `--node index[:output]` | frame, frames-dir, render | Render this node instead of the Output. Great for checking one stage |
+| `--geometry node` | frame, frames-dir | Also report world bounding-box stats for a geometry node |
 | `--set node.param=value` | frame, frames-dir, render | Override one control for this run without editing the file |
 | `--output node` | audio-summary | Measure one Audio Out or Output instead of the whole mix |
 | `--wav out.wav` | audio-summary | Also write the audio as a WAV |
 | `--stems id,id --stems-dir dir` | audio-summary | Write one WAV per named node |
 | `--notes events.json --note-map map.json` | audio-summary | Play your own note events into the patch |
-| `--timeline` | audio-summary | Play the arrangement's audio lanes instead of the node graph alone |
+| `--timeline` | render, audio-summary | Render or measure the Timeline arrangement instead of the canvas graph alone |
 | `--plugin-params` | render, audio-summary | List every loaded plugin's parameters (address, name, real range, default) in the `plugins` block of the result |
+| `--plugin-state` | render, audio-summary | Include plugin state blobs in the result |
+| `--batch jobs.json` | frame, audio-summary | Run a JSON array of frame or audio-summary jobs in one process |
+| `--repeat 1-8` | frame | Repeat the frame render N times (determinism / warmup check) |
 | `--contact-sheet sheet.png` | frame | One image holding every requested frame |
 | `--png-level 0-9` | frame, frames-dir | PNG compression |
 | `--lenient` | all | Treat unknown keys and removed nodes as warnings, not errors |
@@ -2372,7 +3079,7 @@ The **last line printed** is always one JSON object with these fields: `ok`, `mo
 | 5 | Rendering failed |
 | 6 | Timeout. Raise `--timeout` |
 
-## 4.5 The `infinite` command
+### 4.5 The `infinite` command
 
 Inside Infinite's Terminal panel, `infinite` is on the PATH. A verb goes to the running app, or to the
 headless flags above when you give it a `.inf` file. `infinite` alone lists every verb; `infinite context`
@@ -2381,22 +3088,25 @@ prints the open patch, the selection and any code errors in one answer.
 | Group | Verbs |
 |---|---|
 | Look | `graph`, `explain`, `params`, `selection`, `status`, `nodes`, `describe` |
-| Edit | `add`, `remove`, `connect`, `disconnect`, `set`, `mod`, `expr`, `bypass`, `batch`, `undo`, `redo` |
-| Patch | `new`, `open`, `save`, `validate`, `canonicalize`, `apply` |
+| Edit | `add`, `remove`, `connect`, `disconnect`, `set`, `reset`, `mod`, `mod clear`, `mod curve`, `expr`, `bypass`, `batch`, `undo`, `redo`, `select`, `focus`, `copy`, `paste`, `duplicate`, `group`, `ungroup`, `view3d-add`, `view2d-add`, `view2d` |
+| Patch | `new`, `recent`, `open`, `save`, `import`, `files`, `reveal`, `validate`, `canonicalize`, `apply` |
 | Play | `play`, `stop`, `rewind`, `seek`, `tempo` |
-| Timeline | `timeline` prints it all; `timeline track`, `clip`, `marker`, `group`, `loop`, `snap`, `render`. Times are in beats; `key=value` words set fields |
+| Timeline | `timeline` prints it all; `timeline track`, `clip` (`copy`, `paste`, `duplicate ... selection=true`, `split <id> playhead`, `inspect`), `marker` (`color <id> RRGGBB`), `group`, `loop`, `snap`, `render`. Times are in beats; `key=value` words set fields |
 | Session | `session scene`, `launch`, `launchrow`, `stop`, `add`, `insert`, `duplicatescene`, `deletescene`, `send`, `sceneset`, `slot`, `place`, `duplicate`, `clear`, `copy`, `paste`, `cut`, `quantize` |
-| Notes | `notes get`, `add <clip> beat:pitch[:length[:velocity]]`, `set`, `delete`, `move`, `quantize`, `transform <track> <name>` |
+| Notes | `notes get`, `add <clip> beat:pitch[:length[:velocity]]`, `set`, `delete`, `move`, `quantize`, `transform <track> <name>`, `export <clip>`, `generate <type> [key=value]` |
 | Performance Matrix | `perf get`, `add <kind> [label]`, `remove`, `assign`, `clear`, `unmidi`, `set`, `edit`, `page add|go|rename|delete|duplicate` |
-| Nodes and files | `node <node> rename|params|viewport|panel|window|timeline|session|preset`, `library`, `mod curve`, `studio get|set` |
+| Make | `studio generate <part> [bars=n]`, `studio status|export|node <type>|get|set` |
+| Nodes and files | `node <node> rename|params|viewport|panel|window|timeline|session|preset|drum|mixer`, `library list|add|remove|refresh` (`drum open|close|dock|lanes|fill|grooves|groove|folder`) |
 | See and hear | `shot`, `frame`, `render`, `audio` |
 | Code | `code kinds`, `new`, `check`, `push`, `pull`, `watch`, `errors`, `docs`, `examples` |
 | Generate | `patch recipes`, `new`, `check`, `layout`, `apply` |
-| Learn | `context`, `guide` |
+| App | `panel [name|settings/<place>] [open|close] [bottom|right|left|top|fill]`, `settings [key [value]]`, `settings devices\|midi\|apply\|updates\|reset\|logs\|gpu [n]\|global [name [expr]]\|extension <file>`, `show list\|next\|prev\|go <n>\|lock\|panic\|check\|add\|remove <n>\|clear\|open\|save\|fade <ms>\|quantize <n>\|launch <n>`, `view fit\|params on\|off\|clearcards\|metronome [on\|off]`, `quit` |
+| Learn | `context`, `attention`, `guide`, `docs [topic [name]]`, `find <words>`, `version` |
 | Watch | `watch` prints a JSON line for each change |
-| Terminal | `term list`, `read`, `send`, `run` |
+| Terminal | `term open`, `list`, `read`, `send`, `run` |
 
-A `<node>` is an index, `selected`, or a title or type only one node has. Exit codes match 4.4, plus 7: no
+)AGENTDOC"
+R"AGENTDOC(A `<node>` is an index, `selected`, or a title or type only one node has. Exit codes match 4.4, plus 7: no
 running app answered. Each terminal is tied to its own app, so two running apps do not cross.
 
 `code check` runs the real compiler and answers `{ok, errors: [{code, message, line, col, hint}]}`, with
@@ -2406,6 +3116,45 @@ and the node keeps its last good code.
 
 `patch check file.inf` runs loads, reachable, picture and sound in order and stops at the first failure. Add
 `--want moving-picture,sound` to fail a still picture, or a silent or clipping patch.
+
+### 4.6 AI agents: the MCP server
+
+The npm package `infinite-engine` connects Infinite to AI apps through the Model Context Protocol. It needs the Infinite app
+installed; it finds it through `INFINITE_BIN`, the usual install folders, or `PATH`.
+
+```
+npx -y infinite-engine init
+```
+
+`init` adds Infinite to Claude Desktop, Cursor and Windsurf if they are installed, keeps other servers in each config,
+and saves the old file next to it as `.infinite-backup`. Use `--dry-run` to see the plan, `--only claude|cursor|windsurf`
+to pick one app, and `npx -y infinite-engine status` to check the install. Restart the app afterwards.
+
+To configure by hand, add this to the app's `mcp.json` (on Windows, Claude Desktop needs
+`"command": "cmd", "args": ["/c", "npx", "-y", "infinite-engine", "serve"]`):
+
+```
+{ "mcpServers": { "infinite": { "command": "npx", "args": ["-y", "infinite-engine", "serve"] } } }
+```
+
+| Tool | What it does |
+|---|---|
+| `infinite_validate_patch` | Validate a patch with the real compiler: code, line, node and hint per issue |
+| `infinite_render_video` | Export an mp4 from a patch |
+| `infinite_render_field_pixel` | Render a Field pixel kernel to frames |
+| `infinite_render_field_primitive` | Render a parametric surface written as Field equations |
+| `infinite_render_field_modifier` | Deform a mesh with a Field displacement expression |
+| `infinite_render_sketch3d` | Render 3D geometry written in JavaScript to a PNG |
+| `infinite_synthesize_field_synth` | Make a WAV from a per-sample Field synth kernel |
+| `infinite_synthesize_field_notes` | Generate note sequences and Euclidean rhythms into audio |
+| `infinite_process_field_effect` | Run audio through a Field filter, reverb or distortion kernel |
+| `infinite_compare_frames` | Say in plain words whether two pictures match |
+| `infinite_find_knob` | Find which node and control give a wanted picture change, from measured renders |
+| `infinite_node_effects` | Measured table of what each effect and colour node, and each of its controls, does |
+
+Every result carries a credit line in an `attribution` field; nothing is written into your files. A second, Python MCP
+server (`tools/mcp` in the source, with tools such as `infinite_render_frame` and `infinite_audio_summary`) maps one tool
+to each headless command above. Both call the same engine; the developers page on infinitedevices.org covers it.
 
 ## 5. The patch file format
 
@@ -2444,8 +3193,7 @@ The full record reference is `docs/reference/patch-format.md`. Three small worki
 
 ## 6. Modulation: making things move
 
-)AGENTDOC"
-R"AGENTDOC(Three ways, from simplest to most flexible.
+Three ways, from simplest to most flexible.
 
 | Way | Example | Use it for |
 |---|---|---|
@@ -2480,10 +3228,14 @@ R"AGENTDOC(Three ways, from simplest to most flexible.
 | UV Project | `i uvMode` Smart, Cube, Cylinder, Sphere | Same engine as Transform's UV Project operation |
 | Model 3D | `s path file.glb`, `i clip`, `pose0..` | Skinned glTF clips, morphs and poses animate with the clock |
 | Cloth, Rigid Bodies | `geo` input, Cloth also `collider` | Cloth `colliderFriction`, `colliderDistance`; Rigid Bodies `collider` Box, Sphere, Convex hull. Both simulate from time 0, so ask `--frame` for a later second to see motion |
-| Render 3D | `i engine` Raster or Path trace | `ptSamples`, `ptBounces` for the path tracer; `renderPass` and cavity, AO, depth of field controls for passes |
+| Render 3D | `i engine` Raster, Path trace, Live or Live + settle (Live: macOS) | `ptSamples`, `ptBounces` for the path tracer; `renderPass` and cavity, AO, depth of field controls for passes |
 | Light, HDRI, Camera | `geo r3 5 light`, `geo r3 4 camera`, `cable r3 8 hdri` | An HDRI is an environment: it uses a `cable` line, not `geo`. Light `useTemperature`, `useCutoff`; Camera `shiftX`, `sensorFit` |
 
 Write each control with its real tag; `--describe "<type>"` shows it, and `--validate` warns `W_TYPE_MISMATCH` when you guess wrong.
+
+Rotations come in two units: primitives (Plane, Cube, ...) take radians (`f rotX -1.5708`), Transform and Camera take degrees (`f rotX -90`). `--validate` says which when a value is out of range, and warns `W_ROTATION_UNITS` for a radian-looking value on a degrees control.
+
+To look at a 3D patch quickly, `python3 tools/look.py` renders sheets in one process: `passes` (colour, normals, albedo, light = colour / albedo, object id), `crop X Y W H --scale S` (renders only that region, sharper, by narrowing the camera; `--verify` compares it with the full frame), `sweep node.key V1 V2 ...` and `ab`.
 
 Not reachable from the CLI: selecting elements with the mouse in Edit Mode, drawing sculpt strokes, and the 3D View editor's scene items, gizmos and overlays (a bare 3D View node renders its empty stage). The re-runnable check for everything in this section is `python3 tools/headless-docs/check_release_areas.py`.
 
@@ -2504,6 +3256,8 @@ Not reachable from the CLI: selecting elements with the mouse in Edit Mode, draw
 | `E_NO_DISPLAY` (Linux) | Run under `xvfb-run -a` |
 | It validates but looks wrong | Run `--explain` and compare to what you meant |
 | Something moves too far or too little | A `mod` range is absolute. Check `lo` and `hi` |
+)AGENTDOC"
+R"AGENTDOC(| A Prediction node (Drift, Moves, Predictive Notes, Rhythm, Quantize, Coloring, Velocity) sounds plainer than in the app | Headless runs do not load learned profiles; `--describe` marks these nodes `profile_dependent` |
 
 ## 9. Good practice
 
@@ -2514,26 +3268,16 @@ Not reachable from the CLI: selecting elements with the mouse in Edit Mode, draw
 - Quote the command line when a patch lives in a folder with spaces.
 - The output is deterministic, so a patch that renders correctly once renders the same way again. Frame renders hold the clock at zero from the first tick, so history nodes such as Time Machine render the same every run, and headless runs never read or write the learned prediction profiles. One known exception: a patch with Field Notes and any modulation cable can differ slightly between audio runs (about 0.1 dB in loudness in the case we measured).
 
-## 10. Documentation screenshots
-
-Headless renders pictures of a patch, but the nodes themselves (their panels, knobs and dropdowns) can only be photographed in the real app. Infinite ships a screenshot tool for that, so the manuals always match the build. It launches the app, drives it over the local control port, and saves one PNG per node at 2x.
-
-| Want | Run |
-|---|---|
-| One node | `python3 scripts/node_screenshot.py "Wavetable"` |
-| Every node type | `python3 scripts/screenshot_all_nodes.py --out docs/node_screenshots --settle-seconds 0.6` |
-
-Both need a Mac that is unlocked and awake, because the app must have a real window; they write the control token to `~/Library/Application Support/Infinite/control_token`. The Node Field Guide pulls its pictures from `docs/node_screenshots/`, and the brand screenshot standard (2x, real values, no personal paths) is in `docs/brand/BRAND.md` section 10.1.
-
-## 11. Where to go next
+## 10. Where to go next
 
 | Want | Look at |
 |---|---|
 | Every node and its controls | `Infinite --describe`, and the Node Reference Manual PDF |
-| The exact file format | `docs/reference/patch-format.md` |
-| What can be wired to what | `docs/reference/connection-rules.md` |
-| Starter patches | `assets/examples/authoring/` |
-| Field (the expression language) | The Field language skill documents under `.claude/skills/field-language/` |
+| The exact file format | [patch-format.md](https://github.com/n1m21n/Infinite/blob/main/docs/reference/patch-format.md) on GitHub |
+| What can be wired to what | [connection-rules.md](https://github.com/n1m21n/Infinite/blob/main/docs/reference/connection-rules.md) on GitHub |
+| Starter patches | [assets/examples/authoring](https://github.com/n1m21n/Infinite/tree/main/assets/examples/authoring) on GitHub |
+| Field (the expression language) | The Field Language Manual (PDF, infinitedevices.org) |
+| AI agents | `npx -y infinite-engine init`, and the developers page on infinitedevices.org |
 )AGENTDOC";
 
    inline const char* kConnectionRules =
@@ -2596,6 +3340,7 @@ decides**; nothing below it runs.
 | 12 | Set Color, slot 1 | image |
 | 13 | source is geometry/camera/light and none of the above matched | **refuse** — 3D cables only go into 3D nodes |
 | 14 | `ModulatorInputSlot(slot)` exists and the destination is not Image Analyze | modulator only |
+| 14a | Shade node, except Shade Image slot 1 | Shade output only (`srcIsShade`) — **refuse** a plain picture, which `ShadeBuild::Input` would otherwise drop silently |
 | 15 | otherwise | image |
 
 Slot 0 of Material, Displacement and Set Color is a geometry slot and is caught
@@ -3429,6 +4174,7 @@ command, never your memory.
 | What a node is for, a thing to try, a chain it fits | `infinite docs nodes <Type>` |
 | Keyboard shortcuts | `infinite docs shortcuts` |
 | Panels and how to open them | `infinite docs panels` |
+| What every panel, menu, column and button does | `infinite docs ui [part]` |
 | What can be cabled into what | `infinite docs connections` |
 | Field language, full manual | `infinite docs field`; quick reference `infinite code docs field` |
 | Sketch (JS 2D), Sketch 3D (three.js style), GLSL, expressions | `infinite code docs sketch\|sketch3d\|glsl\|expressions` |
@@ -3476,8 +4222,9 @@ Never hand the user code that has not passed its check.
 | Effects | change a picture | gaussianblur, bloom, glitch, kaleidoscope, displace, halftone, pixelate, ripple, edge outline |
 | Compositing | colour, layers, time | Blend, Layer Stack, Curves, Color Ramp, Feedback, Trails, Fluid, Reaction Diffusion, chroma key |
 | 3D | geometry to a render | primitives, Model 3D, Instance on Points, Particle System, Field Modifier, Sketch 3D, Material, Camera, Light, Render 3D |
+| Shader | procedural material graphs | Shade Coord, Shade Mapping, Shade Checker, Shade Noise, Shade Voronoi, Shade Gradient, Shade Brick, Shade Image, Bump, Normal Map, Fresnel, Layer Weight, Geometry, Math, Vector Math, Mix, Ramp, Map Range |
 | Synths | make sound | Analog, FM, Wavetable, Piano, String, Sampler, Granular, Drum Sequencer, Field Synth |
-| AudioEffects | change sound | Audio Filter, EQ, Dynamics, Delay, Reverb, Drive, Chorus, Stutter, Convolution Reverb |
+| AudioEffects | change sound | Audio Filter, EQ, Dynamics, Delay, Reverb, Drive, Chorus, Stutter, Convolution Reverb, Spectral Field |
 | Notes | notes and MIDI | MIDI Notes, Note Sequencer, Arpeggiator, Chorder, Piano Roll, Quantizer, Humanizer |
 | Modulators | move a value over time | LFO, Random, MSEG, Envelope, Audio Analyze, Audio to CV, Smoothing, Image Analyze, Hand Track |
 | Macros | knobs for playing live | Macro Knob, Macro XY, Macro Trigger |

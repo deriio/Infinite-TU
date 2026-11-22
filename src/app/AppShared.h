@@ -1,7 +1,9 @@
 #pragma once
 // Shared declarations for the code split out of main.cpp.
 #include "app/selftest/UiAudit.h"
+#include <cstring>
 #include <optional>
+#include <vector>
 #include "core/ModShapes.h"
 #include "core/Provenance.h"
 #include "app/ui/design/TokenColors.h"
@@ -9,6 +11,8 @@
 #include "app/ui/design/components/ActionButton.h"
 #include "platform/AppPaths.h"
 #include "audio/WavePeaks.h"
+
+class Scene2DNode;
 
 namespace app
 {
@@ -103,7 +107,7 @@ extern float gViewportPanelHeight;
    inline const float kMacroWideCell = 200.0f;
 
 
-   inline const float kMacroRowH = 26.0f;
+   inline const float kMacroRowH = tok::control_h;
 
 
    // ---- element-size table (docs/plans/ui-system/element-sizes.md) ----
@@ -167,9 +171,9 @@ extern bool gMetronomeAccent;
 
 extern bool gMetronomeDirty;
 
-void DrawCheckerboardBackdrop(ImDrawList* dl, ImVec2 origin, ImVec2 br, float rounding = 4.0f);
+void DrawCheckerboardBackdrop(ImDrawList* dl, ImVec2 origin, ImVec2 br, float rounding = tok::radius_control);
 
-void DrawCheckerboardBackdrop(ImDrawList* dl, ImVec2 origin, float size, float rounding = 4.0f);
+void DrawCheckerboardBackdrop(ImDrawList* dl, ImVec2 origin, float size, float rounding = tok::radius_control);
 
 bool TextFocusClaimed();
 
@@ -207,6 +211,8 @@ void DrawOfflineRenderProgressWindow();
 void DrawArrangeWavRenderProgressWindow();
 
 void DrawArrangeClipSettingsChild(float panelW);
+
+float ArrangeClipSettingsWidth(float maxW);
 
 void ArrangeCollectClipModBindings(const GraphNode& node,
                                       std::vector<std::pair<int, std::string>>& out);
@@ -675,6 +681,8 @@ extern bool gRequestFitView;
 extern int gRequestFitViewNodeIndex;
 extern bool gRequestFitViewNodeZoom; // fit_view_node "zoom": scale up to fill the view so a screenshot has more pixels
 extern int gRequestSelectNodeIndex; // select this node alone on the next canvas frame (-1 = none)
+extern std::vector<uint64_t> gRequestRevealUids; // a page just spawned these: select them and glide the canvas to them once drawn
+inline void RevealSpawned(std::initializer_list<uint64_t> uids) { gRequestRevealUids.assign(uids.begin(), uids.end()); }
 
 extern bool gRequestGroup;
 
@@ -683,6 +691,7 @@ extern bool gRequestUngroup;
 extern bool gRequestBypass;
 
 extern bool gRequestCopy;
+extern bool gRequestCut;
 
 extern bool gRequestPaste;
 
@@ -767,6 +776,88 @@ void EndFloatingPanel();
 void DrawViewportPanelFloating();
 void DrawModMatrixFloating();
 void DrawPerfPanelFloating();
+// The Mixer panel (MixerPanel.cpp): the console view of the patch's Mixer nodes.
+void DrawMixerPanelFloating();
+void DrawMixerPanelDocked(const char* id, const ImVec2& size);
+void MixerPanelDockCombo();
+void SetMixerAudio(bool on); // AudioMode::Mixer on or off; on starts the device like the other audio chips
+void MixerPanelDockWrite(std::ostream& file);
+bool MixerPanelDockReadKey(const std::string& key, const std::string& val);
+bool MixerPanelTestStep(int frameId); // INFINITE_MIXERPANELTEST: true once finished (prints MIXERPANELTEST PASS/FAIL)
+extern bool  gMixerPanelOpen;
+extern int   gMixerPanelDock; // 0 bottom, 1 right, 2 left, 3 top, kDockFloating
+extern float gMixerPanelWidth;
+extern float gMixerPanelHeight;
+extern bool  gMixerClaimedKeys;
+extern ImVec2 gMixerPanelRectMin, gMixerPanelRectMax;
+inline const float kMixerPanelMinWidth = 320.0f;
+inline const float kMixerPanelMinHeight = 180.0f;
+// A page is one console: an Audio Out whose input resolves to a Mixer (that Mixer is the page's top).
+// Mixer Audio routes exactly these terminals; the panel lists exactly these pages.
+bool IsMixerPageTerminal(const INode* terminal, const INode* resolvedSource);
+INode* MixerPageTop(INode* resolvedSource); // the Mixer behind a terminal's source, up through master inserts
+inline constexpr int kMixerMasterSlot = -1; // MixerPanelInsert*: the chain between the top Mixer and its Audio Out
+int MixerPanelPageCount();
+void MixerPanelSelectPage(int page);
+int MixerPanelAddPage();              // spawns a lone Mixer (no Audio Out); returns its node index
+bool MixerPanelCreateFromAudioOuts(); // D13: wraps every Audio Out's source into one new Mixer
+int MixerPanelNewSendFx(int mixerIndex, int slot, const char* fxType); // B1: send bus -> effect -> return on the top Mixer
+// D4 inserts of one Mixer slot (signal order, node indices); each edit is one undo step. A shared chain (G4) refuses.
+std::vector<int> MixerPanelInsertChain(int mixerIndex, int slot, bool* shared = nullptr);
+int MixerPanelInsertAdd(int mixerIndex, int slot, const char* fxType);
+bool MixerPanelInsertRemove(int mixerIndex, int slot, int pos);
+bool MixerPanelInsertMove(int mixerIndex, int slot, int from, int to);
+bool MixerPanelInsertBypass(int mixerIndex, int slot, int pos);
+// B3: one undo step each. Group returns the new group Mixer's node index, -1 when refused.
+int MixerPanelGroupStrips(int mixerIndex, const std::vector<int>& slots);
+bool MixerPanelUngroup(int mixerIndex, int slot);
+bool MixerPanelStripMove(int mixerIndex, int from, int to);
+// B6: snapshots A-H over the whole console (top + groups), crossfaded by the top's snapfade; solo clear.
+bool MixerPanelSnapshotStore(int topIndex, int k);
+bool MixerPanelSnapshotRecall(int topIndex, int k);
+bool MixerPanelAnySolo(int topIndex);
+void MixerPanelClearSolos(int topIndex);
+// Block C: the render column (MixerRender.cpp). One take per Audio Out, through its own recorder.
+struct MixerRenderSettings
+{
+   int source = 0;     // 0 this page, 1 all pages (one file: the sum of every page, G8)
+   int mode = 0;       // 0 live, 1 fast (offline)
+   int lengthUnit = 0; // 0 seconds, 1 bars, 2 until stop, 3 arrange range (loop when on, else the whole arrangement)
+   float length = 30.0f;
+   float tail = 2.0f;  // seconds, rendered with the transport stopped
+   int start = 0;      // 0 now, 1 with transport play, 2 from the start
+   int format = 0;     // 0 WAV 16, 1 WAV 24, 2 FLAC, 3 MP3
+   std::string name = "{patch}-{take}";
+};
+struct MixerRenderResult
+{
+   std::string path;
+   float peak = 0.0f, lufs = -120.0f, truePeakDb = -120.0f;
+   int64_t frames = 0, bytes = 0;
+   double seconds = 0.0;
+};
+extern MixerRenderSettings gMixerRender;
+bool MixerRenderStart(const std::vector<int>& outIndices); // false + a notice when refused
+void MixerRenderCancel();                                  // live: stop and keep; fast or armed: drop
+void MixerRenderTick();                                    // every frame
+bool MixerRenderActive();
+bool MixerRenderArmed();
+float MixerRenderProgress();                               // 0..1, < 0 when there is no end yet
+double MixerRenderLengthSeconds();
+bool MixerRenderArrangeSpan(double& startSec, double& lengthSec); // lengthUnit 3; false when the arrangement is empty
+const std::vector<MixerRenderResult>& MixerRenderResults();
+const std::string& MixerRenderRefusal();
+std::string MixerRenderFileName(const std::string& tmpl, const std::string& dir, const char* ext);
+void DrawMixerRenderColumn(const std::vector<int>& pageOuts, int currentOut);
+extern bool gMixerRenderOpen;
+extern ImVec2 gMixerRenderMin, gMixerRenderMax; // the column's rect when drawn, zero when hidden
+bool MixerPanelShowMixer(int nodeIndex); // opens the panel on the page holding this Mixer; false if on no page
+int MixerPanelCurrentPageTop();          // node index of the shown page's top Mixer, -1 when none
+bool MixerPanelGroupOpen(int mixerIndex);
+// What the last drawn frame laid out, for the self-test.
+extern int gMixerPanelStripCount;
+extern float gMixerPanelFaderH;
+extern ImVec2 gMixerStripsMin, gMixerStripsMax, gMixerMasterMin, gMixerMasterMax;
 
 extern std::vector<int> gViewportPanelNodes;
 
@@ -942,7 +1033,7 @@ extern bool  gArrangeFocused;
    // a rebuild-driven mode leak rather than a routing rule.
    // Studio: the Sample studio's take alone (SampleStudioPanel.cpp). Canvas Audio Outs are bypassed as in Timeline,
    // and no clip is scheduled, so the take is heard on its own.
-   enum class AudioMode { Canvas, Timeline, Session, Studio };
+   enum class AudioMode { Canvas, Timeline, Session, Studio, Mixer };
 
 extern AudioMode gAudioMode;
 
@@ -1287,6 +1378,18 @@ extern float gMinimapSize;
 
 extern float gMinimapOpacity;
 
+// 3D View habits (Settings > 3D View): the user's, not the scene's, so they hold in every patch. Applied onto each
+// scene's Scene3DNode::Settings as the 3D View draws it.
+struct View3DPrefs
+{
+   int miniAxes = 2;
+   float miniSize = 80.0f, miniBright = 1.0f, gizmoNavSize = 80.0f, gizmoSize = 75.0f, smoothTime = 0.2f, rotStep = 15.0f;
+   bool autoPerspective = true, continuousGrab = true;
+   float orbitSens = 1.0f;
+   bool zoomToMouse = false, orbitSelection = false, invertZoom = false;
+};
+extern View3DPrefs gView3DPrefs;
+
 extern float gZoomSensitivity;
 
 extern bool gHoveringItem;
@@ -1512,6 +1615,9 @@ extern bool gFieldPixelEditorOpen;
 extern FieldSampleNode* gFieldSampleEditor;
 
 extern bool gFieldSampleEditorOpen;
+
+extern SpectralFieldNode* gSpectralFieldEditor;
+extern bool gSpectralFieldEditorOpen;
 
 extern FieldSynthNode* gFieldSynthEditor;
 extern FieldNotesNode* gFieldNotesEditor;
@@ -2423,6 +2529,7 @@ void NoteNodeAppended();
 void NoteNodeUidChanged(uint64_t oldUid, GraphNode* gn);
 
 GraphNode* FindNodeByUid(uint64_t uid);
+void HideEffectNodes(::Scene2DNode& doc);   // effect-stack nodes follow their Show on canvas
 
 void ArrangeCommitEdit();
 
@@ -2564,15 +2671,15 @@ ImageCable* CableFor(GraphNode& gn, int slot);
 
 
    // Upper bound on how many geometry-input slots any single node exposes via
-   // GeometryInputSlot() - the widest today is Group3DNode at 8. Generic loops over
+   // GeometryInputSlot() - Material's layer pin sits at slot 13 (row 4.1). Generic loops over
    // "every geometry slot this node might have" stop here rather than walking off into unrelated pins.
-   inline const int kMaxGeometrySlots = 8;
+   inline const int kMaxGeometrySlots = 16;
 
 
 
    // Upper bound on how many audio/note-input slots any single node exposes.
-   // The widest today is Mixer, at MixerNode::kMaxSlots (12).
-   inline const int kMaxAudioSlots = 12;
+   // The widest today is Mixer, at MixerNode::kMaxSlots (32).
+   inline const int kMaxAudioSlots = 32;
 
 
    // Every note-consuming node before AudioPluginNode carried its one note
@@ -2601,12 +2708,15 @@ void ArrangeRespawnCloneNode(uint64_t clipId);
 
 void ConnectGeometrySlot(GraphNode& dst, int slot, GraphNode& src, int srcOutput = 0);
 
+// True for a Shade node (the field-expression family). Callers pass it as srcIsShade.
+bool IsShadeSource(const INode* n);
+
 bool IsInputSlotCompatible(GraphNode* dstNode, int slot,
                                bool srcIsModulator, IPaletteSource* srcPalette,
                                IGeometrySource* srcGeometry, CameraNode* srcCamera,
                                LightNode* srcLight,
                                bool srcIsEnvironment, bool srcIsAudioNode, bool srcIsNoteSource,
-                               bool srcIsPredictor);
+                               bool srcIsPredictor, bool srcIsShade);
 
 void WireInputSlot(GraphNode& srcNode, GraphNode& dstNode, int slot, int srcOutputIndex = 0);
 
@@ -3022,6 +3132,11 @@ void DrawColorRampParams(ColorRampNode* n);
 
 void DrawImageAnalyzeParams(ImageAnalyzeNode* n);
 void DrawTrackParams(TrackNodeBase* n);
+void DrawBrainSourceBody(BrainSourceNode* n, int nodeIndex);
+void DrawBrainSourceParams(BrainSourceNode* n);
+void DrawLogicGateBody(LogicGateNode* n, int nodeIndex);
+void DrawLogicGateParams(LogicGateNode* n);
+void DrawBrainSculptParams(BrainSculptNode* n);
 
 void DrawNullModulatorParams(NullModulatorNode* n);
 
@@ -3618,6 +3733,7 @@ float AudioNodeWidth(INode* node);
 void DrawWavetableScope(WavetableNode* n, float h, float width);
 
 void DrawFieldSampleScope(FieldSampleNode* n, float h, float width);
+void DrawSpectralFieldSpectrum(SpectralFieldNode* n, float h, float width);
 
 void DrawFieldSynthScope(FieldSynthNode* n, float h, float width);
 void DrawFieldNotesRoll(FieldNotesNode* n, float h, float width);
@@ -3627,6 +3743,7 @@ void DrawFieldElementParams(FieldElementNode* n);
 void DrawFieldPrimitiveParams(FieldPrimitiveNode* n);
 
 void DrawFieldSampleParams(FieldSampleNode* n);
+void DrawSpectralFieldParams(SpectralFieldNode* n);
 
 void DrawFieldSynthParams(FieldSynthNode* n);
 void DrawFieldNotesParams(FieldNotesNode* n);
@@ -3818,7 +3935,7 @@ void DrawPluginSearchPanel();
       int presetIndex = 0;
    };
 
-void SpawnFieldPresetNode(const FieldSearchEntry& entry, float x, float y);
+GraphNode* SpawnFieldPresetNode(const FieldSearchEntry& entry, float x, float y);
 
 void DrawFieldSearchPanel();
 
@@ -4144,6 +4261,7 @@ void DrawMetaBallParams(MetaBallNode* n);
 void DrawJoinGeometryParams(JoinGeometryNode* n);
 
 void DrawSwitcher3DParams(Switcher3DNode* n);
+void DrawGroup3DParams(Group3DNode* n);
 
 void DrawWrapParams(WrapNode* n);
 
@@ -4157,6 +4275,27 @@ void DrawParticleSystemParams(ParticleSystemNode* n);
 void DrawMaterialParams(MaterialNode* n);
 
 void DrawMappingParams(MappingNode* n);
+void DrawShadeCoordParams(ShadeCoordNode* n);
+void DrawShadeMappingParams(ShadeMappingNode* n);
+void DrawShadeCheckerParams(ShadeCheckerNode* n);
+void DrawShadeNoiseParams(ShadeNoiseNode* n);
+void DrawShadeVoronoiParams(ShadeVoronoiNode* n);
+void DrawShadeGradientParams(ShadeGradientNode* n);
+void DrawShadeBrickParams(ShadeBrickNode* n);
+void DrawShadeImageParams(ShadeImageNode* n);
+void DrawShadeMathParams(ShadeMathNode* n);
+void DrawShadeVectorMathParams(ShadeVectorMathNode* n);
+void DrawShadeMixParams(ShadeMixNode* n);
+void DrawShadeRampParams(ShadeRampNode* n);
+void DrawShadeMapRangeParams(ShadeMapRangeNode* n);
+void DrawShadeSeparateParams(ShadeSeparateNode* n);
+void DrawShadeCombineParams(ShadeCombineNode* n);
+void DrawShadeCurvesParams(ShadeCurvesNode* n);
+void DrawShadeBumpParams(ShadeBumpNode* n);
+void DrawShadeNormalMapParams(ShadeNormalMapNode* n);
+void DrawShadeFresnelParams(ShadeFresnelNode* n);
+void DrawShadeLayerWeightParams(ShadeLayerWeightNode* n);
+void DrawShadeGeometryParams(ShadeGeometryNode* n);
 
 void DrawMeshResynthParams(MeshResynthNode* n);
 
@@ -4816,6 +4955,8 @@ int ArrangeRenderEffectiveAudioSource();
 
 int ArrangeRenderEffectiveVideoSource(Arrange::Tick a, Arrange::Tick b);
 
+ArrangeRenderJob ArrangeRenderJobFromSettings(int markerA, int markerB, const std::string& path);
+
 bool ArrangeRenderPathQueued(const std::string& path, uint64_t exceptJobId);
 
 void ArrangeRenderResolveRange(int kind, int markerA, int markerB, Arrange::Tick customStart,
@@ -4914,6 +5055,7 @@ const char* HelpT(const char* key);
 void DrawSettingsWindow(bool* open);
 
 void DrawShortcutsWindow(bool* open);
+void DrawShortcutsTableBody(const char* idPrefix);
 // The shortcut table as plain text, English, this system's keys (the `shortcuts` RPC).
 std::string ShortcutsText();
 
@@ -5024,10 +5166,12 @@ extern uint64_t gArrangeAudioBuiltSessionGen;
 
 extern bool gArrangeAudioBuiltRouting;
 extern bool gArrangeAudioBuiltStudio;
+extern bool gArrangeAudioBuiltMixer;
 
 extern std::set<uint64_t> gArrangeRetriggerConflictClipIds;
 
 extern unsigned long long gAudioTopologyRebuildCount;
+extern int gAudioTopologyTerminalCount; // device terminals in the last published topology
 
 extern std::set<uint64_t> gArrangeVideoSourceConflictClipIds;
 
@@ -5040,6 +5184,7 @@ void ArrangeCollectClipModBindings(const GraphNode& node,
 
 bool ArrangeTimelineRoutingActive();
 bool StudioOnlyRouting(); // AudioMode::Studio outside an arrangement render: canvas bypassed, no clip scheduled
+bool MixerOnlyRouting(); // AudioMode::Mixer outside an arrangement render: only Audio Outs fed by a Mixer reach the device
 
 void ForceAudioRepare();
 
@@ -5101,6 +5246,11 @@ void ArrangeNoteSchedulesPublish();
    bool ArrangeSessionTakeClipCtxRequest();
    // The slot-only rows at the bottom of the clip menu: follow action, follow after, place on Timeline, clear.
    void DrawArrangeSessionSlotMenuItems(uint64_t clipId);
+   // The slot's Cut / Copy / Paste / Duplicate, Place on Timeline and Delete rows; the clip menu draws each where the
+   // context-menu order puts it (docs/quality/context-menu-order.md). All three queue their action like the rows above.
+   void DrawArrangeSessionSlotEditItems(uint64_t clipId);
+   void DrawArrangeSessionSlotPlaceItem(uint64_t clipId);
+   void DrawArrangeSessionSlotDeleteItem(uint64_t clipId);
    // Applies the slot action a menu row queued; call after the clip menu has ended.
    void ArrangeSessionApplyMenuAction();
    // The inspector's Launch card for a session slot clip; false (nothing drawn) for a Timeline clip.
@@ -5141,11 +5291,14 @@ void ArrangeRenderCancelAll();
 
 void DrawArrangeClipSettingsChild(float panelW);
 
+float ArrangeClipSettingsWidth(float maxW);
+
 void ArrangeRenderQueuePosition(int& outIndex, int& outTotal);
 
 bool ArrangeRenderBusy();
 
 ArrangeRenderJob* ArrangeRenderFindJob(uint64_t id);
+double ArrangeRenderTickSeconds(int64_t t);
 
 extern std::string gArrangeRenderFailNotice;
 
@@ -5739,6 +5892,10 @@ void RunAutoLayoutTick();
 
 int ParamIndexOfKeyOnNode(const GraphNode& gn, const std::string& key);
 
+bool CanResetParam(int nodeIndex, int paramIndex);
+bool ResetParamToDefault(int nodeIndex, int paramIndex, bool pushUndo = true);
+bool ResetParamKeyToDefault(GraphNode& gn, const std::string& key, bool pushUndo = true);
+
 bool LoadPatchDataImpl(Patch::Data& data, const std::string& path, bool reload);
 
 bool LoadPatchFromImpl(const std::string& path, bool reload);
@@ -5800,6 +5957,7 @@ extern bool gSampleStudioOpen;
 extern float gSampleStudioHeight;
 extern int gSampleStudioDock; // 0 = bottom, 3 = top (the Timeline's codes)
 void DrawSampleStudioDocked(const char* id, const ImVec2& size);
+void SampleStudioWhenClosed(); // silences the Studio's audio and preview once it is closed
 // The Studio's work as text for the patch (`studio` lines), and back; empty text clears it.
 std::string SampleStudioSerialize();
 void SampleStudioApply(const std::string& text);
@@ -5883,9 +6041,23 @@ uint64_t PianoRollGenerate(const std::string& spec, uint64_t laneId, std::string
 std::string PianoRollExportMidi(uint64_t clipId, std::string path, std::string& err);
 // True while the pointer is over the panel: its keys beat the canvas's (the Timeline's rule).
 extern bool gPianoRollClaimedKeys;
+// The Drum panel (DrumPanel.cpp): the Drum Sequencer nodes' hardware face, bottom or top.
+extern bool gDrumPanelOpen;
+extern float gDrumPanelHeight;
+extern int gDrumPanelDock; // 0 = bottom, 3 = top
+extern bool gDrumClaimedKeys;
+extern float gDrumPanelNaturalH;
+extern ImVec2 gDrumPanelRectMin, gDrumPanelRectMax;
+void DrawDrumPanelDocked(const char* id, const ImVec2& size);
+// Opens the panel on this Drum Sequencer's page.
+void DrumPanelShowNode(int nodeIndex);
+// The terminal's node <node> drum ...: the panel's Tools, dock, close and groove items on this node.
+bool DrumPanelRun(int nodeIndex, const std::string& what, const std::string& arg, nlohmann::json& outResult, std::string& outError);
 extern bool gView3DOpen;
 extern float gView3DHeight;
-extern int gView3DDock; // 0 = bottom, 3 = top
+extern int gView3DDock; // 0 bottom, 1 right, 2 left, 3 top, 4 fill (the canvas is hidden)
+extern float gView3DWidth;
+extern int gView3DDockBack; // the dock Fill returns to
 extern bool gView3DClaimedKeys;
 extern ImVec2 gView3DRectMin, gView3DRectMax;
 void DrawView3DDocked(const char* id, const ImVec2& size);
@@ -5894,6 +6066,53 @@ bool View3DCanAdd(const GraphNode& gn);
 void View3DOpenNode(const GraphNode& gn, int mode);
 OutputNode* View3DEnsureOutput();
 void View3DAddNode(GraphNode& gn);
+// The 2D View (View2DPanel.cpp): a Scene 2D document's layers over node outputs.
+extern bool gView2DOpen;
+extern float gView2DHeight;
+extern int gView2DDock; // 0 bottom, 1 right, 2 left, 3 top, 4 fill (the canvas is hidden)
+extern float gView2DWidth;
+extern int gView2DDockBack; // the dock Fill returns to
+// Sets a view's dock (which: 2 or 3). Fill remembers the dock it came from, and only one view fills at a time:
+// the other drops back to its old dock. ViewDockToggleFill flips Fill on and off.
+void SetViewDock(int which, int dock);
+void ViewDockToggleFill(int which);
+// One docked view (2D or 3D): the outer child, the resize seam on the canvas side, the card. Shared by both views.
+void DrawViewDocked(const char* id, const ImVec2& size, int dock, float& height, float& width, const char* gripId,
+                    const char* cardId, ImVec2& rectMin, ImVec2& rectMax, void (*drawPanel)());
+// The Dock Position submenu both views show in their header menu, and the maximise chip of their top bar.
+void DrawViewDockMenuItems(int which);
+const char* ViewDockFillTip();
+void ViewDockWrite(std::ostream& file);
+bool ViewDockReadKey(const std::string& key, const std::string& val);
+// Self-test: one step per frame from frame 4; true once the five docks are checked.
+bool View2DDockTestStep(int frameId);
+extern std::string gView2DTools; // the 2D View tool strip: order, "-" marks hidden
+extern std::string gView2DSwatches; // the 2D View colour swatches: "rrggbb,rrggbb,..."
+extern bool gView2DClaimedKeys;
+extern ImVec2 gView2DRectMin, gView2DRectMax;
+void DrawView2DDocked(const char* id, const ImVec2& size);
+bool View2DCanAdd(const GraphNode& gn);
+void View2DAddNode(GraphNode& gn);
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+// Self-test probe (PageMenuTests.cpp): each More.. form's chip last drawn, and its popover when open.
+struct View2DMoreProbe
+{
+   int frame = -1;
+   ImVec2 chipMn, chipMx;
+   bool open = false;
+   float winW = 0.0f, contentW = 0.0f;
+};
+std::map<std::string, View2DMoreProbe>& View2DMoreProbes();
+#endif
+
+// RPC "view2d": read the open 2D document's layers, or write them in one gated batch (one undo step).
+bool View2DRpc(const nlohmann::json& params, nlohmann::json& out, std::string& error);
+OutputNode* View2DEnsureOutput();
+// Drops an SVG file onto the open 2D View as a new vector layer.
+bool View2DImportSvg(const std::string& path);
+// The Scene 2D node's canvas body: its size and Open in 2D View.
+void DrawScene2DBody(GraphNode& gn);
+void RegisterScene2DParams(GraphNode& gn);   // a 2D-View-only doc: register its params without a card
 GraphNode* View3DMaterialOf(Scene3DNode* scene, int itemId);
 void View3DAddMaterial(Scene3DNode* scene, int itemId);
 // The Material tab's preview ball for this material (192 px, GL texture).
@@ -5901,6 +6120,8 @@ unsigned int View3DPreviewBall(class MaterialNode* mat);
 // StageDropHandling.cpp: a dropped glTF as one Model 3D + Material + maps per
 // material, stacked from (x, y). Returns each part's Material node index.
 std::vector<int> SpawnGltfParts(const std::string& path, float x, float y);
+void ApplyGltfMaterial(MaterialNode* mat, const GltfImport::GltfDecodePackage& pkg);
+void ApplyGltfUvTransform(MappingNode* mp, const GltfImport::GltfDecodePackage& pkg);
 void View3DSetWorld(GraphNode& gn);
 extern ImVec2 gPianoRollRectMin, gPianoRollRectMax;
 // A Library .mid released over the Piano Roll; the panel imports it next frame.
@@ -6047,6 +6268,8 @@ bool RunBakeTest();
 bool RunSculptTest();
 bool RunModelAbTest();
 bool RunThreeDBench();
+bool RunRhiTest();
+bool RunEngineTest();
 bool RunThreeDFlowTest();
 bool RunBvhTest();
 bool RunPathTraceTest();
@@ -6436,6 +6659,7 @@ int RunFieldStateTest();
 int RunFieldTransferTest();
 
 int RunFieldSampleTest();
+int RunSpectralFieldTest();
 
 int RunFieldPinDeclTest();
 
@@ -6505,9 +6729,31 @@ int RunVST3BlocklistTest();
 
 void RunRpcBatchTest();
 void RunOscControlTest();
+void RunParamResetTest();
+void RunCustomAgentTest();
 void RunHistoryTest();
 void RunClipboardTest();
 void RunView3DTest();
+void RunView2DTest();
+// GL rows (bottom first) to file rows (top first), in place. Use this, never stbi_flip_vertically_on_write: that flag
+// is global, and the tile store encodes paint tiles on a worker thread, so a set flag stores them upside down.
+inline void FlipRowsRgba8(std::vector<unsigned char>& px, int w, int h)
+{
+   const size_t row = (size_t)w * 4;
+   std::vector<unsigned char> tmp(row);
+   for (int y = 0; y < h / 2; y++)
+   {
+      unsigned char* a = &px[(size_t)y * row];
+      unsigned char* b = &px[(size_t)(h - 1 - y) * row];
+      std::memcpy(tmp.data(), a, row);
+      std::memcpy(a, b, row);
+      std::memcpy(b, tmp.data(), row);
+   }
+}
+int View2DAffinityAb(const char* dir);   // INFINITE_AB2D: the Affinity A/B pictures (View2DPanel.cpp)
+bool View2DJourneySetup(const std::string& line, std::string* err);   // journeys (View2DPanel.cpp, debug builds)
+std::string View2DJourneyQuery(const std::string& q);
+bool View2DJourneyToScreen(float x, float y, ImVec2* out);
 
 void RunPatchWatchTest();
 
@@ -6530,6 +6776,7 @@ float ArrangeClipBypassBaseValue(const ParamRef& ref, const Modulation::Source& 
 void RefreshParamDriverFlags();
 
 void ApplyModulationAndPalette(int frameId, bool isNormalFrame = false);
+extern bool gModulationFrozen;   // crawler only: bound values are not written
 // Plugin mode (docs/plans/vst-au/README.md 8.2): host slots -> bound Macros, Macro turns -> host
 // edits, slot names -> host. Start of the modulation pass, main thread (src/app/frame/HostSlots.cpp).
 void HostSlotsFrame();
@@ -6557,6 +6804,8 @@ void BuildBenchB2Scene(const std::string& scaleStr, bool isAnim, int& outRender3
                               int* outTwistIdx = nullptr, int* outMatIdx = nullptr, int* outCamIdx = nullptr,
                               bool useEmbossForGlitch = false);
 
+void BenchBoatTick();
+void BenchBoatDump(const std::string& dir);
 void BuildBenchB4Scene(const std::string& scaleStr, const std::string& shadowStr, bool isAnim, int& outRender3DIdx, int& outOutputIdx, int& outCamIdx, int& outLfoIdx);
 
 void BuildBenchB6Scene(int n, bool collapsed, float& outMaxX, float& outMaxY, int& outDragNodeIdx);

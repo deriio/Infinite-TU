@@ -16,12 +16,15 @@ def _lit(light, world=None, view="Standard"):
             "objects": [GREY_FLOOR, _ball(base_color=[0.8, 0.8, 0.8], roughness=0.4)]}
 
 
-def _material_rows():
+def _material_rows(field=False):
+    """field=True: each ball's values come from a Field material program (OPUS_PLAN row 1.4); the harness sets
+    the Material knobs to a decoy, so the picture matches `materials` only if the program overrides them."""
     objs = [GREY_FLOOR]
+    f = {"field": True} if field else {}
     for i, rough in enumerate([0.05, 0.25, 0.5, 0.75, 1.0]):
         x = (i - 2) * 0.9
-        objs.append(_ball(x, -0.5, 0.35, base_color=[0.8, 0.1, 0.08], roughness=rough))
-        objs.append(_ball(x, 0.5, 0.35, base_color=[1.0, 0.77, 0.34], metallic=1.0, roughness=rough))
+        objs.append(_ball(x, -0.5, 0.35, base_color=[0.8, 0.1, 0.08], roughness=rough, **f))
+        objs.append(_ball(x, 0.5, 0.35, base_color=[1.0, 0.77, 0.34], metallic=1.0, roughness=rough, **f))
     return {"camera": {"fov": 40, "azimuth": 90, "elevation": 30, "distance": 6.0, "target": [0, 0, 0.3]},
             "lights": [{"type": "sun", "power": 3, "azimuth": 60, "elevation": 50}],
             "world": {"color": [0.3, 0.3, 0.3]}, "objects": objs}
@@ -144,13 +147,23 @@ CASES = {
     "light_point": _lit({"type": "point", "power": 300, "azimuth": 30, "elevation": 50, "distance": 3, "radius": 0.1}),
     "light_spot": _lit({"type": "spot", "power": 600, "azimuth": 30, "elevation": 60, "distance": 3,
                         "spot_angle": 25, "blend": 0.3, "radius": 0.1}),
+    "light_ies": _lit({"type": "point", "power": 300, "azimuth": 30, "elevation": 50, "distance": 3, "radius": 0.1,
+                       "ies": "ies_batwing.ies"}),
     "light_area": _lit({"type": "area", "power": 300, "azimuth": 30, "elevation": 50, "distance": 3, "size": [1, 1]}),
+    # Row 4.2 (PLAN.md): a disc panel, then a rectangle with its emission held to a 40 degree spread (Cycles' soft box).
+    "light_disc": _lit({"type": "area", "power": 300, "azimuth": 30, "elevation": 50, "distance": 3, "size": [1.4, 0.8],
+                        "shape": "disc"}),
+    "light_spread": _lit({"type": "area", "power": 300, "azimuth": 30, "elevation": 50, "distance": 3, "size": [1.5, 1.5],
+                          "spread": 40}),
     # No lamp: the world colour alone lights everything.
     "world_grey": {"camera": CAMERA, "lights": [], "world": {"color": [0.5, 0.5, 0.5]},
                    "objects": [GREY_FLOOR, _ball(-0.6, 0, 0.45, base_color=[0.8, 0.8, 0.8], roughness=0.5),
                                _ball(0.6, 0, 0.45, base_color=[0.95, 0.95, 0.95], metallic=1, roughness=0.2)]},
     # Principled: dielectric row and metal row, roughness rising left to right.
     "materials": _material_rows(),
+    # The same scene, every ball's base / metallic / roughness written by a Field material program over decoy knobs.
+    # Gate (row 1.4): FLIP vs `materials` on the same engine under 0.01 (`sweep.py pair materials mat_field_knobs`).
+    "mat_field_knobs": _material_rows(field=True),
     # The same sun scene through AgX on both sides.
     "view_agx": _lit({"type": "sun", "power": 6, "azimuth": 30, "elevation": 45}, view="AgX"),
     # White furnace energy conservation: 5 roughness steps on metal and dielectric in a (1,1,1) world.
@@ -165,3 +178,741 @@ CASES = {
     # Owner-supplied deer: textured spec-gloss material, two lights, AgX. Skipped when the file is missing.
     "deer": _deer(),
 }
+
+
+# ---- Coverage cases: one feature each, the terms a 3D user expects to just work (README "Coverage"). ----
+SMALL = [384, 384]
+ROW_CAM = {"fov": 40, "azimuth": 90, "elevation": 20, "distance": 6.0, "target": [0, 0, 0.35]}
+ROW_SUN = {"type": "sun", "power": 3, "azimuth": 60, "elevation": 45}
+
+
+def _row(mats, cam=None, lights=None, world=None, extra=(), **kw):
+    objs = [GREY_FLOOR] + [_ball((i - (len(mats) - 1) / 2) * 0.9, 0.0, 0.35, **m) for i, m in enumerate(mats)] + list(extra)
+    sc = {"size": SMALL, "camera": cam or ROW_CAM, "lights": lights if lights is not None else [ROW_SUN],
+          "world": world or {"color": [0.3, 0.3, 0.3]}, "objects": objs}
+    sc.update(kw)
+    return sc
+
+
+def _dof_bokeh():
+    """A small ball in focus 1.6 m away and a grid of small bright emitters about 10 m behind, out of focus at f/1."""
+    em = [_ball(x, 8.0 + 0.8 * (k % 2), z, base_color=[0, 0, 0], emission=[1.0, 0.85, 0.6], emission_strength=60.0)
+          for k, (x, z) in enumerate((x, z) for x in (-2.4, -1.2, 0.0, 1.2, 2.4) for z in (0.3, 1.6, 2.9))]
+    for b in em:
+        b["scale"] = 0.05
+    return {"size": SMALL, "camera": {"fov": 30, "azimuth": 90, "elevation": 3, "distance": 1.6, "target": [0, 0, 0.2],
+                                      "fstop": 1.0, "focus": 1.6, "blades": 6, "blade_rotation": 15},
+            "lights": [{"type": "sun", "power": 0.5, "azimuth": 60, "elevation": 45}], "world": {"color": [0.01, 0.01, 0.012]},
+            "objects": [GREY_FLOOR, _ball(0.0, 0.0, 0.15, base_color=[0.7, 0.3, 0.2], roughness=0.4)] + em}
+
+
+def _stripes():
+    """A wall of coloured bars behind the row, so refraction, blur and see-through have something to bend."""
+    cols = [[0.8, 0.1, 0.08], [0.9, 0.8, 0.1], [0.1, 0.6, 0.15], [0.1, 0.25, 0.8], [0.9, 0.9, 0.9], [0.05, 0.05, 0.05]]
+    return [{"shape": "cube", "scale": [0.2, 0.05, 1.2], "location": [-2.5 + k * 0.4, 1.2, 1.2],
+             "material": {"base_color": cols[k % len(cols)], "roughness": 0.6}} for k in range(13)]
+
+
+def _textured():
+    # Maps are drawn by harness.make_texture into the case folder; the same PNG goes to Blender and Infinite.
+    return {"size": SMALL, "camera": {"fov": 40, "azimuth": 90, "elevation": 30, "distance": 5.0, "target": [0, 0, 0.35]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 40, "elevation": 40}], "world": {"color": [0.3, 0.3, 0.3]},
+            "objects": [
+                {"shape": "plane", "scale": 3, "material": {"base_color": [1, 1, 1], "roughness": 0.6,
+                                                            "maps": {"albedo": "checker"}}},
+                _ball(-1.0, 0, 0.45, base_color=[1, 1, 1], roughness=0.5, maps={"albedo": "checker_fine"}),
+                _ball(0.0, 0, 0.45, base_color=[0.9, 0.9, 0.9], metallic=1.0, roughness=1.0, maps={"roughness": "rough_bands"}),
+                _ball(1.0, 0, 0.45, base_color=[0.8, 0.5, 0.3], roughness=0.4, maps={"normal": "bumps"}),
+            ]}
+
+
+def _shading(**plane):
+    """Shading-gap cases: a plane seen from high up (tiling, breakup), a ball and a generated-triplanar cube."""
+    return {"size": SMALL, "camera": {"fov": 40, "azimuth": 90, "elevation": 55, "distance": 5.0, "target": [0, 0, 0.3]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 40, "elevation": 35}], "world": {"color": [0.3, 0.3, 0.3]},
+            "objects": [{"shape": "plane", "scale": 3, "material": {"base_color": [1, 1, 1], "roughness": 0.6} | plane}]}
+
+
+def _detail():
+    case = _shading(maps={"normal": "bumps"}, roughness=0.35, detail=[6.0, 1.0])
+    case["objects"] += [
+        _ball(-0.8, 0, 0.45, base_color=[0.8, 0.5, 0.3], roughness=0.35, maps={"normal": "bumps"}, detail=[6.0, 1.0]),
+        {"shape": "cube", "scale": 0.4, "location": [0.8, 0, 0.4],
+         "material": {"base_color": [1, 1, 1], "roughness": 0.5, "maps": {"albedo": "checker"},
+                      "mapping": "generated", "triplanar": 0.3}}]
+    return case
+
+
+def _alpha():
+    leaf = {"shape": "cube", "scale": [0.6, 0.01, 0.6], "location": [1.1, 0.0, 0.6],
+            "material": {"base_color": [0.2, 0.6, 0.15], "roughness": 0.6, "alpha_cutoff": 0.5, "maps": {"opacity": "holes"}}}
+    return _row([{"base_color": [0.8, 0.1, 0.08], "roughness": 0.4, "alpha": 0.5},
+                 {"base_color": [0.1, 0.3, 0.8], "roughness": 0.4, "alpha": 0.2}], extra=[leaf] + _stripes())
+
+
+def _emission_room():
+    dark = {"base_color": [0.6, 0.6, 0.6], "roughness": 0.8}
+    return {"size": SMALL, "camera": {"fov": 45, "azimuth": 90, "elevation": 15, "distance": 4.0, "target": [0, 0, 0.6]},
+            "lights": [], "world": {"color": [0.0, 0.0, 0.0]},
+            "objects": [GREY_FLOOR,
+                        {"shape": "cube", "scale": [3.0, 0.05, 1.5], "location": [0, 1.5, 1.5], "material": dark},
+                        {"shape": "cube", "scale": [0.6, 0.02, 0.2], "location": [-0.6, 1.4, 1.4],
+                         "material": {"base_color": [0, 0, 0], "emission": [1.0, 0.85, 0.6], "emission_strength": 12.0}},
+                        _ball(0.7, 0.2, 0.25, base_color=[0, 0, 0], emission=[0.2, 0.5, 1.0], emission_strength=10.0),
+                        _ball(-0.3, -0.3, 0.4, base_color=[0.8, 0.8, 0.8], roughness=0.5),
+                        _ball(0.6, -0.8, 0.3, base_color=[0.9, 0.9, 0.9], metallic=1.0, roughness=0.15)]}
+
+
+def _interior():
+    # A 4 x 4 x 2.6 m room, sun through a window in the left wall: almost every lit pixel is bounce light.
+    wall = {"base_color": [0.75, 0.73, 0.7], "roughness": 0.8}
+    floor = {"base_color": [0.45, 0.3, 0.2], "roughness": 0.5}
+    W = 0.05
+    objs = [{"shape": "cube", "scale": [2, 2, W], "location": [0, 0, -W], "material": floor},
+            {"shape": "cube", "scale": [2, 2, W], "location": [0, 0, 2.6 + W], "material": wall},
+            {"shape": "cube", "scale": [2, W, 1.3], "location": [0, 2 + W, 1.3], "material": wall},
+            {"shape": "cube", "scale": [W, 2, 1.3], "location": [2 + W, 0, 1.3], "material": {"base_color": [0.2, 0.35, 0.6], "roughness": 0.8}},
+            {"shape": "cube", "scale": [2, W, 1.3], "location": [0, -2 - W, 1.3], "material": wall},
+            # left wall (x = -2) with a 1.2 x 1.2 m window: below, above, either side
+            {"shape": "cube", "scale": [W, 2, 0.4], "location": [-2 - W, 0, 0.4], "material": wall},
+            {"shape": "cube", "scale": [W, 2, 0.5], "location": [-2 - W, 0, 2.1], "material": wall},
+            {"shape": "cube", "scale": [W, 0.7, 0.6], "location": [-2 - W, -1.3, 1.2], "material": wall},
+            {"shape": "cube", "scale": [W, 0.7, 0.6], "location": [-2 - W, 1.3, 1.2], "material": wall},
+            {"shape": "cube", "scale": [0.4, 0.4, 0.4], "location": [0.5, 0.6, 0.4], "material": {"base_color": [0.8, 0.8, 0.8], "roughness": 0.7}},
+            _ball(-0.3, -0.4, 0.35, base_color=[0.8, 0.1, 0.08], roughness=0.4)]
+    return {"size": SMALL, "samples": 256,
+            "camera": {"fov": 60, "azimuth": 45, "elevation": 10, "distance": 2.4, "target": [0, 0.3, 0.8]},
+            "lights": [{"type": "sun", "power": 6, "azimuth": 180, "elevation": 35}],
+            "world": {"color": [0.25, 0.3, 0.4]}, "view": "AgX", "objects": objs}
+
+
+def _monkey():
+    return {"size": SMALL, "camera": {"fov": 35, "azimuth": 70, "elevation": 20, "distance": 4.5, "target": [0, 0, 0.6]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 20, "elevation": 40},
+                       {"type": "area", "power": 100, "azimuth": 200, "elevation": 30, "distance": 3, "size": [1, 1]}],
+            "world": {"color": [0.2, 0.2, 0.22]},
+            "objects": [GREY_FLOOR,
+                        {"shape": "monkey", "scale": 0.5, "location": [-0.4, 0, 0.6], "material": {"base_color": [0.8, 0.6, 0.4], "roughness": 0.35}},
+                        {"shape": "cube", "scale": 0.3, "location": [0.8, 0.3, 0.3], "material": {"base_color": [0.3, 0.5, 0.8], "roughness": 0.5}}]}
+
+
+def _wear_masks():
+    # Row 4.4: curvature (left) and cavity (right) of the monkey head shown as emission; truth is Cycles' pointiness
+    # and local AO at 5 % of the radius. Gate: pixel correlation over each head above 0.8 (wear_corr.py).
+    blk = {"base_color": [0, 0, 0], "roughness": 1.0}
+    return {"size": SMALL, "camera": {"fov": 35, "azimuth": 90, "elevation": 10, "distance": 4.2, "target": [0, 0, 0.6]},
+            "lights": [], "world": {"color": [0, 0, 0]},
+            "objects": [{"shape": "monkey", "scale": 0.6, "location": [0.65, 0, 0.6], "material": dict(blk, wear="curvature", gain=0.04)},
+                        {"shape": "monkey", "scale": 0.6, "location": [-0.65, 0, 0.6], "material": dict(blk, wear="cavity")}]}
+
+
+def _wear_groove():
+    # Row 4.5: the three wear recipes on the monkey (grooves round the eyes and ears, sharp brow and ear rims), left to
+    # right edge wear, dirt, dust. Truth rebuilds each recipe from Cycles' pointiness, local AO and normal; its noise is
+    # Blender's own, so the gate is the owner's eye on the sheet, not a number.
+    return {"size": SMALL, "camera": {"fov": 34, "azimuth": 90, "elevation": 25, "distance": 6.4, "target": [0, 0, 0.6]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 70, "elevation": 45}], "world": {"color": [0.35, 0.35, 0.35]},
+            "objects": [{"shape": "monkey", "scale": 0.42, "location": [x, 0, 0.6], "material": {"recipe": r}}
+                        for x, r in ((1.2, "Edge Wear"), (0.0, "Dirt"), (-1.2, "Dust"))]}
+
+
+def _weather_rust():
+    # Row 5.1: Rust on the monkey (sharp brow and ear rims, grooves round the eyes). Truth rebuilds the recipe from
+    # Cycles' pointiness and local AO; its noise is Blender's own. No low-poly cube: with 8 corner vertices Cycles'
+    # pointiness calls the whole cube an edge, a mesh-density difference, not the recipe's.
+    return {"size": SMALL, "camera": {"fov": 34, "azimuth": 90, "elevation": 25, "distance": 5.0, "target": [0, 0, 0.6]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 70, "elevation": 45}], "world": {"color": [0.35, 0.35, 0.35]},
+            "objects": [{"shape": "monkey", "scale": 0.6, "location": [0, 0, 0.6], "material": {"recipe": "Rust"}}]}
+
+
+def _weather_wet():
+    # Row 5.1: Wet on a stone pillar and a monkey standing on the floor: soaked and glossy below 0.4 m, dry above.
+    return {"size": SMALL, "camera": {"fov": 36, "azimuth": 90, "elevation": 20, "distance": 5.0, "target": [0, 0, 0.6]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 60, "elevation": 35}], "world": {"color": [0.35, 0.35, 0.35]},
+            "objects": [GREY_FLOOR,
+                        {"shape": "cube", "scale": [0.3, 0.3, 0.6], "location": [-0.6, 0, 0.6], "material": {"recipe": "Wet"}},
+                        {"shape": "monkey", "scale": 0.5, "location": [0.6, 0, 0.5], "material": {"recipe": "Wet"}}]}
+
+
+def _skin_head():
+    # Row 5.4: skin on the monkey head, sun from behind and to the side so the thin ears and the brow rims glow red
+    # (red travels farthest in skin: Cycles' skin radius 1 / 0.35 / 0.2, scaled to this head's size), an oily coat as
+    # the second specular lobe. Monkey 1.6 m wide vs a 0.18 m head: radius 0.08 m stands for skin's ~1 cm.
+    skin = {"base_color": [0.80, 0.52, 0.42], "roughness": 0.45, "subsurface": 1.0, "subsurface_color": [1.0, 0.35, 0.2],
+            "subsurface_radius": 0.4, "coat": 0.3, "coat_roughness": 0.3}
+    return {"size": SMALL, "camera": {"fov": 34, "azimuth": 70, "elevation": 10, "distance": 2.6, "target": [0, 0, 0.6]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 230, "elevation": 25}], "world": {"color": [0.25, 0.25, 0.25]},
+            "objects": [{"shape": "monkey", "scale": 0.6, "location": [0, 0, 0.6], "material": skin}]}
+
+
+def _sketch3d_two_tone():
+    # Row 3.3: a Sketch 3D cube whose top half is tagged mask(1); a material Field program reads it as attr and paints
+    # the two halves. Truth splits Cycles' cube at the same height.
+    js = ("function draw(t) {\n  push(); translate(0, 0.5, 0); box(2, 1, 2); pop();\n"
+          "  mask(1);\n  push(); translate(0, 1.5, 0); box(2, 1, 2); pop();\n}")
+    return {"size": SMALL, "camera": {"fov": 40, "azimuth": 60, "elevation": 25, "distance": 7, "target": [0, 0, 1]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 70, "elevation": 45}], "world": {"color": [0.35, 0.35, 0.35]},
+            "objects": [GREY_FLOOR, {"shape": "cube", "location": [0, 0, 1], "sketch": js,
+                                     "material": {"split": [[0.6, 0.08, 0.05], [0.05, 0.2, 0.5], 1.0]}}]}
+
+
+def _suede_dir():
+    # Row 5.1: two suede planes, nap leaning +u (+X) and -u, backlit by a low sun from +X with the camera at -X: the nap
+    # leaning toward the light catches more sheen. Gate: the planes' brightness ratio vs Cycles' within 20 %.
+    m = {"base_color": [0.03, 0.015, 0.02], "roughness": 0.9, "sheen": 1.0, "sheen_roughness": 0.3}
+    return {"size": SMALL, "camera": {"fov": 40, "azimuth": 180, "elevation": 30, "distance": 5.5, "target": [0, 0, 0]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 0, "elevation": 15}], "world": {"color": [0.15, 0.15, 0.15]},
+            "objects": [{"shape": "plane", "scale": [1.4, 0.9, 1], "location": [0, y, 0], "material": dict(m, sheen_direction=d)}
+                        for y, d in ((-0.95, 1.0), (0.95, -1.0))]}
+
+
+RECIPES = ("Leather", "Suede", "Rubber", "Knit Fabric", "Carpet", "Brushed Metal", "Concrete", "Painted Wood")
+
+
+def _recipes(distance):
+    # Row 3.5: the 8 surface recipes on balls, front row Leather..Carpet... left to right, near (fills the frame) and far
+    # (each ball ~ 30 px, where the fine grain must settle to its average, not shimmer). Owner review on a sheet, no gate.
+    balls = [dict(_ball((i % 4 - 1.5) * 0.75, (0.4 if i < 4 else -0.4), 0.3), material={"recipe": r})
+             for i, r in enumerate(RECIPES)]
+    return {"size": [768, 384], "camera": {"fov": 30, "azimuth": 90, "elevation": 30, "distance": distance, "target": [0, 0, 0.3]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 60, "elevation": 45}], "world": {"color": [0.35, 0.35, 0.35]},
+            "objects": [GREY_FLOOR] + balls}
+
+
+def _motion(kind):
+    sc = _lineup()
+    sc["size"] = SMALL
+    if kind == "orbit":   # the camera swings 60 deg/s; scored at 0.5 s and 1 s, after the history has had to follow
+        sc["motion"] = {"fps": 30, "camera_azimuth_rate": 60.0, "checks": [0.5, 1.0]}
+    elif kind == "blur":  # one ball crosses at 9 m/s, a full-frame shutter: a 0.3 m smear at 5/30 s, mid-frame
+        sc["objects"] = [GREY_FLOOR, _ball(-1.5, -0.6, 0.3, base_color=[0.9, 0.5, 0.1], roughness=0.4)] + sc["objects"][1:]
+        sc["motion"] = {"fps": 30, "velocity": {"1": [9.0, 0.0, 0.0]}, "blur": 1.0, "checks": [5 / 30]}
+    else:                 # nothing moves: any change between frames is flicker or noise
+        sc["motion"] = {"fps": 30, "checks": [1.0], "flicker": True}
+    return sc
+
+
+CASES.update({
+    # Material lobes, one per row, rising left to right.
+    "mat_coat": _row([{"base_color": [0.8, 0.1, 0.08], "roughness": 0.6, "coat": 1.0, "coat_roughness": r} for r in (0.03, 0.15, 0.3, 0.5)]),
+    "mat_sheen": _row([{"base_color": [0.35, 0.06, 0.25], "roughness": 0.9, "sheen": s} for s in (0.0, 0.5, 1.0)],
+                      lights=[{"type": "sun", "power": 3, "azimuth": 250, "elevation": 25}]),
+    "mat_subsurface": _row([{"base_color": [0.9, 0.7, 0.6], "roughness": 0.5, "subsurface": 1.0, "subsurface_radius": r}
+                            for r in (0.0, 0.25, 0.5, 1.0)],
+                           lights=[{"type": "sun", "power": 3, "azimuth": 250, "elevation": 30}]),
+    # Thin translucency: four leaves seen from below against a sun above them, none to full.
+    "mat_translucent": {"size": SMALL, "camera": {"fov": 40, "azimuth": 90, "elevation": -25, "distance": 5.0, "target": [0, 0, 1.0]},
+                        "lights": [{"type": "sun", "power": 3, "azimuth": 60, "elevation": 60}], "world": {"color": [0.3, 0.3, 0.3]},
+                        "objects": [{"shape": "plane", "scale": 0.4, "location": [(k - 1.5) * 0.9, 0, 1.0],
+                                     "material": {"base_color": [0.5, 0.8, 0.3], "roughness": 0.6, "translucency": t}}
+                                    for k, t in enumerate((0.0, 0.33, 0.66, 1.0))]},
+    "mat_anisotropy": _row([{"base_color": [0.95, 0.93, 0.88], "metallic": 1.0, "roughness": 0.4, "anisotropy": a} for a in (0.0, 0.33, 0.66, 1.0)],
+                           world={"hdri": "kloofendal_43d_clear_puresky_1k.hdr", "strength": 1.0, "sun_threshold": 10.0}, lights=[]),
+    "mat_thinfilm": _row([{"base_color": [0.05, 0.05, 0.05], "roughness": 0.15, "iridescence": 1.0, "iridescence_thickness": t}
+                          for t in (250, 400, 600, 900)],
+                         world={"hdri": "kloofendal_43d_clear_puresky_1k.hdr", "strength": 1.0, "sun_threshold": 10.0}, lights=[]),
+    # Glass in front of coloured bars: clear, frosted, tinted. (Cycles has no dispersion input, so no dispersive ball.)
+    "mat_glass": _row([{"base_color": [1, 1, 1], "transmission": 1.0, "roughness": 0.0},
+                       {"base_color": [1, 1, 1], "transmission": 1.0, "roughness": 0.35},
+                       {"base_color": [0.3, 0.8, 0.4], "transmission": 1.0, "roughness": 0.0}], extra=_stripes()),
+    "mat_alpha": _alpha(),
+    # Image maps: albedo on a plane and a ball, a roughness map, a normal map.
+    "tex_maps": _textured(),
+    # Shading gaps: a tiled blotch map (uv x6), the same with breakup (Cycles has none: its truth stays the plain
+    # tile, so tex_breakup is judged by tile_repeat.py, not FLIP), and detail normals plus a triplanar cube.
+    "tex_tile": _shading(maps={"albedo": "blotches"}, uv_scale=6.0),
+    "tex_breakup": _shading(maps={"albedo": "blotches"}, uv_scale=6.0, breakup=1.0),
+    "tex_detail": _detail(),
+    # Filtered normals (2.1): a fine weave normal map tiled x40 on a glossy plane seen from 8 m at a low angle, so many
+    # texels fall under one pixel and the highlight must widen instead of sparkling or vanishing.
+    "tex_fabric_far": {"size": SMALL, "camera": {"fov": 40, "azimuth": 90, "elevation": 12, "distance": 8.0, "target": [0, 0, 0.0]},
+                       "lights": [{"type": "sun", "power": 3, "azimuth": 270, "elevation": 14}], "world": {"color": [0.3, 0.3, 0.3]},
+                       "objects": [{"shape": "plane", "scale": 6, "material": {"base_color": [0.25, 0.3, 0.5], "roughness": 0.25,
+                                                                                "maps": {"normal": "weave"}, "uv_scale": 40.0}}]},
+    # Row 4.2: parallax occlusion. A 1.2 m plate with a 6 x 6 grid of 5 cm deep round holes as a bump map (strength
+    # 5.33 = 0.05 m / 1.2 m x 512 px / 4), seen at 35 degrees under a raking sun; Cycles renders the real relief.
+    "tex_perforated": {"size": SMALL, "camera": {"fov": 40, "azimuth": 90, "elevation": 35, "distance": 2.2, "target": [0, 0, 0.0]},
+                       "lights": [{"type": "sun", "power": 3, "azimuth": 200, "elevation": 30}], "world": {"color": [0.3, 0.3, 0.3]},
+                       "objects": [{"shape": "plane", "scale": 0.6, "material": {"base_color": [0.7, 0.62, 0.5], "roughness": 0.5,
+                                                                                  "maps": {"normal": "holes"}, "bump": 5.33,
+                                                                                  "displace": 0.05}}]},
+    # Row 0.4 elimination: tex_fabric_far without its normal map (is the darkness the map, or the lobe?).
+    "tex_fabric_far_flat": {"size": SMALL, "camera": {"fov": 40, "azimuth": 90, "elevation": 12, "distance": 8.0, "target": [0, 0, 0.0]},
+                            "lights": [{"type": "sun", "power": 3, "azimuth": 270, "elevation": 14}], "world": {"color": [0.3, 0.3, 0.3]},
+                            "objects": [{"shape": "plane", "scale": 6, "material": {"base_color": [0.25, 0.3, 0.5], "roughness": 0.25}}]},
+    # Emissive meshes as the only light.
+    "emission_light": _emission_room(),
+    # Three coloured point lights: coloured, overlapping shadows.
+    "lights_multi": _lit({"type": "point", "power": 150, "azimuth": 0, "elevation": 40, "distance": 3, "radius": 0.1, "color": [1, 0.2, 0.2]})
+    | {"lights": [{"type": "point", "power": 150, "azimuth": a, "elevation": 40, "distance": 3, "radius": 0.1, "color": c}
+                  for a, c in ((0, [1, 0.2, 0.2]), (120, [0.2, 1, 0.2]), (240, [0.2, 0.3, 1]))]},
+    # Image-based light only: the HDRI lights the material row.
+    "world_hdri": _row([{"base_color": [0.8, 0.8, 0.8], "roughness": 0.6},
+                        {"base_color": [0.8, 0.1, 0.08], "roughness": 0.2},
+                        {"base_color": [1.0, 0.77, 0.34], "metallic": 1.0, "roughness": 0.25},
+                        {"base_color": [0.95, 0.95, 0.95], "metallic": 1.0, "roughness": 0.02}],
+                       world={"hdri": "kloofendal_43d_clear_puresky_1k.hdr", "strength": 1.0, "sun_threshold": 10.0}, lights=[], view="AgX"),
+    # The same, with the sun left in the sky map (no sun extraction): a tiny, very bright patch the path tracer
+    # must find by sampling the map as a light. Row 2.4's case.
+    "world_hdri_sun": _row([{"base_color": [0.8, 0.8, 0.8], "roughness": 0.6},
+                            {"base_color": [0.8, 0.1, 0.08], "roughness": 0.2},
+                            {"base_color": [1.0, 0.77, 0.34], "metallic": 1.0, "roughness": 0.25},
+                            {"base_color": [0.95, 0.95, 0.95], "metallic": 1.0, "roughness": 0.02}],
+                           world={"hdri": "kloofendal_43d_clear_puresky_1k.hdr", "strength": 1.0, "sun_threshold": 0.0}, lights=[], view="AgX"),
+    # Interior lit by sun through a window: GI, and the noise it leaves.
+    "interior": _interior(),
+    # Depth of field: f/1.4 on the middle ball, the rest blur by distance.
+    "dof": _row([{"base_color": c, "roughness": 0.4} for c in ([0.8, 0.1, 0.08], [0.9, 0.8, 0.1], [0.1, 0.6, 0.15], [0.1, 0.25, 0.8], [0.9, 0.9, 0.9])],
+                cam={"fov": 30, "azimuth": 60, "elevation": 15, "distance": 5.0, "target": [0, 0, 0.35], "fstop": 1.4, "focus": 5.0},
+                extra=_stripes()),
+    # Row 6.2: out-of-focus point highlights through a 6-blade aperture turned 15 degrees (bokeh polygons).
+    "dof_bokeh": _dof_bokeh(),
+    # The Neutral view (Khronos PBR Neutral) on the sun scene.
+    "view_neutral": _lit({"type": "sun", "power": 6, "azimuth": 30, "elevation": 45}, view="Khronos PBR Neutral"),
+    # A smooth subdivided head and a hard cube: smooth normals, self-shadow, crevices.
+    "geom_monkey": _monkey(),
+    "wear_masks": _wear_masks(),
+    "wear_groove": _wear_groove(),
+    "weather_rust": _weather_rust(),
+    "weather_wet": _weather_wet(),
+    "skin_head": _skin_head(),
+    "sketch3d_two_tone": _sketch3d_two_tone(),
+    "suede_dir": _suede_dir(),
+    "recipes_near": _recipes(3.6),
+    "recipes_far": _recipes(16.0),
+    # Motion: a camera orbit, a fast object with motion blur, and a still shot scored for flicker.
+    "motion_orbit": _motion("orbit"),
+    "motion_blur": _motion("blur"),
+    "motion_still": _motion("still"),
+})
+
+
+def _bed():
+    # The owner's reference photo, rebuilt: a close-up of a slept-in grey cotton sheet (cloth-simulated folds, a
+    # jersey scan), a plush toy (fleece scan + sheen), low warm sun through a window cutting hard patches across the
+    # folds, a dim cool sky fill. Meshes from bed_build.py (assets/bed/, fetch_bed.py for the scans).
+    wall = {"base_color": [0.7, 0.68, 0.65], "roughness": 0.9}
+    W = 0.05
+    # Wall at x = 2 (the sun's side, out of frame) with a window y -0.9..0.3, z 0.75..1.6, a mullion and a transom.
+    objs = [{"shape": "plane", "scale": 4, "material": {"base_color": [0.3, 0.22, 0.16], "roughness": 0.6}},
+            {"shape": "cube", "scale": [W, 2.0, 0.375], "location": [2 + W, 0, 0.375], "material": wall},
+            {"shape": "cube", "scale": [W, 2.0, 0.5], "location": [2 + W, 0, 2.1], "material": wall},
+            {"shape": "cube", "scale": [W, 0.55, 0.425], "location": [2 + W, -1.45, 1.175], "material": wall},
+            {"shape": "cube", "scale": [W, 0.85, 0.425], "location": [2 + W, 1.15, 1.175], "material": wall},
+            {"shape": "cube", "scale": [W, 0.03, 0.425], "location": [2 + W, -0.3, 1.175], "material": wall},
+            {"shape": "cube", "scale": [W, 0.6, 0.025], "location": [2 + W, -0.3, 1.2], "material": wall},
+            # back wall behind the headboard end
+            {"shape": "cube", "scale": [2.0, W, 1.3], "location": [0, 1.6 + W, 1.3], "material": wall}]
+    objs += [{"region": r, "shape": "model", "asset": "bed/%s.glb" % r}
+             for r in ("mattress", "sheet", "plush", "lamp")]
+    objs[-3]["detail"] = [8.0, 0.6]   # the jersey scan again at 8x: the thread-level weave a close look needs
+    return {"size": [768, 512], "samples": 384, "view": "AgX",
+            "camera": {"fov": 38, "azimuth": 100, "elevation": 22, "distance": 1.25, "target": [-0.25, -0.1, 0.5],
+                       "fstop": 2.8, "focus": 1.2},
+            "lights": [{"type": "sun", "power": 8, "azimuth": 0, "elevation": 16, "color": [1.0, 0.68, 0.42]}],
+            "world": {"color": [0.06, 0.075, 0.1]}, "objects": objs}
+
+
+def _shade_mapping():
+    # Row 2.3: a 3D checker through Object coordinates and a Mapping (Point: translate, rotate Z 30, scale 3) on a
+    # plane, a sphere and a cube. Cycles: Texture Coordinate Object -> Mapping -> Checker (scale 1) -> Base Color.
+    # Infinite: Shade Coord -> Shade Mapping -> Shade Checker -> Material field. The translate keeps every flat face
+    # off a checker boundary (the plane sits at 0.25, not 0).
+    sh = {"translate": [0.1, 0.2, 0.25], "rotate": [0, 0, 30], "scale": 3,
+          "color1": [0.8, 0.8, 0.8], "color2": [0.2, 0.2, 0.2]}
+    mat = {"base_color": [0.8, 0.8, 0.8], "roughness": 0.5, "shade": sh}
+    return {"camera": {"fov": 40, "azimuth": 60, "elevation": 30, "distance": 5.0, "target": [0, 0, 0.3]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 30, "elevation": 50}],
+            "world": {"color": [0.3, 0.3, 0.3]},
+            "objects": [{"shape": "plane", "scale": 3, "material": mat},
+                        {"shape": "sphere", "scale": 0.5, "location": [-0.7, 0.0, 0.5], "material": mat},
+                        {"shape": "cube", "scale": 0.4, "location": [0.7, 0.0, 0.4], "material": mat}]}
+
+
+
+
+def _shade_textures():
+    # Row 2.4: one texture source per object, each on Object coordinates through a Mapping. Brick and gradient live in
+    # the coordinate's x and y (the floor plane in the case's Z-up frame), so the camera looks down. Noise and voronoi
+    # are not pixel-comparable to Cycles and are gated in ENGINETEST instead.
+    def mat(**sh):
+        return {"base_color": [0.8, 0.8, 0.8], "roughness": 0.5, "shade": sh}
+    return {"camera": {"fov": 40, "azimuth": 70, "elevation": 55, "distance": 5.0, "target": [0, 0, 0.3]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 30, "elevation": 60}],
+            "world": {"color": [0.3, 0.3, 0.3]},
+            "objects": [{"shape": "plane", "scale": 3,
+                         "material": mat(tex="brick", translate=[0.1, 0.07, 0.25], rotate=[0, 0, 20], scale=1.5,
+                                         color1=[0.7, 0.3, 0.2], mortarColor=[0.8, 0.8, 0.8])},
+                        {"shape": "sphere", "scale": 0.5, "location": [-1.2, 0.0, 0.5],
+                         "material": mat(tex="checker", translate=[0.1, 0.2, 0.25], scale=4)},
+                        {"shape": "sphere", "scale": 0.5, "location": [0.0, 0.0, 0.5],
+                         "material": mat(tex="gradient", kind="linear", translate=[0.5, 0.5, 0.5])},
+                        {"shape": "sphere", "scale": 0.5, "location": [1.2, 0.0, 0.5],
+                         "material": mat(tex="gradient", kind="radial")},
+                        {"shape": "cube", "scale": 0.3, "location": [0.0, -1.2, 0.3],
+                         "material": mat(tex="gradient", kind="quadratic_sphere", scale=2)},
+                        {"shape": "sphere", "scale": 0.5, "location": [1.2, -1.2, 0.5],
+                         "material": mat(tex="image", image="blotches")}]}
+
+
+def _shade_bump():
+    # Row 2.6: a height bends the normal. Height = sin(10 x) sin(10 y) on Object coordinates (noise is not
+    # pixel-comparable to Cycles), strength 1, distance 0.05, on a plane under a raking sun.
+    # Cycles: Texture Coordinate Object -> Mapping -> Separate XYZ -> Math Sine x2 -> Math Multiply -> Bump -> Normal.
+    # Infinite: Shade Coord -> Shade Mapping -> Shade Separate x2 -> Shade Math x3 -> Shade Bump -> Material normal.
+    mat = {"base_color": [0.8, 0.8, 0.8], "roughness": 0.5,
+           "shade": {"tex": "bump", "scale": 10, "distance": 0.05, "strength": 1.0}}
+    return {"camera": {"fov": 40, "azimuth": 60, "elevation": 40, "distance": 4.0, "target": [0, 0, 0]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 20, "elevation": 20}],
+            "world": {"color": [0.3, 0.3, 0.3]},
+            "objects": [{"shape": "plane", "scale": 1, "material": mat}]}
+
+
+CASES["shade_bump"] = _shade_bump()
+CASES["shade_mapping"] = _shade_mapping()
+CASES["shade_textures"] = _shade_textures()
+
+def _mat_field_code():
+    # Row 3.1: shade_textures with the brick, checker and gradient textures written by hand as Field code on a
+    # Material-domain Field Pixel instead of Shade nodes. Gate: `sweep.py pair shade_textures mat_field_code` FLIP 0.
+    # The image sphere stays a Shade Image chain: a Field Pixel has no picture input in the Material domain.
+    c = _shade_textures()
+    for o in c["objects"]:
+        sh = o["material"]["shade"]
+        if sh.get("tex") != "image":
+            sh["code"] = True
+    return c
+
+
+CASES["mat_field_code"] = _mat_field_code()
+
+
+def _mat_sketch_mask(name):
+    # Row 3.2: a JS-drawn stripe mask on the roughness pin of a metal ball (sketch_stripes), and the same mask as a
+    # PNG (stripes). Gate: `sweep.py pair mat_sketch_mask_png mat_sketch_mask` FLIP under 0.005.
+    return {"size": SMALL, "camera": {"fov": 35, "azimuth": 90, "elevation": 20, "distance": 4.0, "target": [0, 0, 0.45]},
+            "lights": [{"type": "sun", "power": 3, "azimuth": 40, "elevation": 35}], "world": {"color": [0.3, 0.3, 0.3]},
+            "objects": [{"shape": "plane", "scale": 3, "material": {"base_color": [0.5, 0.5, 0.5], "roughness": 0.6}},
+                        _ball(0.0, 0, 0.45, base_color=[0.9, 0.9, 0.9], metallic=1.0, roughness=1.0, maps={"roughness": name})]}
+
+
+CASES["mat_sketch_mask"] = _mat_sketch_mask("sketch_stripes")
+CASES["mat_sketch_mask_png"] = _mat_sketch_mask("stripes")
+CASES["bed"] = _bed()
+# A close look at the sunlit folds right of the plush, where the weave has to read.
+CASES["bed_close"] = dict(_bed(), camera={"fov": 30, "azimuth": 100, "elevation": 30, "distance": 0.45,
+                                          "target": [-0.3, 0.3, 0.45], "fstop": 0, "focus": 0.45})
+
+
+def _bed_fur(base):
+    # The plush with Geometry Op Fur on it (docs/plans/fur, block 1): a short fleece pile.
+    c = dict(base, objects=[dict(o) for o in base["objects"]])
+    plush = next(o for o in c["objects"] if o.get("region") == "plush")
+    plush["fur"] = {"density": 40, "length": 0.006, "jitter": 0.3, "width": 0.0003, "segments": 3, "gravity": 0.1}
+    return c
+
+
+CASES["bed_fur"] = _bed_fur(CASES["bed"])
+CASES["bed_fur_close"] = _bed_fur(dict(CASES["bed"], camera={"fov": 28, "azimuth": 100, "elevation": 22, "distance": 0.5,
+                                                            "target": [-0.49, -0.41, 0.62], "fstop": 0, "focus": 0.5},
+                                        supersample=16))   # pixel-thin strands need sub-pixel samples, as Cycles' 256 give them
+
+
+# Styled long hair: a head-sized ball, strands combed by one arc guide (Geometry Op Fur's guide input), drooped by
+# gravity. Blender rebuilds the same guide in Geometry Nodes (blender_scene.add_fur).
+CASES["hair_long"] = {
+    "camera": {"fov": 35, "azimuth": 70, "elevation": 12, "distance": 1.1, "target": [0, 0, 0.32]},
+    "lights": [{"type": "sun", "power": 3, "azimuth": 40, "elevation": 45}],
+    "world": {"color": [0.25, 0.25, 0.25]}, "supersample": 16,
+    "objects": [GREY_FLOOR,
+                {"shape": "sphere", "scale": 0.1, "location": [0, 0, 0.4],
+                 "material": {"base_color": [0.25, 0.12, 0.06], "roughness": 0.4},
+                 "fur": {"density": 20, "length": 0.15, "jitter": 0.2, "width": 0.0003, "segments": 16, "gravity": 0.3,
+                         "guide": {"points": 9, "spread": 0.5, "height": 1.0}}}],
+}
+# Block 3 gate: the same hair with Material model Hair (Chiang, melanin) against Cycles' Principled Hair.
+for _mel in (0.2, 0.5, 0.8):
+    _o = dict(CASES["hair_long"]["objects"][1])
+    _o["material"] = dict(_o["material"], roughness=0.3)   # skin and fibre share one Material roughness
+    _o["fur"] = dict(_o["fur"], hair={"melanin": _mel, "redness": 1.0, "roughness": 0.3, "radial": 0.3, "shift": 2.0, "ior": 1.55})
+    CASES["hair_melanin_%g" % _mel] = dict(CASES["hair_long"], objects=[GREY_FLOOR, _o])
+
+
+# Row 4.1: layered materials. A gloss red paint over rough metal through a soft noise mask, and a 4-deep stack
+# (metal, paint, dirt, dust) where each layer's own mask sits inside its parent's. Blender: Mix Shaders on the masks.
+_METAL = {"base_color": [0.7, 0.7, 0.72], "metallic": 1.0, "roughness": 0.55}
+_PAINT = {"base_color": [0.6, 0.05, 0.04], "roughness": 0.15, "mask": "mask_noise"}
+CASES["layer_two"] = _row([_METAL, dict(_METAL, layer=_PAINT), _PAINT])
+CASES["layer_four"] = _row([dict(_METAL, layer=dict(_PAINT, layer={
+    "base_color": [0.18, 0.12, 0.06], "roughness": 0.9, "mask": "mask_dirt",
+    "layer": {"base_color": [0.75, 0.72, 0.65], "roughness": 0.8, "mask": "mask_dust"}}))])
+
+
+# Row 5.3: a sun shaft. A closed room (open toward the camera) with a horizontal slot in the +X wall; the sun comes in
+# through it, and dusty air fills the room (one homogeneous medium, Cycles Volume Scatter + Absorption as the truth).
+def _vol_shaft():
+    white = {"base_color": [0.7, 0.7, 0.7], "roughness": 0.9}
+    objs = [
+        {"shape": "cube", "scale": [1.0, 1.0, 0.02], "location": [0.0, 0.0, -0.02], "material": white},
+        {"shape": "cube", "scale": [1.0, 1.0, 0.02], "location": [0.0, 0.0, 2.02], "material": white},
+        {"shape": "cube", "scale": [1.0, 0.02, 1.0], "location": [0.0, 1.02, 1.0], "material": white},
+        {"shape": "cube", "scale": [0.02, 1.0, 1.0], "location": [-1.02, 0.0, 1.0], "material": white},
+        {"shape": "cube", "scale": [0.02, 1.04, 0.6], "location": [1.02, 0.0, 0.6], "material": white},    # below the slot
+        {"shape": "cube", "scale": [0.02, 1.04, 0.2], "location": [1.02, 0.0, 1.82], "material": white},   # above it
+    ]
+    return {"camera": {"fov": 40, "azimuth": 90, "elevation": 0, "distance": 3.8, "target": [0, 0, 1.0]},
+            "lights": [{"type": "sun", "power": 6, "azimuth": 0, "elevation": 35}],
+            "world": {"color": [0.02, 0.02, 0.02]}, "size": (256, 256),
+            "fog": {"density": 0.35, "color": [0.9, 0.9, 0.9], "g": 0.3, "box": [[-1.0, -1.0, 0.0], [1.0, 1.0, 2.0]]},
+            "objects": objs}
+
+
+CASES["vol_shaft"] = _vol_shaft()
+
+
+# Row 4.1: a lit smoke puff (density falls from the box centre to nothing at its faces) with a ball behind it under a
+# low sun, so the puff's own shadow falls across the floor; and haze filling a wide outdoor box over a floor of balls.
+def _vol_smoke():
+    return {"camera": {"fov": 40, "azimuth": 70, "elevation": 12, "distance": 4.2, "target": [0, 0, 0.7]},
+            "lights": [{"type": "sun", "power": 5, "azimuth": 150, "elevation": 30}],
+            "world": {"color": [0.03, 0.035, 0.045]}, "size": (256, 256),
+            "fog": {"density": 3.0, "color": [0.85, 0.85, 0.85], "g": 0.2, "falloff": 1.0,
+                    "box": [[-0.6, -0.6, 0.15], [0.6, 0.6, 1.35]]},
+            "objects": [GREY_FLOOR, _ball(-0.9, 0.9, 0.35, base_color=[0.8, 0.2, 0.1], roughness=0.5)]}
+
+
+def _vol_world_haze():
+    balls = [_ball(x, y, 0.3, base_color=[0.75, 0.75, 0.75], roughness=0.5)
+             for x, y in ((-1.2, 1.5), (0.0, 0.0), (1.2, -1.5), (-0.6, -3.0), (0.8, 3.0))]
+    return {"camera": {"fov": 45, "azimuth": 0, "elevation": 18, "distance": 5.0, "target": [0, 0, 0.3]},
+            "lights": [{"type": "sun", "power": 4, "azimuth": 120, "elevation": 40}],
+            "world": {"color": [0.25, 0.3, 0.38]}, "size": (256, 256),
+            "fog": {"density": 0.12, "color": [0.95, 0.95, 0.95], "g": 0.5, "box": [[-20, -20, 0.0], [20, 20, 6.0]]},
+            "objects": [GREY_FLOOR] + balls}
+
+
+CASES["vol_smoke"] = _vol_smoke()
+CASES["vol_world_haze"] = _vol_world_haze()
+
+
+# Row 5.5: the physical sky alone (Preetham) against Blender's Preetham sky texture. Sky azimuth 0 = +X, -90 = +Y
+# (in front of an azimuth-90 camera); the camera looks a little up so the horizon sits low in the frame.
+def _sky(elev, az, turb):
+    return {"camera": {"fov": 75, "azimuth": 90, "elevation": -12, "distance": 1.0, "target": [0, 0, 1.0]},
+            "lights": [], "world": {"sky": {"elevation": elev, "azimuth": az, "turbidity": turb}},
+            "size": (256, 256), "objects": []}
+
+
+CASES["sky_noon"] = _sky(55, -70, 3.0)
+CASES["sky_dusk"] = _sky(4, -100, 4.0)
+
+
+# Row 10.2: an interior reference still. The window room of "interior" with a planked wood floor, a fabric ottoman,
+# a wooden nightstand, a glass and a metal ball, sunlight through the window and a physical sky outside it.
+def _ref_interior():
+    sc = _interior()
+    sc["size"] = [512, 384]
+    sc["objects"][0]["material"] = {"base_color": [1, 1, 1], "roughness": 0.45, "maps": {"albedo": "wood"}, "uv_scale": 2.0}
+    sc["objects"] = [o for o in sc["objects"] if o.get("shape") != "sphere" and o.get("scale") != [0.4, 0.4, 0.4]]
+    sc["objects"] += [{"shape": "model", "asset": "Ottoman_01.glb", "location": [0.2, 0.9, 0]},
+                      {"shape": "model", "asset": "ClassicNightstand_01.glb", "location": [1.4, 1.5, 0]},
+                      _ball(-0.6, -0.2, 0.22, base_color=[1, 1, 1], transmission=1.0, roughness=0.0, ior=1.5),
+                      _ball(-0.1, -0.6, 0.18, base_color=[0.95, 0.93, 0.88], metallic=1.0, roughness=0.15)]
+    sc["world"] = {"sky": {"elevation": 35, "azimuth": 180, "turbidity": 3.0}}
+    return sc
+
+
+# Row 10.3: a product still. A glass bottle with a brushed metal cap and a paper label, on a grey sweep, small warm
+# lights far behind out of focus (bokeh through a 6-blade aperture).
+def _ref_product():
+    bg = [_ball(-6.0 - 0.7 * (k % 2), x, z, base_color=[0, 0, 0], emission=[1.0, 0.8, 0.55], emission_strength=40.0)
+          for k, (x, z) in enumerate((x, z) for x in (-1.8, -0.6, 0.6, 1.8) for z in (0.4, 1.4))]
+    for b in bg:
+        b["scale"] = 0.06
+    objs = [GREY_FLOOR,
+            {"shape": "sphere", "scale": [0.16, 0.16, 0.34], "location": [0, 0, 0.34],
+             "material": {"base_color": [0.55, 0.8, 0.6], "transmission": 1.0, "roughness": 0.02, "ior": 1.5}},
+            {"shape": "cube", "scale": [0.07, 0.07, 0.05], "location": [0, 0, 0.71],
+             "material": {"base_color": [0.9, 0.9, 0.88], "metallic": 1.0, "roughness": 0.3, "anisotropy": 0.8}},
+            {"shape": "cube", "scale": [0.004, 0.11, 0.09], "location": [0.162, 0, 0.32],
+             "material": {"base_color": [1, 1, 1], "roughness": 0.55, "maps": {"albedo": "label"}, "coat": 0.3}}] + bg
+    return {"size": [384, 512],
+            "camera": {"fov": 28, "azimuth": 10, "elevation": 8, "distance": 1.6, "target": [0, 0, 0.36],
+                       "fstop": 1.4, "focus": 1.6, "blades": 6, "blade_rotation": 15},
+            "lights": [{"type": "area", "power": 60, "azimuth": 50, "elevation": 35, "distance": 2.0, "size": [1, 1]},
+                       {"type": "sun", "power": 1.0, "azimuth": -60, "elevation": 40}],
+            "world": {"color": [0.05, 0.05, 0.06]}, "objects": objs}
+
+
+# Row 10.1: the shoe photo (REALISM section 2). A scanned sneaker (Khronos MaterialsVariantsShoe, CC-BY 4.0, not in
+# git: SHOE_GLB or ~/Infinite/shoe-dl/) on a carpet-coloured sheen floor in a small dusty box; one sun shaft through a
+# slot in the +x wall falls across it. The shoe keeps its own glTF maps (albedo, normal, metal-rough, occlusion).
+def _ref_shoe():
+    wall = {"base_color": [0.7, 0.68, 0.64], "roughness": 0.9}
+    carpet = {"base_color": [0.35, 0.3, 0.25], "roughness": 0.9, "sheen": 0.6, "sheen_roughness": 0.4}
+    objs = [
+        {"shape": "cube", "scale": [0.5, 0.5, 0.01], "location": [0.0, 0.0, -0.01], "material": carpet},
+        {"shape": "cube", "scale": [0.5, 0.5, 0.01], "location": [0.0, 0.0, 0.81], "material": wall},
+        {"shape": "cube", "scale": [0.5, 0.01, 0.4], "location": [0.0, 0.51, 0.4], "material": wall},
+        {"shape": "cube", "scale": [0.01, 0.5, 0.4], "location": [-0.51, 0.0, 0.4], "material": wall},
+        {"shape": "cube", "scale": [0.01, 0.52, 0.1], "location": [0.51, 0.0, 0.1], "material": wall},    # below the slot
+        {"shape": "cube", "scale": [0.01, 0.52, 0.15], "location": [0.51, 0.0, 0.65], "material": wall},  # above it
+        {"shape": "model", "asset": "MaterialsVariantsShoe.glb", "env": "SHOE_GLB", "location": [0.0, 0.0, 0.0]},
+    ]
+    return {"size": [512, 384],
+            "camera": {"fov": 35, "azimuth": 78, "elevation": 14, "distance": 0.62, "target": [0, 0, 0.06]},
+            "lights": [{"type": "sun", "power": 6, "azimuth": 0, "elevation": 35, "angle": 0.5}],
+            "world": {"color": [0.03, 0.03, 0.035]},
+            "fog": {"density": 0.6, "color": [0.9, 0.88, 0.85], "g": 0.3, "box": [[-0.5, -0.5, 0.0], [0.5, 0.5, 0.8]]},
+            "objects": objs}
+
+
+# The judge (2026-11-13): one object, studio light, no fog. The scanned sneaker on a grey sweep under a large soft key,
+# a rim from behind and a low fill, shallow depth of field. Rendered large and converged; the question is only whether
+# the settle picture stands next to Cycles.
+def _hero_shoe():
+    sweep = {"base_color": [0.36, 0.36, 0.38], "roughness": 0.62}
+    return {"size": [1280, 960],
+            "camera": {"fov": 32, "azimuth": 62, "elevation": 12, "distance": 0.66, "target": [0, 0, 0.055],
+                       "fstop": 5.6, "focus": 0.66, "blades": 7},
+            "lights": [{"type": "area", "power": 11, "azimuth": 110, "elevation": 55, "distance": 1.05, "size": [0.75, 0.75]},
+                       {"type": "area", "power": 6.5, "azimuth": 250, "elevation": 32, "distance": 1.0, "size": [0.25, 0.6]},
+                       {"type": "area", "power": 2.5, "azimuth": 10, "elevation": 22, "distance": 1.05, "size": [0.6, 0.6]}],
+            "world": {"color": [0.05, 0.05, 0.055]},
+            "objects": [{"shape": "plane", "scale": 4, "material": sweep},
+                        {"shape": "model", "asset": "MaterialsVariantsShoe.glb", "env": "SHOE_GLB", "location": [0.0, 0.0, 0.0]}]}
+
+
+CASES["ref_interior"] = _ref_interior()
+CASES["ref_shoe"] = _ref_shoe()
+CASES["hero_shoe"] = _hero_shoe()
+CASES["ref_product"] = _ref_product()
+
+
+# The procedural table (judge_table.py): the judge scene of the real-time engine. _clay and _base are its build stages.
+from judge_table import judge_table
+CASES["judge_table"] = judge_table("flaws")
+CASES["judge_table_base"] = judge_table("base")
+CASES["judge_table_clay"] = judge_table("clay")
+
+
+# Row 4.4: caustics in settle. A clear glass ball on a white floor under a sun (its shadow holds the focused spot),
+# and a pool: a wavy water sheet over the floor, the sun's light gathered into a net of bright lines below it.
+# Truth: Cycles with shadow caustics (MNEE) on, glass as caster, everything else as receiver.
+WHITE_FLOOR = {"shape": "plane", "scale": 6, "material": {"base_color": [0.8, 0.8, 0.8], "roughness": 0.8}}
+
+
+def _caustic_glass_sphere():
+    return {"camera": {"fov": 40, "azimuth": 70, "elevation": 35, "distance": 2.6, "target": [-0.25, 0.08, 0.2]},
+            "lights": [{"type": "sun", "power": 4, "azimuth": 20, "elevation": 45}],
+            "world": {"color": [0.03, 0.03, 0.035]}, "size": (256, 256), "samples": 1024, "caustics": True,
+            "objects": [WHITE_FLOOR, _ball(0.0, 0.0, 0.45, base_color=[1, 1, 1], transmission=1.0, roughness=0.0, ior=1.45)]}
+
+
+def _caustic_pool():
+    import math
+    n, half, h = 96, 1.0, 0.3
+    verts, faces = [], []
+    for j in range(n + 1):
+        for i in range(n + 1):
+            x, y = -half + 2 * half * i / n, -half + 2 * half * j / n
+            z = h + 0.012 * (math.sin(14 * x + 1.3) * math.cos(11 * y) + 0.7 * math.sin(9 * x - 13 * y + 0.4)
+                             + 0.5 * math.cos(17 * y + 6 * x))
+            verts.append([x, y, z])
+    for j in range(n):
+        for i in range(n):
+            a = j * (n + 1) + i
+            faces.append([a, a + 1, a + n + 2, a + n + 1])
+    water = {"shape": "mesh", "verts": verts, "faces": faces,
+             "material": {"base_color": [1, 1, 1], "transmission": 1.0, "roughness": 0.0, "ior": 1.33}}
+    return {"camera": {"fov": 40, "azimuth": 60, "elevation": 55, "distance": 3.2, "target": [0, 0, 0.1]},
+            "lights": [{"type": "sun", "power": 1.5, "azimuth": 30, "elevation": 60}],
+            "world": {"color": [0.03, 0.03, 0.035]}, "size": (256, 256), "samples": 1024, "caustics": True,
+            "objects": [WHITE_FLOOR, water]}
+
+
+CASES["caustic_glass_sphere"] = _caustic_glass_sphere()
+CASES["caustic_pool"] = _caustic_pool()
+
+
+# Row 5.6 (REALISM sections 2 and 5): photo cases, each a scene rebuilt the way a photo of it is taken, scored
+# against Cycles by FLIP and by the alignment-free photo statistics (photo_match.py), so the owner's own photo of
+# the same subject can be scored the same way when there is one. Shoe and room are the owner's photos (REALISM
+# section 2, the bed); hand and street are rebuilt from the common photograph of each.
+def _at(x, y, z):
+    """A light at a point (Blender Z up): the azimuth / elevation / distance the cases use (0 = +X, 90 = -Y)."""
+    import math
+    return {"azimuth": math.degrees(math.atan2(-y, x)), "elevation": math.degrees(math.atan2(z, math.hypot(x, y))),
+            "distance": math.sqrt(x * x + y * y + z * z)}
+
+
+def _photo_hand():
+    # A relaxed hand resting palm down on a wooden table (hand_build.py: metaball bones, joint creases, nails),
+    # soft window light from the side and a low warm sun from behind the wrist that rims the fingers and glows
+    # red through their edges. Skin: the skin_head lobes at a real hand's scale (red travels ~1 cm).
+    skin = {"base_color": [0.78, 0.53, 0.43], "roughness": 0.5, "subsurface": 1.0, "subsurface_color": [1.0, 0.35, 0.2],
+            "subsurface_radius": 0.05, "coat": 0.25, "coat_roughness": 0.35}
+    return {"size": [640, 480], "samples": 256, "view": "AgX", "photo": True,
+            "camera": {"fov": 30, "azimuth": -62, "elevation": 30, "distance": 0.48, "target": [-0.01, 0.04, 0.02],
+                       "fstop": 4.0, "focus": 0.48},
+            "lights": [dict({"type": "area", "power": 18, "size": [0.9, 0.9]}, **_at(1.1, -0.1, 0.7)),
+                       {"type": "sun", "power": 3.5, "azimuth": 115, "elevation": 14, "color": [1.0, 0.72, 0.5]}],
+            "world": {"color": [0.05, 0.055, 0.065]},
+            "objects": [{"shape": "plane", "scale": 1.2,
+                         "material": {"base_color": [1, 1, 1], "roughness": 0.45, "maps": {"albedo": "wood"}, "uv_scale": 3.0}},
+                        {"shape": "file", "asset": "hand/hand.glb", "material": skin},
+                        {"shape": "file", "asset": "hand/nails.glb",
+                         "material": {"base_color": [0.86, 0.66, 0.62], "roughness": 0.3, "coat": 0.6, "coat_roughness": 0.1}}]}
+
+
+def _photo_street():
+    # A city street at night after rain, from the kerb looking down the road: wet asphalt that mirrors the lamps,
+    # brick facades with lit and dark windows, sodium street lamps receding, a shop front and a blue neon strip,
+    # a little haze so the lamps bloom. Three real lights (the two nearest lamps and the shop) plus emissive meshes,
+    # which the path tracers take as light too.
+    road = {"base_color": [0.035, 0.035, 0.04], "roughness": 0.12}
+    walk = {"base_color": [0.22, 0.21, 0.2], "roughness": 0.35}
+    brick = {"base_color": [0.16, 0.08, 0.06], "roughness": 0.85}
+    iron = {"base_color": [0.05, 0.05, 0.05], "metallic": 1.0, "roughness": 0.45}
+    sodium = [1.0, 0.62, 0.3]
+    lit, dark = [], []
+    for side in (-1, 1):
+        for k, x in enumerate(range(-6, 16, 2)):
+            for f, z in enumerate((3.6, 5.8, 8.0)):
+                (lit if (k * 7 + f * 3 + (side > 0)) % 5 in (0, 2) else dark).append([x + 0.0, side * 5.38, z])   # proud of the wall face (y = 5.4)
+    lamps = [(x, side * 3.7) for x in (-2.0, 5.0, 12.0) for side in (-1, 1)]
+    objs = [{"shape": "plane", "scale": 20, "material": road},
+            {"shape": "cube", "scale": [12, 0.8, 0.08], "location": [4, 4.6, 0.08], "material": walk},
+            {"shape": "cube", "scale": [12, 0.8, 0.08], "location": [4, -4.6, 0.08], "material": walk},
+            {"shape": "cube", "scale": [12, 0.4, 5.0], "location": [4, 5.8, 5.0], "material": brick},
+            {"shape": "cube", "scale": [12, 0.4, 5.0], "location": [4, -5.8, 5.0], "material": brick},
+            {"shape": "cube", "scale": [0.6, 0.04, 0.8], "location": [0, 0, 0], "instances": lit,
+             "material": {"base_color": [0, 0, 0], "emission": [1.0, 0.75, 0.45], "emission_strength": 2.5}},
+            {"shape": "cube", "scale": [0.6, 0.04, 0.8], "location": [0, 0, 0], "instances": dark,
+             "material": {"base_color": [0.02, 0.025, 0.03], "roughness": 0.05}},
+            # shop front on the right, ground floor, and a neon strip above the left one
+            {"shape": "cube", "scale": [2.2, 0.04, 1.1], "location": [3.0, -5.42, 1.4],
+             "material": {"base_color": [0, 0, 0], "emission": [1.0, 0.9, 0.75], "emission_strength": 6.0}},
+            {"shape": "cube", "scale": [1.8, 0.05, 0.05], "location": [7.0, 5.40, 2.7],
+             "material": {"base_color": [0, 0, 0], "emission": [0.15, 0.45, 1.0], "emission_strength": 30.0}}]
+    for x, y in lamps:
+        objs += [{"shape": "cube", "scale": [0.06, 0.06, 2.4], "location": [x, y, 2.4], "material": iron},
+                 {"shape": "cube", "scale": [0.22, 0.14, 0.06], "location": [x, y * 0.92, 4.85],
+                  "material": {"base_color": [0, 0, 0], "emission": sodium, "emission_strength": 60.0}}]
+    return {"size": [768, 432], "samples": 512, "view": "AgX", "photo": True,
+            "camera": {"fov": 55, "azimuth": 172, "elevation": 4, "distance": 9.0, "target": [2.0, -1.0, 1.0]},
+            "lights": [dict({"type": "spot", "power": 900, "spot_angle": 120, "blend": 0.6, "color": sodium, "radius": 0.15},
+                            **_at(-2.0, 3.4, 4.75)),
+                       dict({"type": "spot", "power": 900, "spot_angle": 120, "blend": 0.6, "color": sodium, "radius": 0.15},
+                            **_at(5.0, -3.4, 4.75)),
+                       dict({"type": "area", "power": 120, "size": [3.5, 1.5], "color": [1.0, 0.9, 0.75]},
+                            **_at(3.0, -4.6, 1.4))],
+            "world": {"color": [0.004, 0.006, 0.012]},
+            "fog": {"density": 0.006, "color": [0.9, 0.9, 0.95], "g": 0.6, "box": [[-10, -6, 0.0], [20, 6, 9.0]]},
+            "objects": objs}
+
+
+CASES["photo_shoe"] = dict(_ref_shoe(), photo=True)
+CASES["photo_room"] = dict(_bed(), photo=True)
+CASES["photo_hand"] = _photo_hand()
+CASES["photo_street"] = _photo_street()

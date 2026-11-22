@@ -1,12 +1,21 @@
 // Split out of main(): see docs/plans/main-split/README.md (Block C)
 #include "app/panels/InspectorPanel.h" // fork: inspector self-test
+#include <algorithm>
+#include <string>
 #include "app/ui/design/TokenColors.h"
 #include "app/ui/design/components/PanelFrame.h"
 #include "app/frame/FrameCtx.h"
+#include "nodes/AudioTextureNode.h"
+#include "nodes/BakeNode.h"
+#include "nodes/ShadeNodes.h"
 #include "plugin/engine/PluginView.h"
 
 namespace app
 {
+void MenuAliveAfterRender();
+std::string gShotNowPath;
+int gShotNowRect[4] = {};
+
 int DrawTestsB(FrameCtx& fc)
 {
    auto& window = fc.window;
@@ -660,6 +669,29 @@ int DrawTestsB(FrameCtx& fc)
                continue;
             }
 
+            // Shade nodes emit values into a Material program, not a texture
+            // (ShadeNode::GetOutputTexture is 0 by design).
+            if (dynamic_cast<ShadeNode*>(gn.node.get()) != nullptr)
+            {
+               printf("%-22s [%-12s] shade value node  OK\n", gn.typeName.c_str(), gn.category.c_str());
+               continue;
+            }
+            // Audio Texture with no audio wired, and Bake with no mesh wired, have
+            // nothing to render: both stay 0x0 until their input is patched in.
+            if (auto* at = dynamic_cast<AudioTextureNode*>(gn.node.get()))
+            {
+               if (!at->RequiresAudioProcessing())
+               {
+                  printf("%-22s [%-12s] no audio wired  OK\n", gn.typeName.c_str(), gn.category.c_str());
+                  continue;
+               }
+            }
+            if (dynamic_cast<BakeNode*>(gn.node.get()) != nullptr && gn.node->GetOutputWidth() == 0)
+            {
+               printf("%-22s [%-12s] no mesh wired  OK\n", gn.typeName.c_str(), gn.category.c_str());
+               continue;
+            }
+
             bool ok = gn.node->GetOutputWidth() > 0 && gn.node->GetOutputTexture() != 0;
             if (!ok)
                ++failures;
@@ -731,6 +763,7 @@ int DrawTestsB(FrameCtx& fc)
          ConditionalStageTimer timerImGuiRender(benchStagesCpuSample ? &sStageImGuiRender : nullptr, Bench::FrameTail::kImGuiRender);
          Bench::ConditionalGpuStageTimer timerImGuiRenderGpu(benchStagesSample ? &sGpuTimerRing : nullptr, "imgui_render", frameId);
          ImGui::Render();
+         MenuAliveAfterRender();
          glViewport(0, 0, fbW, fbH);
          // Backs every transparent ImGui child/window (ChildBg/WindowBg alpha 0
          // by default, see ApplyTheme) - any panel that skips
@@ -752,7 +785,7 @@ int DrawTestsB(FrameCtx& fc)
          {
             std::vector<unsigned char> px(fbW * fbH * 4);
             glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-            stbi_flip_vertically_on_write(1);
+            FlipRowsRgba8(px, fbW, fbH);
             // Report the real result. This printed "wrote ..." unconditionally,
             // so a failed write announced success - and on macOS it fails
             // easily, because Cocoa chdir's a bundled app to
@@ -765,6 +798,24 @@ int DrawTestsB(FrameCtx& fc)
                printf("FAILED to write %s (%dx%d)\n", shotPath, fbW, fbH);
             glfwSetWindowShouldClose(window, GLFW_TRUE);
          }
+      }
+
+      // A test hook (the 2D View audit's golden shots) asks for one crop of this frame: path + framebuffer rect.
+      if (!gShotNowPath.empty())
+      {
+         const int x0 = std::clamp(gShotNowRect[0], 0, fbW), y0 = std::clamp(gShotNowRect[1], 0, fbH);
+         const int x1 = std::clamp(gShotNowRect[2], x0, fbW), y1 = std::clamp(gShotNowRect[3], y0, fbH);
+         if (x1 > x0 && y1 > y0)
+         {
+            const int w = x1 - x0, h = y1 - y0;
+            std::vector<unsigned char> px((size_t)w * h * 4);
+            glReadPixels(x0, fbH - y1, w, h, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+            for (size_t i = 3; i < px.size(); i += 4)
+               px[i] = 255;
+            FlipRowsRgba8(px, w, h);
+            stbi_write_png(gShotNowPath.c_str(), w, h, 4, px.data(), w * 4);
+         }
+         gShotNowPath.clear();
       }
 
       // INFINITE_SHOT_REQUEST=<file>: a scripted run (docs/showcase/shoot.sh) writes an output path into
@@ -783,7 +834,7 @@ int DrawTestsB(FrameCtx& fc)
             {
                std::vector<unsigned char> px(fbW * fbH * 4);
                glReadPixels(0, 0, fbW, fbH, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
-               stbi_flip_vertically_on_write(1);
+               FlipRowsRgba8(px, fbW, fbH);
                const bool ok = stbi_write_png(out, fbW, fbH, 4, px.data(), fbW * 4) != 0;
                printf("%s %s (%dx%d)\n", ok ? "wrote" : "FAILED to write", out, fbW, fbH);
             }
@@ -873,7 +924,7 @@ int DrawTestsB(FrameCtx& fc)
             // node's own orbit camera so all three agree on framing.
             unsigned int tex = 0;
             int texW = 0, texH = 0;
-            if (auto* geo = dynamic_cast<IGeometrySource*>(src->node.get()))
+            if (dynamic_cast<IGeometrySource*>(src->node.get()) != nullptr)
             {
                NodeViewport& viewport = gProjectorViewports[src->index];
                SharedViewportCamera& cam = gNodeCameras[src->index];

@@ -39,10 +39,12 @@ Colours are 0..1 in p5's argument forms: (g) (g,a) (r,g,b) (r,g,b,a) or ([r,g,b,
 
 ## Text
     textSize(px)  text(string, x, y)  textWidth(string)
+    textFont("Menlo")  textAlign(LEFT | CENTER | RIGHT)
 
 ## Numbers
     random(lo, hi)   seeded per node and frame, so renders repeat
     noise(x, y, z)   smooth noise
+    fract(x)         x - floor(x)
 
 ## SVG (drop an .svg on the node, or `s svg` in the patch)
     svgSet("#id", "attribute", value)  svgText("#id", string)  svgBox("#id") -> [x, y, w, h] or null
@@ -94,6 +96,9 @@ geometry, so it needs a Render 3D to become a picture.
 
 ## Custom mesh
     beginShape(mode)  vertex(x, y, z, u, v)  endShape()
+
+## Material attribute
+    mask(v)   tags the vertices that follow; a material Field program reads it as `attr`
 
 ## Numbers
     random(lo, hi)  noise(x, y, z)  param(name, default, lo, hi)

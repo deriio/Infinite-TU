@@ -2,6 +2,7 @@
 #include "app/panels/InspectorPanel.h" // fork: inspector
 #include "app/frame/FrameCtx.h"
 #include "app/panels/CurveEditorPanel.h"
+#include "app/panels/FieldPatcherPanel.h"
 #include "app/ui/design/components/FormParts.h"
 
 namespace app
@@ -134,8 +135,9 @@ void DrawLayout(FrameCtx& fc)
          gArrangeClaimedKeys = inArrange;
          gSessionClaimedKeys = inSession;
          gArrangeFocused = inArrange || inSession || (gSampleStudioOpen && gSampleStudioClaimedKeys) ||
-                           (gPianoRollOpen && gPianoRollClaimedKeys) || (gView3DOpen && gView3DClaimedKeys) ||
-                           (gCurveEditorOpen && gCurveEditorClaimedKeys);
+                           (gPianoRollOpen && gPianoRollClaimedKeys) || (gView3DOpen && (gView3DClaimedKeys || gView3DDock == 4)) || (gView2DOpen && (gView2DClaimedKeys || gView2DDock == 4)) || (gMixerPanelOpen && gMixerClaimedKeys) ||
+                           (gCurveEditorOpen && gCurveEditorClaimedKeys) || (gDrumPanelOpen && gDrumClaimedKeys) ||
+                           (gFieldPatcherOpen && gFieldPatcherClaimedKeys);
 
          gPerfMatrixClaimedKeys = inPerf;
          gPerfMatrixFocused = inPerf && gPerfEditMode;
@@ -147,8 +149,9 @@ void DrawLayout(FrameCtx& fc)
          if (!gSessionPanelOpen)
             gSessionClaimedKeys = false;
          gArrangeFocused = gArrangeClaimedKeys || gSessionClaimedKeys || (gSampleStudioOpen && gSampleStudioClaimedKeys) ||
-                        (gPianoRollOpen && gPianoRollClaimedKeys) || (gView3DOpen && gView3DClaimedKeys) ||
-                           (gCurveEditorOpen && gCurveEditorClaimedKeys);
+                        (gPianoRollOpen && gPianoRollClaimedKeys) || (gView3DOpen && (gView3DClaimedKeys || gView3DDock == 4)) || (gView2DOpen && (gView2DClaimedKeys || gView2DDock == 4)) || (gMixerPanelOpen && gMixerClaimedKeys) ||
+                           (gCurveEditorOpen && gCurveEditorClaimedKeys) || (gDrumPanelOpen && gDrumClaimedKeys) ||
+                           (gFieldPatcherOpen && gFieldPatcherClaimedKeys);
 
          if (!gPerfPanelOpen)
          {
@@ -271,6 +274,18 @@ void DrawLayout(FrameCtx& fc)
       if (viewportTop || viewportBottom) { topBottom += gViewportPanelHeight; topBottomRows++; }
       if (matrixTop   || matrixBottom)   { topBottom += gModMatrixHeight;     topBottomRows++; }
       if (perfTop     || perfBottom)     { topBottom += gPerfPanelHeight;     topBottomRows++; }
+      // The Mixer panel docks at the bottom or the top; its size is kept inside the window here.
+      gMixerPanelDock = gMixerPanelDock == 3 ? 3 : 0; // bottom or top only
+      const bool mixerRow = gMixerPanelOpen && (gMixerPanelDock == 0 || gMixerPanelDock == 3);
+      if (mixerRow)
+      {
+         gMixerPanelHeight = std::clamp(gMixerPanelHeight, kMixerPanelMinHeight,
+                                        std::max(kMixerPanelMinHeight, ImGui::GetContentRegionAvail().y - topBottom - 150.0f));
+         topBottom += gMixerPanelHeight;
+         topBottomRows++;
+      }
+      gMixerPanelWidth = std::clamp(gMixerPanelWidth, kMixerPanelMinWidth,
+                                    std::max(kMixerPanelMinWidth, ImGui::GetContentRegionAvail().x - 300.0f));
       if (arrangeTop  || arrangeBottom)  { topBottom += gArrangePanelHeight;  topBottomRows++; }
       if (sessionTop  || sessionBottom)  { topBottom += gSessionPanelHeight;  topBottomRows++; }
       if (gSampleStudioOpen)
@@ -279,15 +294,45 @@ void DrawLayout(FrameCtx& fc)
          topBottom += gSampleStudioHeight;
          topBottomRows++;
       }
-      if (gView3DOpen)
+      else
+         SampleStudioWhenClosed();
+      // The 2D and 3D Views dock on any side, or Fill (4): the view takes the canvas's place.
+      gView3DDock = std::clamp(gView3DDock, 0, 4);
+      gView2DDock = std::clamp(gView2DDock, 0, 4);
+      if (gView3DOpen && gView2DOpen && gView3DDock == 4 && gView2DDock == 4)
+         gView3DDock = gView3DDockBack == 4 ? 0 : gView3DDockBack; // one view fills at a time
+      const bool view3DRow = gView3DOpen && (gView3DDock == 0 || gView3DDock == 3);
+      const bool view2DRow = gView2DOpen && (gView2DDock == 0 || gView2DDock == 3);
+      const bool view3DFill = gView3DOpen && gView3DDock == 4;
+      const bool view2DFill = gView2DOpen && gView2DDock == 4;
+      if (view3DRow)
       {
          gView3DHeight = std::clamp(gView3DHeight, 300.0f, std::max(300.0f, ImGui::GetContentRegionAvail().y * 0.8f));
          topBottom += gView3DHeight;
+      }
+      if (view2DRow)
+      {
+         gView2DHeight = std::clamp(gView2DHeight, 300.0f, std::max(300.0f, ImGui::GetContentRegionAvail().y * 0.8f));
+         topBottom += gView2DHeight;
+      }
+      {
+         const float widest = std::max(320.0f, ImGui::GetContentRegionAvail().x - 300.0f);
+         gView3DWidth = std::clamp(gView3DWidth, 320.0f, widest);
+         gView2DWidth = std::clamp(gView2DWidth, 320.0f, widest);
       }
       if (gPianoRollOpen)
       {
          gPianoRollHeight = std::clamp(gPianoRollHeight, 240.0f, std::max(240.0f, ImGui::GetContentRegionAvail().y - topBottom - 150.0f));
          topBottom += gPianoRollHeight;
+         topBottomRows++;
+      }
+      if (gDrumPanelDock != 3)
+         gDrumPanelDock = 0; // bottom or top only
+      if (gDrumPanelOpen)
+      {
+         // User-sized by the grip; a short window trims it.
+         gDrumPanelHeight = std::clamp(gDrumPanelHeight, 160.0f, std::max(160.0f, ImGui::GetContentRegionAvail().y - topBottom - 150.0f));
+         topBottom += gDrumPanelHeight;
          topBottomRows++;
       }
       if (gCurveEditorDock != 3)
@@ -298,6 +343,19 @@ void DrawLayout(FrameCtx& fc)
          topBottom += gCurveEditorHeight;
          topBottomRows++;
       }
+      if (gFieldPatcherDock != 3)
+         gFieldPatcherDock = 0; // bottom or top only
+      if (gFieldPatcherOpen)
+      {
+         const float room = std::max(220.0f, ImGui::GetContentRegionAvail().y - topBottom - 150.0f);
+         gFieldPatcherHeight = std::clamp(gFieldPatcherHeight, 220.0f, room);
+         gFieldPatcherShownHeight = gFieldPatcherMaximised ? std::max(220.0f, ImGui::GetContentRegionAvail().y - topBottom - 24.0f)
+                                                           : gFieldPatcherHeight;
+         topBottom += gFieldPatcherShownHeight;
+         topBottomRows++;
+      }
+      else
+         gFieldPatcherMaximised = false;
       if (TerminalDocked() && (gTerminalDock == 0 || gTerminalDock == 3))
       {
          gTerminalHeight = std::clamp(gTerminalHeight, 160.0f, std::max(160.0f, ImGui::GetContentRegionAvail().y - topBottom - 150.0f));
@@ -323,6 +381,8 @@ void DrawLayout(FrameCtx& fc)
          DrawModMatrixDocked("##modmatrix_top", ImVec2(0, gModMatrixHeight));
       if (perfTop)
          DrawPerfPanelDocked("##perfpanel_top", ImVec2(0, gPerfPanelHeight));
+      if (gMixerPanelOpen && gMixerPanelDock == 3)
+         DrawMixerPanelDocked("##mixerpanel_top", ImVec2(0, gMixerPanelHeight));
       if (arrangeTop)
          DrawArrangePanelDocked("##arrangepanel_top", ImVec2(0, gArrangePanelHeight));
       if (sessionTop)
@@ -331,12 +391,42 @@ void DrawLayout(FrameCtx& fc)
          DrawSampleStudioDocked("##samplestudio_top", ImVec2(0, gSampleStudioHeight));
       if (gPianoRollOpen && gPianoRollDock == 3)
          DrawPianoRollDocked("##pianoroll_top", ImVec2(0, gPianoRollHeight));
+      if (gDrumPanelOpen && gDrumPanelDock == 3)
+         DrawDrumPanelDocked("##drums_top", ImVec2(0, gDrumPanelHeight));
       if (gView3DOpen && gView3DDock == 3)
          DrawView3DDocked("##view3d_top", ImVec2(0, gView3DHeight));
+      if (gView2DOpen && gView2DDock == 3)
+         DrawView2DDocked("##view2d_top", ImVec2(0, gView2DHeight));
       if (gCurveEditorOpen && gCurveEditorDock == 3)
          DrawCurveEditorDocked("##curveeditor_top", ImVec2(0, gCurveEditorHeight));
+      if (gFieldPatcherOpen && gFieldPatcherDock == 3)
+         DrawFieldPatcherDocked("##fieldpatcher_top", ImVec2(0, gFieldPatcherShownHeight));
       if (TerminalDocked() && gTerminalDock == 3)
          DrawTerminalDocked("##terminal_top", ImVec2(0, gTerminalHeight));
+      // Fill: the view gets the canvas's row. The canvas row is then laid out below the window (clipped, no pointer),
+      // so the graph keeps cooking for the view; the bottom rows resume right under the view (StageSidePanels).
+      fc.viewFill = view3DFill || view2DFill;
+      if (fc.viewFill)
+      {
+         if (view3DFill)
+            DrawView3DDocked("##view3d_fill", ImVec2(0, graphHeight));
+         else
+            DrawView2DDocked("##view2d_fill", ImVec2(0, graphHeight));
+         {
+            // Full means full: the margins around the filling view are painted solid, so nothing behind (the
+            // canvas's cables, the stage backdrop) shows through. The parent's draw list sits under the view's child.
+            ImGuiWindow* w = ImGui::GetCurrentWindow();
+            // The whole shell below the bar is painted, not a band round the view: the gaps between the view and the
+            // rows docked under it showed the graph canvas through. Docked rows are child windows and draw on top.
+            ImDrawList* bl = w->DrawList;
+            bl->PushClipRect(w->Rect().Min, w->Rect().Max, false);
+            bl->AddRectFilled(ImVec2(w->Pos.x, w->InnerRect.Min.y), w->Rect().Max, ImGui::GetColorU32(ImGuiCol_WindowBg));
+            bl->PopClipRect();
+         }
+         fc.viewFillResume = ImGui::GetCursorPos();
+         fc.viewFillMax = ImGui::GetCurrentWindow()->DC.CursorMaxPos;
+         ImGui::SetCursorPosY(fc.viewFillResume.y + ImGui::GetIO().DisplaySize.y + 4000.0f);
+      }
       if (viewportLeft)
       {
          DrawViewportPanelDocked("##viewportpanel_left", ImVec2(gViewportPanelWidth, graphHeight));
@@ -350,6 +440,11 @@ void DrawLayout(FrameCtx& fc)
       if (matrixLeft)
       {
          DrawModMatrixDocked("##modmatrix_left", ImVec2(gModMatrixWidth, graphHeight));
+         ImGui::SameLine(0.0f, 0.0f);
+      }
+      if (gMixerPanelOpen && gMixerPanelDock == 2)
+      {
+         DrawMixerPanelDocked("##mixerpanel_left", ImVec2(gMixerPanelWidth, graphHeight));
          ImGui::SameLine(0.0f, 0.0f);
       }
       if (perfLeft)
@@ -368,6 +463,16 @@ void DrawLayout(FrameCtx& fc)
       {
          DrawTerminalDocked("##terminal_left", ImVec2(gTerminalWidth, graphHeight));
          FormParts::Inline(0.0f, 0.0f);
+      }
+      if (gView3DOpen && gView3DDock == 2)
+      {
+         DrawView3DDocked("##view3d_left", ImVec2(gView3DWidth, graphHeight));
+         ImGui::SameLine(0.0f, 0.0f);
+      }
+      if (gView2DOpen && gView2DDock == 2)
+      {
+         DrawView2DDocked("##view2d_left", ImVec2(gView2DWidth, graphHeight));
+         ImGui::SameLine(0.0f, 0.0f);
       }
 
       // Cleared here rather than at the top of the frame: a top/left-docked
@@ -409,8 +514,11 @@ void DrawLayout(FrameCtx& fc)
       if (matrixRight) rightReserved += gModMatrixWidth;
       if (gInspectorOpen && gInspectorDock == 1) rightReserved += gInspectorWidth; // fork: inspector
       if (perfRight) rightReserved += gPerfPanelWidth;
+      if (gMixerPanelOpen && gMixerPanelDock == 1) rightReserved += gMixerPanelWidth;
       if (arrangeRight) rightReserved += gArrangePanelWidth;
       if (TerminalDocked() && gTerminalDock == 1) rightReserved += gTerminalWidth;
+      if (gView3DOpen && gView3DDock == 1) rightReserved += gView3DWidth;
+      if (gView2DOpen && gView2DDock == 1) rightReserved += gView2DWidth;
       if (gHistoryOpen)
       {
          gHistoryWidth = std::min(gHistoryWidth, std::max(220.0f, ImGui::GetContentRegionAvail().x * 0.5f));
@@ -493,6 +601,8 @@ void DrawLayout(FrameCtx& fc)
                                 gDropPos.y >= gPianoRollRectMin.y && gDropPos.y < gPianoRollRectMax.y) ||
                                (gView3DOpen && gDropPos.x >= gView3DRectMin.x && gDropPos.x < gView3DRectMax.x &&
                                 gDropPos.y >= gView3DRectMin.y && gDropPos.y < gView3DRectMax.y) ||
+                               (gView2DOpen && gDropPos.x >= gView2DRectMin.x && gDropPos.x < gView2DRectMax.x &&
+                                gDropPos.y >= gView2DRectMin.y && gDropPos.y < gView2DRectMax.y) ||
                                (gTerminalOpen && gDropPos.x >= gTerminalRectMin.x && gDropPos.x < gTerminalRectMax.x &&
                                 gDropPos.y >= gTerminalRectMin.y && gDropPos.y < gTerminalRectMax.y);
       // Files dropped on the Terminal become shell words at its prompt.

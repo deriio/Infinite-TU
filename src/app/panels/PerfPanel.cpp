@@ -1,11 +1,14 @@
 // Performance matrix panel, MIDI learn, modulator meter (moved verbatim from main.cpp).
+#include "app/ui/design/components/ColourChip.h"
 #include <cmath>
 #include "app/ui/design/components/AudioViz.h"
 #include "app/ui/design/components/EmptyState.h"
+#include "app/ui/design/components/PagePicker.h"
 #include "app/ui/design/components/MenuParts.h"
 #include "app/ui/design/components/FieldWell.h"
 #include "app/ui/design/components/StateRing.h"
 #include "app/ui/design/UiType.h"
+#include "app/ui/design/components/ModeBanner.h"
 #include "app/ui/design/components/ChipButton.h"
 #include "app/ui/design/components/PanelFrame.h"
 #include "app/ui/design/TokenColors.h"
@@ -141,13 +144,17 @@ namespace app
    {
       if (src == dst || src < 0 || dst < 0 || src >= gPerfLayout.pageCount || dst >= gPerfLayout.pageCount)
          return;
-      PushUndoCheckpoint();
+      PushUndoCheckpoint("Performance: Reorder Pages");
       while ((int)gPerfLayout.pageNames.size() < gPerfLayout.pageCount)
          gPerfLayout.pageNames.push_back("Page " + std::to_string((int)gPerfLayout.pageNames.size() + 1));
 
       std::string movingName = gPerfLayout.pageNames[src];
       gPerfLayout.pageNames.erase(gPerfLayout.pageNames.begin() + src);
       gPerfLayout.pageNames.insert(gPerfLayout.pageNames.begin() + dst, movingName);
+      gPerfLayout.pageColors.resize((size_t)gPerfLayout.pageCount, 0u);
+      const unsigned int movingColor = gPerfLayout.pageColors[src];
+      gPerfLayout.pageColors.erase(gPerfLayout.pageColors.begin() + src);
+      gPerfLayout.pageColors.insert(gPerfLayout.pageColors.begin() + dst, movingColor);
 
       for (auto& el : gPerfElements)
       {
@@ -373,7 +380,7 @@ namespace app
          // Draw live snap grid highlight at the non-overlapping target cell
          ImVec2 snapTL(gridOrigin.x + snapX * (cellSize + gap) + gap * 0.5f, gridOrigin.y + snapY * (cellSize + gap) + gap * 0.5f);
          ImVec2 snapBR(snapTL.x + cardSize.x, snapTL.y + cardSize.y);
-         StateRing::Draw(dl, snapTL, snapBR, StateRing::Kind::Target, isLight, tok::radius_pill);
+         StateRing::Draw(dl, snapTL, snapBR, StateRing::Kind::Target, isLight, tok::radius_container);
 
          // Floating live card position
          cellPos = ImVec2(gridOrigin.x + gPerfDragOriginCellX * (cellSize + gap) + gap * 0.5f + (m.x - gPerfDragMouseStart.x),
@@ -389,7 +396,7 @@ namespace app
 
       // Card background & theme tint
       ImU32 themeTint = GetPerfElementColor(elem, dstNode, isLight);
-      const float kCardR = tok::radius_pill;
+      const float kCardR = tok::radius_container;
       const ImVec4 uiText = ImGui::GetStyleColorVec4(ImGuiCol_Text);
       const ImU32 cardBg = isLight ? ImGui::GetColorU32(ImVec4(1, 1, 1, 0.62f))
                                    : ImGui::GetColorU32(ImVec4(uiText.x, uiText.y, uiText.z, 0.06f));
@@ -697,49 +704,14 @@ namespace app
             }
 
             MenuParts::Separator();
-            if (MenuParts::SubMenu(L("Color Tint")))
+            if (MenuParts::SubMenu(L("Colour Tint")))
             {
-               static const struct { const char* name; ImU32 col; } kPaletteColors[10] = {
-                  { "Default", tok::U32(tok::pal::c_6E788CFF) },
-                  { "Crimson", tok::U32(tok::pal::c_EF4444FF) },
-                  { "Orange",  tok::U32(tok::pal::c_F97316FF) },
-                  { "Amber",   tok::U32(tok::pal::c_F59E0BFF) },
-                  { "Emerald", tok::U32(tok::pal::c_10B981FF) },
-                  { "Cyan",    tok::U32(tok::pal::c_06B6D4FF) },
-                  { "Blue",    tok::U32(tok::pal::c_3B82F6FF) },
-                  { "Purple",  tok::U32(tok::pal::c_8B5CF6FF) },
-                  { "Magenta", tok::U32(tok::pal::c_D946EFFF) },
-                  { "Rose",    tok::U32(tok::pal::c_F43F5EFF) }
-               };
-
-               ImU32 cols[10];
-               const char* names[10];
-               int selected = -1;
-               for (int ci = 0; ci < 10; ci++)
+               const int pick = ColourChip::TintDots(elem.colorR, elem.colorG, elem.colorB);
+               if (pick >= 0)
                {
-                  cols[ci] = kPaletteColors[ci].col;
-                  names[ci] = kPaletteColors[ci].name;
-                  const ImVec4 c = ImGui::ColorConvertU32ToFloat4(cols[ci]);
-                  const bool isDefault = ci == 0 && elem.colorR == 0.0f && elem.colorG == 0.0f && elem.colorB == 0.0f;
-                  if (isDefault || (ci > 0 && std::fabs(elem.colorR - c.x) < 0.01f && std::fabs(elem.colorG - c.y) < 0.01f &&
-                                    std::fabs(elem.colorB - c.z) < 0.01f))
-                     selected = ci;
-               }
-               for (int row = 0; row < 2; row++)
-               {
-                  const int hit = FieldWell::SwatchRow(cols + row * 5, names + row * 5, 5, selected - row * 5, 18.0f);
-                  if (hit >= 0)
-                  {
-                     const int ci = row * 5 + hit;
-                     PushUndoCheckpoint();
-                     if (ci == 0)
-                        elem.colorR = elem.colorG = elem.colorB = 0.0f;
-                     else
-                     {
-                        const ImVec4 c = ImGui::ColorConvertU32ToFloat4(cols[ci]);
-                        elem.colorR = c.x; elem.colorG = c.y; elem.colorB = c.z;
-                     }
-                  }
+                  PushUndoCheckpoint();
+                  const ImVec4 c = ColourChip::Tint(pick);
+                  elem.colorR = c.x; elem.colorG = c.y; elem.colorB = c.z;
                }
                ImGui::EndMenu();
             }
@@ -755,15 +727,15 @@ namespace app
          ImGui::SetNextItemWidth(cardSize.x - 8.0f);
          ImGui::SetKeyboardFocusHere();
          if (FieldWell::InputText("##renamingelemfield", gPerfRenameElementBuffer, sizeof(gPerfRenameElementBuffer),
-                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
+                              ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll) ||
+             (ImGui::IsItemDeactivated() && gPerfRenamingElementIdx == (int)elemIdx))
          {
-            PushUndoCheckpoint();
-            elem.label = gPerfRenameElementBuffer;
-            gPerfRenamingElementIdx = -1;
-         }
-         if (ImGui::IsItemDeactivated() && gPerfRenamingElementIdx == (int)elemIdx)
-         {
-            elem.label = gPerfRenameElementBuffer;
+            // Enter or leaving the field: either way the rename is one undo step.
+            if (elem.label != gPerfRenameElementBuffer)
+            {
+               PushUndoCheckpoint("Performance: Rename Control");
+               elem.label = gPerfRenameElementBuffer;
+            }
             gPerfRenamingElementIdx = -1;
          }
       }
@@ -938,7 +910,7 @@ namespace app
          }
          dl->AddRectFilled(ImVec2(left - 4.0f, cy - 3.0f), ImVec2(right + 4.0f, cy + 3.0f), wellCol(0.12f), 3.0f);
          if (capX > left)
-            dl->AddRectFilled(ImVec2(left - 4.0f, cy - 2.0f), ImVec2(capX, cy + 2.0f), fillCol, 2.0f);
+            dl->AddRectFilled(ImVec2(left - 4.0f, cy - 2.0f), ImVec2(capX, cy + 2.0f), fillCol, tok::radius_cell);
          const ImVec2 cTL(capX - 6.0f, cy - 9.0f), cBR(capX + 6.0f, cy + 9.0f);
          dl->AddRectFilled(cTL, cBR, isLight ? ImGui::GetColorU32(ImVec4(1, 1, 1, 0.95f)) : wellCol(0.28f), 3.0f);
          dl->AddRect(cTL, cBR, wellCol(sActive ? 0.5f : (sHover ? 0.3f : 0.15f)), 3.0f);
@@ -1064,7 +1036,7 @@ namespace app
             valY = newY;
          }
 
-         dl->AddRectFilled(origin, padBR, wellCol(0.07f), tok::radius_tile);
+         dl->AddRectFilled(origin, padBR, wellCol(0.07f), tok::radius_control);
          dl->AddLine(ImVec2(origin.x + padSize * 0.5f, origin.y + 4.0f), ImVec2(origin.x + padSize * 0.5f, padBR.y - 4.0f), wellCol(0.10f));
          dl->AddLine(ImVec2(origin.x + 4.0f, origin.y + padSize * 0.5f), ImVec2(padBR.x - 4.0f, origin.y + padSize * 0.5f), wellCol(0.10f));
 
@@ -1214,14 +1186,14 @@ namespace app
          if (minV >= maxV) { minV = 0.0f; maxV = 1.0f; }
 
          float boxW = cardSize.x - 16.0f;
-         float boxH = 26.0f;
+         float boxH = tok::control_h;
          float centerX = cellPos.x + 8.0f;
          float centerY = cellPos.y + 20.0f + (cardSize.y - 20.0f - boxH) * 0.5f;
 
          ImVec2 bTL(centerX, centerY);
          ImVec2 bBR(centerX + boxW, centerY + boxH);
 
-         dl->AddRectFilled(bTL, bBR, wellCol(0.07f), tok::radius_tile);
+         dl->AddRectFilled(bTL, bBR, wellCol(0.07f), tok::radius_control);
 
          ImGui::SetCursorScreenPos(bTL);
          float v = dragSeed(val);
@@ -1272,7 +1244,7 @@ namespace app
             curIndex = std::clamp((int)std::round((val - minV) / (maxV - minV) * (float)(count - 1)), 0, count - 1);
 
          float areaW = cardSize.x - 16.0f;
-         float btnH = 24.0f;
+         float btnH = tok::control_h;
          float startY = cellPos.y + 20.0f + (cardSize.y - 20.0f - btnH) * 0.5f;
          float btnW = (areaW - (count - 1) * 3.0f) / (float)count;
 
@@ -1413,7 +1385,7 @@ namespace app
                ? themeTint
                : wellCol(0.08f);
 
-            dl->AddRectFilled(sTL, sBR, stepBg, tok::radius_tile);
+            dl->AddRectFilled(sTL, sBR, stepBg, tok::radius_control);
 
             if (isCurrent && Transport::Instance().IsPlaying())
                dl->AddRectFilled(ImVec2(sx + 2.0f, sBR.y + 3.0f), ImVec2(sx + stepW - 2.0f, sBR.y + 5.0f), wellCol(0.85f), 1.0f);
@@ -2064,21 +2036,11 @@ namespace app
       if (dest == nullptr)
          return;
       const ParamRef* known = Modulation::Instance().KnownParam(dest->index, gParamMidiLearnParam);
-      char text[192];
-      snprintf(text, sizeof(text), "MIDI learn: %s > %s - move a knob, fader or pad (Esc to cancel)",
-               dest->typeName.c_str(), (known != nullptr && !known->name.empty()) ? known->name.c_str() : "parameter");
-      ImDrawList* dl = ImGui::GetForegroundDrawList();
-      const bool isLightT = CategoryColors::IsThemeLight();
-      const ImVec4 uiTxt = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-      UiType::Scope ts(UiType::Size::Title);
-      const ImVec2 tsz = ImGui::CalcTextSize(text);
+      const std::string target = dest->typeName + " > " + ((known != nullptr && !known->name.empty()) ? known->name : std::string("parameter"));
+      // The shared mode strip (ModeBanner), as the canvas pick uses: under the top bar, centred.
       const ImGuiViewport* vp = ImGui::GetMainViewport();
-      // Same neutral strip as the performance panel's listening banner: recessed well, hairline, plain text.
-      const ImVec2 a(vp->Pos.x + (vp->Size.x - tsz.x) * 0.5f - tok::space_3, vp->Pos.y + 44.0f);
-      const ImVec2 b(a.x + tsz.x + 2.0f * tok::space_3, a.y + 30.0f);
-      dl->AddRectFilled(a, b, ImGui::GetColorU32(ImGuiCol_PopupBg), tok::radius_pill);
-      dl->AddRect(a, b, ImGui::GetColorU32(isLightT ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f)), tok::radius_pill);
-      dl->AddText(ImVec2(a.x + tok::space_3, std::round(a.y + (30.0f - tsz.y) * 0.5f)), ImGui::GetColorU32(ImVec4(uiTxt.x, uiTxt.y, uiTxt.z, 0.9f)), text);
+      if (ModeBanner::Float("##midilearn.banner", ImVec2(vp->Pos.x + vp->Size.x * 0.5f, vp->Pos.y + 44.0f), L("MIDI learn"), target.c_str()))
+         MidiLearnCancelAll();
    }
 
 
@@ -2108,7 +2070,7 @@ namespace app
    }
 
 
-   constexpr float kPerfChipH = 28.0f;   // toolbar chips: one tile high
+   constexpr float kPerfChipH = tok::control_h;   // toolbar chips: one control high
 
    void DrawPerfPanelContent()
    {
@@ -2132,8 +2094,8 @@ namespace app
          const float stripW = ImGui::GetContentRegionAvail().x;
          ImDrawList* sdl = ImGui::GetWindowDrawList();
          // Same recessed well as the Library list: neutral, no accent colour.
-         sdl->AddRectFilled(sp, ImVec2(sp.x + stripW, sp.y + stripH), ImGui::GetColorU32(ImVec4(0, 0, 0, isLightT ? 0.04f : 0.27f)), tok::radius_pill);
-         sdl->AddRect(sp, ImVec2(sp.x + stripW, sp.y + stripH), ImGui::GetColorU32(isLightT ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f)), tok::radius_pill);
+         sdl->AddRectFilled(sp, ImVec2(sp.x + stripW, sp.y + stripH), ImGui::GetColorU32(ImVec4(0, 0, 0, isLightT ? 0.04f : 0.27f)), tok::radius_container);
+         sdl->AddRect(sp, ImVec2(sp.x + stripW, sp.y + stripH), ImGui::GetColorU32(isLightT ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f)), tok::radius_container);
          const float cy = sp.y + stripH * 0.5f;
          const std::string axisStr = (gPerfMidiLearnAxis == 1) ? " \xC2\xB7 Y axis" : (elem.kind == 4 ? " \xC2\xB7 X axis" : "");
          const bool pad = (elem.kind == 3 || elem.kind == 5 || elem.kind == 7);
@@ -2143,7 +2105,7 @@ namespace app
                                 : "Move a knob, fader or wheel on your controller. Esc cancels.";
          float tx = sp.x + tok::space_3;
          {
-            UiType::Scope ts(UiType::Size::Title, UiType::Weight::Semibold);
+            UiType::Scope ts(UiType::Size::Body, UiType::Weight::Semibold);
             sdl->AddText(ImVec2(tx, std::round(cy - ImGui::GetFontSize() * 0.5f)), ImGui::GetColorU32(ImVec4(uiTxt.x, uiTxt.y, uiTxt.z, 0.6f)), head.c_str());
             tx += ImGui::CalcTextSize(head.c_str()).x + tok::space_2;
             if (!target.empty())
@@ -2154,13 +2116,13 @@ namespace app
             tx += tok::space_3;
          }
          {
-            UiType::Scope ts(UiType::Size::Title);
+            UiType::Scope ts(UiType::Size::Body);
             const float room = sp.x + stripW - 84.0f - tx;
             if (ImGui::CalcTextSize(hint).x <= room)
                sdl->AddText(ImVec2(tx, std::round(cy - ImGui::GetFontSize() * 0.5f)), ImGui::GetColorU32(ImVec4(uiTxt.x, uiTxt.y, uiTxt.z, 0.4f)), hint);
          }
-         ImGui::SetCursorScreenPos(ImVec2(sp.x + stripW - 76.0f, sp.y + (stripH - ChipButton::kHeight) * 0.5f));
-         if (ChipButton::Draw(L("Cancel##cancelmidilearn"), false, ChipButton::kHeight, 68.0f))
+         ImGui::SetCursorScreenPos(ImVec2(sp.x + stripW - 76.0f, sp.y + (stripH - ChipButton::Height()) * 0.5f));
+         if (ChipButton::Draw(L("Cancel##cancelmidilearn"), false, ChipButton::Height(), 68.0f))
             gPerfMidiLearnIdx = -1;
          ImGui::SetCursorScreenPos(ImVec2(sp.x, sp.y));
          ImGui::Dummy(ImVec2(stripW, stripH + tok::space_2));
@@ -2212,121 +2174,83 @@ namespace app
       // they never actually lined up against the fixed-height buttons
       // beside them).
       const bool isLight = IsThemeLight();
-
-      for (int p = 0; p < gPerfLayout.pageCount; p++)
       {
-         std::string pageTitle = (p < (int)gPerfLayout.pageNames.size() && !gPerfLayout.pageNames[p].empty())
-                                    ? gPerfLayout.pageNames[p]
-                                    : ("Page " + std::to_string(p + 1));
-         ImGui::PushID(p + 99000);
-         ImGui::SameLine();
-
-         if (gPerfRenamingPage == p)
+         // The page strip every paged panel shares (PagePicker).
+         std::vector<PagePicker::Entry> entries;
+         for (int p = 0; p < gPerfLayout.pageCount; p++)
+            entries.push_back({ p < (int)gPerfLayout.pageNames.size() && !gPerfLayout.pageNames[p].empty() ? gPerfLayout.pageNames[p]
+                                                                                                          : "Page " + std::to_string(p + 1),
+                                p < (int)gPerfLayout.pageColors.size() ? gPerfLayout.pageColors[p] : 0u });
+         PagePicker::Options opt;
+         opt.canAdd = gPerfLayout.pageCount < Patch::PerfLayoutRecord::kMaxPages;
+         opt.duplicate = opt.canAdd;
+         opt.canDelete = gPerfLayout.pageCount > 1;
+         opt.maxW = std::max(120.0f, ImGui::GetContentRegionAvail().x - tok::control_h - tok::space_2);
+         PagePicker::RenameKey("##perfPages", entries, gPerfActivePage);
+         const PagePicker::Result r = PagePicker::Draw("##perfPages", entries, gPerfActivePage, T("Add New Page"), opt);
+         const int p = r.index;
+         // Names and colours are kept one per page, so an edit below always lands on its own page.
+         if (r.act != PagePicker::Act::None && r.act != PagePicker::Act::Select)
+            while ((int)gPerfLayout.pageNames.size() < gPerfLayout.pageCount)
+               gPerfLayout.pageNames.push_back("Page " + std::to_string((int)gPerfLayout.pageNames.size() + 1));
+         switch (r.act)
          {
-            ImGui::SetNextItemWidth(90.0f);
-            ImGui::SetKeyboardFocusHere();
-            if (FieldWell::InputText("##renamingpagetab", gPerfRenamePageBuffer, sizeof(gPerfRenamePageBuffer),
-                                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll))
-            {
-               PushUndoCheckpoint();
-               if (p < (int)gPerfLayout.pageNames.size())
-                  gPerfLayout.pageNames[p] = gPerfRenamePageBuffer;
-               gPerfRenamingPage = -1;
-            }
-            if (ImGui::IsItemDeactivated() && gPerfRenamingPage == p)
-            {
-               if (p < (int)gPerfLayout.pageNames.size())
-                  gPerfLayout.pageNames[p] = gPerfRenamePageBuffer;
-               gPerfRenamingPage = -1;
-            }
-         }
-         else
+         case PagePicker::Act::Select: gPerfActivePage = p; break;
+         case PagePicker::Act::Add:
          {
-            const bool isSelected = (gPerfActivePage == p);
-            if (ChipButton::Draw(pageTitle.c_str(), isSelected, kPerfChipH, 60.0f, /*soft=*/true))
-               gPerfActivePage = p;
-
-            // Double click to rename page
-            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
-            {
-               gPerfRenamingPage = p;
-               snprintf(gPerfRenamePageBuffer, sizeof(gPerfRenamePageBuffer), "%s", pageTitle.c_str());
-            }
-
-            // Drag and drop to reorder pages
-            if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_None))
-            {
-               ImGui::SetDragDropPayload("PERF_PAGE_TAB", &p, sizeof(int));
-               ImGui::Text(T("Move %s"), pageTitle.c_str());
-               ImGui::EndDragDropSource();
-            }
-            if (ImGui::BeginDragDropTarget())
-            {
-               if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("PERF_PAGE_TAB"))
-               {
-                  int srcPage = *(const int*)payload->Data;
-                  ReorderPerfPages(srcPage, p);
-               }
-               ImGui::EndDragDropTarget();
-            }
-
-            // Right click context menu on page tab
-            if (MenuParts::BeginContextItem("##pagetabcontext"))
-            {
-               if (MenuParts::Item(L("Rename Page")))
-               {
-                  gPerfRenamingPage = p;
-                  snprintf(gPerfRenamePageBuffer, sizeof(gPerfRenamePageBuffer), "%s", pageTitle.c_str());
-               }
-               if (MenuParts::Item(L("Duplicate Page")))
-               {
-                  PushUndoCheckpoint();
-                  int newP = gPerfLayout.pageCount++;
-                  gPerfLayout.pageNames.push_back(pageTitle + " Copy");
-                  for (const auto& el : gPerfElements)
-                  {
-                     if (el.page == p)
-                     {
-                        Patch::PerfRecord copyEl = el;
-                        copyEl.page = newP;
-                        gPerfElements.push_back(copyEl);
-                     }
-                  }
-                  gPerfActivePage = newP;
-               }
-               if (gPerfLayout.pageCount > 1 && MenuParts::Item(L("Delete Page")))
-               {
-                  PushUndoCheckpoint();
-                  gPerfElements.erase(std::remove_if(gPerfElements.begin(), gPerfElements.end(),
-                                                     [p](const Patch::PerfRecord& r) { return r.page == p; }),
-                                      gPerfElements.end());
-                  for (auto& r : gPerfElements)
-                     if (r.page > p) r.page--;
-                  gPerfLayout.pageCount--;
-                  if (p < (int)gPerfLayout.pageNames.size())
-                     gPerfLayout.pageNames.erase(gPerfLayout.pageNames.begin() + p);
-                  if (gPerfActivePage >= gPerfLayout.pageCount)
-                     gPerfActivePage = gPerfLayout.pageCount - 1;
-               }
-               MenuParts::EndPopup();
-            }
-         }
-         ImGui::PopID();
-      }
-
-      // Add new page '+' button
-      if (gPerfLayout.pageCount < Patch::PerfLayoutRecord::kMaxPages)
-      {
-         ImGui::SameLine();
-         if (ChipButton::Draw(L("+##addpagebtn"), false, kPerfChipH, kPerfChipH))
-         {
-            PushUndoCheckpoint();
+            PushUndoCheckpoint("Performance: Add Page");
             int newP = gPerfLayout.pageCount++;
             gPerfLayout.pageNames.push_back("Page " + std::to_string(newP + 1));
             gPerfActivePage = newP;
+            break;
          }
-         if (ImGui::IsItemHovered())
-            HelpTip("%s", T("Add New Page"));
+         case PagePicker::Act::Rename:
+            PushUndoCheckpoint("Performance: Rename Page");
+            if (p >= 0 && p < (int)gPerfLayout.pageNames.size())
+               gPerfLayout.pageNames[p] = r.name;
+            break;
+         case PagePicker::Act::Recolor:
+            PushUndoCheckpoint("Performance: Colour Page");
+            gPerfLayout.pageColors.resize((size_t)gPerfLayout.pageCount, 0u);
+            if (p >= 0 && p < gPerfLayout.pageCount)
+               gPerfLayout.pageColors[p] = r.color;
+            break;
+         case PagePicker::Act::Move: ReorderPerfPages(p, r.to); break;
+         case PagePicker::Act::Duplicate:
+         {
+            PushUndoCheckpoint("Performance: Duplicate Page");
+            int newP = gPerfLayout.pageCount++;
+            gPerfLayout.pageNames.push_back(entries[p].name + " Copy");
+            gPerfLayout.pageColors.resize((size_t)gPerfLayout.pageCount, 0u);
+            gPerfLayout.pageColors[newP] = entries[p].color;
+            const size_t n = gPerfElements.size();
+            for (size_t i = 0; i < n; i++)
+               if (gPerfElements[i].page == p)
+               {
+                  Patch::PerfRecord copyEl = gPerfElements[i];
+                  copyEl.page = newP;
+                  gPerfElements.push_back(copyEl);
+               }
+            gPerfActivePage = newP;
+            break;
+         }
+         case PagePicker::Act::Delete:
+            PushUndoCheckpoint("Performance: Delete Page");
+            gPerfElements.erase(std::remove_if(gPerfElements.begin(), gPerfElements.end(),
+                                               [p](const Patch::PerfRecord& r) { return r.page == p; }),
+                                gPerfElements.end());
+            for (auto& el : gPerfElements)
+               if (el.page > p) el.page--;
+            gPerfLayout.pageCount--;
+            if (p < (int)gPerfLayout.pageNames.size())
+               gPerfLayout.pageNames.erase(gPerfLayout.pageNames.begin() + p);
+            if (p < (int)gPerfLayout.pageColors.size())
+               gPerfLayout.pageColors.erase(gPerfLayout.pageColors.begin() + p);
+            if (gPerfActivePage >= gPerfLayout.pageCount)
+               gPerfActivePage = gPerfLayout.pageCount - 1;
+            break;
+         default: break;
+         }
       }
 
       // Calculate dynamic content bounding box on active page
@@ -2416,7 +2340,7 @@ namespace app
             }
             else if (cmd && ImGui::IsKeyPressed(ImGuiKey_V, false))
                PerfPasteRecords(gPerfClipboard);
-            else if (kio.KeyShift && !cmd && ImGui::IsKeyPressed(ImGuiKey_D, false))
+            else if ((cmd || kio.KeyShift) && ImGui::IsKeyPressed(ImGuiKey_D, false))
                PerfDuplicateSelection();
             else if (cmd && ImGui::IsKeyPressed(ImGuiKey_A, false))
                PerfSelectAllOnPage();
@@ -2466,7 +2390,7 @@ namespace app
             gPerfSelection.clear();
          }
          MenuParts::Separator();
-         if (MenuParts::Item(L("Close Performance Matrix")))
+         if (MenuParts::Item(L("Close Performance")))
          {
             gPerfPanelOpen = false;
          }
@@ -2478,7 +2402,7 @@ namespace app
       {
          ImGui::Dummy(ImVec2(maxElemX, maxElemY));
       }
-      ImGui::EndChild();
+      EndChildSafe();
    }
 
 
@@ -2568,7 +2492,7 @@ namespace app
       // Set directly, not pushed: a push made in the child and popped in the parent unbalances both stacks.
       const ImVec2 savedSpacing = ImGui::GetStyle().ItemSpacing;
       ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, 0.0f);
-      ImGui::EndChild();
+      EndChildSafe();
       ImGui::GetStyle().ItemSpacing = savedSpacing;
 
       // No divider line along the canvas-facing edge, in either theme. This

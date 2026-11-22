@@ -49,16 +49,21 @@ struct Material
    // paint / lacquer.
    float clearcoat = 0.0f;
    float clearcoatRoughness = 0.03f;
-   // Fake subsurface scattering via wrap lighting (N.L extended past the
-   // terminator, tinted by subsurfaceColor) - not true multi-scatter.
+   // Subsurface scattering: subsurfaceColor is the per-channel scatter radius (Blender's Subsurface Radius),
+   // subsurfaceRadius scales it (1 = 0.2 m). Settle walks the volume; live and raster soften the terminator by it.
    float subsurface = 0.0f;
    float subsurfaceColor[3] = { 1.0f, 0.2f, 0.1f };
    float subsurfaceRadius = 0.5f;
+   // Thin translucency: the share of diffuse light that passes through to the far side (sails, leaves, paper).
+   float translucency = 0.0f;
 
    // Sheen / cloth / velvet microfacet backscattering lobe (Charlie distribution)
    float sheen = 0.0f;
    float sheenColor[3] = { 1.0f, 1.0f, 1.0f };
    float sheenRoughness = 0.5f;
+   // Row 5.1: the nap's lean along the uv tangent, -1..1 (0 = isotropic): brushed one way catches the light, the other way
+   // goes dark, as velvet and suede do.
+   float sheenDirection = 0.0f;
 
    // Optical thin-film interference / iridescence (soap bubble / oil slick / pearl)
    float iridescence = 0.0f;
@@ -87,6 +92,28 @@ struct Material
    // slot joins Render 3D's sorted translucent pass.
    bool textureAlpha = false;
    unsigned char padB[3] = { 0, 0, 0 };
+
+   // Detail normal: the normal slot read a second time at uv * detailScale (0 = off), its tilt scaled by
+   // detailStrength and blended on top - weave or pores over the large folds, from one map.
+   float detailScale = 0.0f;
+   float detailStrength = 1.0f;
+
+   // Hair model (Render3DHair.h, Chiang): 0 off, 1 Melanin, 2 Colour (the base colour is the hair's). Roughness is
+   // the longitudinal roughness and ior the fibre's; the strand axis comes from Fur's Tangent normals.
+   int hair = 0;
+   float melanin = 0.8f, melaninRedness = 1.0f;
+   float hairTint[3] = { 1.0f, 1.0f, 1.0f };
+   float radialRoughness = 0.3f;
+   float hairShift = 2.0f; // cuticle tilt, degrees
+
+   // Field material program (core/field/MaterialRegistry.h) from Material's `field` input: runs after the maps and
+   // replaces the outputs it writes. 0 = none.
+   int fieldProgram = 0;
+   // Row 2.4: the pictures that program reads with img(slot, uv) (GL textures, 0 none) and their revisions.
+   unsigned int fieldImage[4] = { 0, 0, 0, 0 };
+   unsigned int fieldImageRev[4] = { 0, 0, 0, 0 };
+   // Row 3.4: that program's live knob values (FldMat.prm0..3); a change here is data, the program stays.
+   float fieldParams[16] = {};
 };
 
 // A node that supplies geometry to a Render node. Geometry travels down its own
@@ -134,6 +161,7 @@ struct MappingTransform
    float rotate[3] = { 0.0f, 0.0f, 0.0f }; // radians
    float scale[3] = { 1.0f, 1.0f, 1.0f };
    float triplanarBlend = 0.0f; // 0 = sharp pick, >0 = smooth blended triplanar
+   float breakup = 0.0f; // 0..1: hides tile repetition by shifting the tile per area (repeats the map)
 };
 
 // D1 (geometry-domains audit, Phase 4): cook-time error channel. A consumer
@@ -263,6 +291,8 @@ public:
    // Which of the render's lights reach this source, one bit per light. All of
    // them by default; only the 3D View's placed sources narrow it.
    virtual unsigned int LightMask() const { return ~0u; }
+   // Which of the render's lights this source blocks (shadow linking), one bit per light; all by default.
+   virtual unsigned int ShadowMask() const { return ~0u; }
 
    // The number this source writes into Render 3D's Object Index pass. 0 by
    // default, as in Blender; the 3D View's placed sources carry their own.
@@ -485,6 +515,7 @@ public:
    float sheen = 0.0f;
    float sheenColor[3] = { 1.0f, 1.0f, 1.0f };
    float sheenRoughness = 0.5f;
+   float sheenDirection = 0.0f;
    float iridescence = 0.0f;
    float iridescenceIor = 1.33f;
    float iridescenceThickness = 400.0f;
@@ -522,7 +553,7 @@ public:
       v.Float("subsurface", subsurface); v.Color("subsurfaceColor", subsurfaceColor);
       v.Float("subsurfaceRadius", subsurfaceRadius);
       v.Float("sheen", sheen); v.Color("sheenColor", sheenColor);
-      v.Float("sheenRoughness", sheenRoughness);
+      v.Float("sheenRoughness", sheenRoughness); v.Float("sheenDirection", sheenDirection);
       v.Float("iridescence", iridescence); v.Float("iridescenceIor", iridescenceIor);
       v.Float("iridescenceThickness", iridescenceThickness);
       v.Float("anisotropy", anisotropy); v.Float("anisotropyRotation", anisotropyRotation);
@@ -546,7 +577,6 @@ private:
    ImageCable mTextureInput;
    GLUtil::Fbo mPreview;
    int mLastCookFrame = -1;
-   bool mPreviewFailed = false;
 };
 
 // --- Render 3D ----------------------------------------------------------
@@ -560,7 +590,7 @@ public:
    // Most sources one Render 3D draws once Group 3D containers are expanded.
    static const int kMaxDraw = 256;
    // Lights the shader can take. The pins stop at kLightSlots; a Rig may use all of these.
-   static const int kMaxLights = 8;
+   static const int kMaxLights = 64;
 
    static INode* Create() { return new Render3DNode(); }
    static const std::vector<std::string>& ProjectionNames();
@@ -581,6 +611,13 @@ public:
    // Data passes (depth, normals, position, mist, index, emission, shadow, AO)
    // leave out surfaces whose alpha is under this.
    float passThreshold = 0.5f;
+   // Row 7.3: with `passes` on, depth, normal, albedo, mask and id are extra image outputs next to the image,
+   // drawn by the data passes above. `passMask` is the object index the mask is white on.
+   bool passes = false;
+   int passMask = 1;
+   int OutputCount() const override { return passes ? 6 : 1; }
+   const char* OutputLabel(int index) const override;
+   unsigned int GetOutputTexture(int index) override;
 
    ~Render3DNode() override;
 
@@ -628,6 +665,7 @@ public:
       float intensity = 1.0f;
       int type = 0;
       float spotAngle = 45.0f, spotPenumbra = 0.2f, areaW = 1.0f, areaH = 1.0f;
+      int areaShape = 0; float areaSpread = 180.0f; // area: 0 rectangle / 1 disc; emission spread in degrees
       float aim[3] = { 0, -1, 0 };       // where a spot or area light points
       float diffuse = 1.0f, specular = 1.0f, transmission = 1.0f;
       float falloff = 0.25f;             // distance falloff; negative = hard (no soft core)
@@ -636,6 +674,7 @@ public:
       int shadowRes = 0;                 // 0 = the look's quality, else 1024 / 2048 / 4096
       float shadowClip = 0.05f;
       float cutoff = 0.0f;               // point, spot, area: no light past this distance; 0 = none
+      std::string ies;                   // point, spot: an IES profile file (row 4.2); empty = none
       // Everything above that the light node sets, from its params.
       void From(const class LightNode& n);
    };
@@ -682,6 +721,7 @@ public:
 
    size_t LastTriangleCount() const { return mLastTriangles; }
    size_t LastDrawCalls() const { return mLastDrawCalls; }
+   size_t LastGpuBytes() const { return mLastGpuBytes; } // engine path's device allocation (R18), 0 = none
    // Slots that had to re-upload this frame; 0 means everything came from cache.
    size_t LastUploads() const { return mLastUploads; }
 
@@ -712,8 +752,13 @@ public:
    float lightElevation = 51.5662f;
    float lightColor[3] = { 1.0f, 0.98f, 0.94f };
    float lightIntensity = 1.2f;
+   // Draw through the Metal engine (ray-traced shadows/reflections, live GI) instead of the GL raster.
+   // Off by default; macOS only. Falls back to the GL render when the engine cannot run.
+   bool liveEngine = false;
+   int liveEngineFeatures = 15;   // bit 0 RT shadows, 1 RT reflections, 2 GI, 3 settle (path trace once still)
    float ambientColor[3] = { 0.28f, 0.32f, 0.42f };
    float rimIntensity = 0.35f;
+   bool probesOff = false;   // no GI probes (a lone object on a 2D page: nothing to bounce off)
 
    // Procedural surround, sampled for both reflections and ambient. Not an
    // HDRI: a three-stop vertical gradient, which is enough to stop metal
@@ -791,8 +836,19 @@ public:
    // The aperture's shape: 0 blades is round, 3 or more a polygon turned by `dofRotation` degrees;
    // `dofRatio` stretches it tall (above 1) or wide (below 1), as an anamorphic lens does.
    int dofBlades = 0;
+   // Fog (row 5.3): one homogeneous medium filling the box fogMin..fogMax (world units), traced by the settle path
+   // tracer. fogDensity is extinction per unit, fogColor the share scattered (the rest absorbed), fogAnisotropy
+   // the Henyey-Greenstein g (0 even, toward 1 forward). 0 density is off.
+   float fogDensity = 0.0f;
+   float fogColor[3] = { 0.9f, 0.9f, 0.9f };
+   float fogAnisotropy = 0.0f;
+   float fogFalloff = 0.0f; // row 4.1: 0 fills the box evenly, 1 thins it to a soft puff toward the faces
+   float fogMin[3] = { -1000.0f, -1000.0f, -1000.0f }, fogMax[3] = { 1000.0f, 1000.0f, 1000.0f };
    float dofRotation = 0.0f;
    float dofRatio = 1.0f;
+   // Settle's lens (row 6.2): cat-eye bokeh toward the edges (0..1), radial distortion (+ pincushion, - barrel)
+   // and lateral chromatic aberration. All 0 = an ideal lens.
+   float dofCatEye = 0.0f, lensDistortion = 0.0f, lensCA = 0.0f;
    // Keep the output texture as 16-bit float instead of 8-bit, so a 16-bit PNG
    // or EXR carries real precision and, with tonemap off, light above 1.0.
    bool floatOutput = false;
@@ -845,6 +901,8 @@ public:
    // anything moves and refines toward `ptSamples` once the view is still; an offline render
    // traces all `ptSamples` for every frame.
    static const std::vector<std::string>& EngineNames();
+   static bool LiveEngineAvailable(); // the Metal live engine is built in (macOS today)
+   bool LiveActive() const { return liveEngine || (engine >= 2 && LiveEngineAvailable()); }
    int engine = 0;
    int ptSamples = 128;
    int ptBounces = 6;
@@ -857,12 +915,17 @@ public:
       v.Float("ao", aoStrength); v.Float("aoRadius", aoRadius);
       v.Float("dofAperture", dofAperture); v.Float("focusDistance", focusDistance);
       v.Int("dofBlades", dofBlades); v.Float("dofRotation", dofRotation); v.Float("dofRatio", dofRatio);
+      v.Float("dofCatEye", dofCatEye); v.Float("lensDistortion", lensDistortion); v.Float("lensCA", lensCA);
+      v.Float("fogDensity", fogDensity); v.Color("fogColor", fogColor); v.Float("fogAnisotropy", fogAnisotropy); v.Float("fogFalloff", fogFalloff);
+      v.Float("fogMinX", fogMin[0]); v.Float("fogMinY", fogMin[1]); v.Float("fogMinZ", fogMin[2]);
+      v.Float("fogMaxX", fogMax[0]); v.Float("fogMaxY", fogMax[1]); v.Float("fogMaxZ", fogMax[2]);
       v.Bool("floatOutput", floatOutput); v.Int("supersample", supersample);
       v.Float("width", width); v.Float("height", height);
       v.Int("renderPass", renderPass);
       v.Float("mistStart", mistStart); v.Float("mistDepth", mistDepth); v.Int("mistFalloff", mistFalloff);
       v.Float("mistIntensity", mistIntensity); v.Float("mistHeight", mistHeight);
       v.Float("passThreshold", passThreshold);
+      v.Bool("passes", passes); v.Int("passMask", passMask);
       v.Bool("cavity", cavity); v.Int("cavityType", cavityType);
       v.Int("viewShading", viewShading); v.Int("solidLighting", solidLighting); v.Int("solidColor", solidColor);
       v.Color("solidSingle", solidSingle); v.Int("matcap", matcap); v.Bool("solidSpecular", solidSpecular);
@@ -905,7 +968,7 @@ private:
    // changes source simply invalidates and re-uploads.
    struct GpuMesh
    {
-      unsigned int vao = 0, vbo = 0, ibo = 0, instanceVbo = 0, instanceColorVbo = 0, vertexColorVbo = 0;
+      unsigned int vao = 0, vbo = 0, ibo = 0, instanceVbo = 0, instanceColorVbo = 0, vertexColorVbo = 0, wearVbo = 0;
       // Object-space bounds, computed once per upload. The shadow volume has to
       // be fitted to the scene every frame, and walking every vertex of a
       // hundred-thousand-triangle mesh to do that would cost more than the
@@ -925,6 +988,7 @@ private:
       bool instanceAttribsOn = false;
       bool instanceColored = false;
       bool hasVertexColor = false;
+      bool hasWear = false; // row 4.4: location 9 carries curvature, cavity
       // The GetInstanceGroupMatrix() baked into the uploaded instance buffer
       // last time it was rebuilt, so a Transform node's own params changing -
       // which doesn't bump the instancer's own InstanceRevision() - still
@@ -1087,6 +1151,7 @@ private:
    GLUtil::Fbo mAccum[2];
    unsigned int mProgAccum = 0, mProgAccumDone = 0;
    int mJitterIndex = -1; // >= 0 while an offline pass is being accumulated
+   bool mAccumEngine = false; // Accumulate's passes are live engine frames
    bool mInAccumulate = false;
    bool EnsurePostShaders();
    void RunPost(const Mat4& proj, bool ortho, int w, int h);
@@ -1138,6 +1203,19 @@ private:
    // The camera and lights come from the last raster cook (mLastCamera, mPtLights), which drew the
    // same scene; an offline render runs one raster cook first for that.
    bool CookPathTrace(int frameId);
+   // Metal engine path (Apple only; see Render3DEngine.cpp). True when it drew this frame.
+   bool CookEngine(int frameId);
+public:
+   // Why the Metal engine path is not drawing (a shader or pipeline that failed to build), empty when it is fine
+   // or not in use. Shown on the node: a failed pipeline is an error, not a quiet fallback to raster.
+   const std::string& EngineError() const { return mEngineError; }
+private:
+   std::string mEngineError;
+   void ReleaseEngine();
+public:
+   struct EngineState; // public so Render3DEngine.cpp's file-local helpers can take it
+private:
+   EngineState* mEng = nullptr;
    void ReleasePathTrace();
    static bool PtSameGeometry(const SceneSignature& a, const SceneSignature& b);
    static bool PtSameView(const SceneSignature& a, const SceneSignature& b);
@@ -1151,6 +1229,21 @@ private:
    bool mPtHasLastSig = false;
    bool mPtSceneBuilt = false;
    bool mPtStill = false;
+   // Raster GI probes (Render3DPathTraceCook.cpp): a grid over the scene, traced by a second path
+   // tracer and kept as one ambient cube per probe in mProbeTex (six face slabs along z, alpha =
+   // validity) with each face's mean hit distance and its square in mProbeDepthTex. Rebuilt when
+   // geometry, lights or world change.
+   void UploadPtScene(class Render3DPathTrace& pt);
+   void SetPtWorld(class Render3DPathTrace& pt);
+   void UpdateProbes(const SceneSignature& sig);
+   void ReleaseProbes();
+   class Render3DPathTrace* mProbeTrace = nullptr;
+   std::vector<float> mProbeKey;
+   SceneSignature mProbeBuiltSig, mProbeLastSig;
+   bool mProbeSceneBuilt = false, mProbeValid = false, mProbeHasLastSig = false;
+   unsigned int mProbeTex = 0, mProbeDepthTex = 0;   // depth: per face mean first-hit distance and its square
+   float mProbeLo[3] = { 0, 0, 0 }, mProbeStep[3] = { 1, 1, 1 };
+   int mProbeDims[3] = { 0, 0, 0 };
    // Multisampled draw target, blitted into the above. Unused when samples == 0.
    unsigned int mMsFbo = 0;
    unsigned int mMsColor = 0;
@@ -1177,6 +1270,10 @@ private:
    // mesh draws with no alpha cutoff; 0 if it failed to link.
    unsigned int mProgramOpaque = 0;
    bool mShaderTried = false;
+   // Row 1.3: the Field material library spliced into the forward shader, and its program set's key.
+   std::string mFldGlsl;
+   unsigned long long mFldKey = 0;
+   void SyncFieldPrograms();
    unsigned int mEnvBgProgram = 0;
    bool mEnvBgShaderTried = false;
    // Empty VAO for the background's vertexless "big triangle" - core profile
@@ -1201,8 +1298,14 @@ private:
    float mLastFillClamp = 1.0f;
    size_t mLastTriangles = 0;
    size_t mLastDrawCalls = 0;
+   size_t mLastGpuBytes = 0;
    size_t mLastUploads = 0;
    bool mHasSceneBuilt = false;
    SceneSignature mSceneBuilt;
+   // Row 7.3: the pass outputs (depth, normal, albedo, mask, id) and the scene they were drawn for.
+   GLUtil::Fbo mPassFbo[5];
+   bool mPassValid = false, mPassKeepFloat = false;
+   SceneSignature mPassSig;
+   void CookPasses(int frameId);
    unsigned long long mRevision = 0;
 };

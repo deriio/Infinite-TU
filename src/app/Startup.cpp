@@ -6,6 +6,7 @@
 #include "app/graph/LearningLog.h"
 #include "app/panels/CurveEditorPanel.h"
 #include "platform/PluginCrashGuard.h"
+namespace app { void LoadUserFonts(); }
 #include "core/CliSetup.h"
 #include "app/graph/NoteGen.h"
 #include "app/ui/design/UiType.h"
@@ -14,6 +15,7 @@
 #include "platform/HeadTracker.h"
 #include "platform/AppPaths.h"
 #include "app/ui/ThemeFiles.h" // fork
+#include "core/sketch/SketchEngine.h"
 #include "core/DawPluginInstall.h"
 
 // fork: ask NVIDIA Optimus / AMD PowerXpress laptops for the discrete GPU (not verified on Windows).
@@ -33,6 +35,10 @@ namespace app
 bool RunAliasTest(); // selftest/AliasTests.cpp
 extern bool gShotNodeMenu; // frame/StagePopupsA.cpp: review shots open the first node's menu
 bool RunOversampleTest(); // selftest/AliasTests.cpp
+bool RunFieldAliasTest(); // selftest/AliasTests.cpp
+bool RunFieldRatePlanTest(); // selftest/AliasTests.cpp
+bool RunFieldHeldOutTest(); // selftest/AliasTests.cpp
+bool RunFieldRealTest(); // selftest/AliasTests.cpp
 bool RunPitchTest(); // selftest/PitchTests.cpp
 bool RunLearningLogTest(); // selftest/GenSampleTests.cpp
 bool RunGenSampleTest(); // selftest/GenSampleTests.cpp
@@ -50,11 +56,74 @@ bool RunIoAudit(); // selftest/IoAudit.cpp
 bool RunGeoAudit(); // selftest/GeoAudit.cpp
 bool GeoAuditWantsGl(); // selftest/GeoAudit.cpp: the section list names DISP
 bool RunCompAudit(); // selftest/CompAudit.cpp
+bool RunBciSelftest(); // selftest/BciTests.cpp
 // Resolves the main window's DPI + the manual slider into UiScale::Current(), hands the point
 // scale to the GLFW backend and (re)bakes the font atlas at the resulting physical size. Safe
 // to call again between frames: the atlas is rebuilt from scratch and, when the GL renderer
 // already exists, its font texture is recreated. Style metrics are never rescaled here -
 // they are in points like everything else, so there is nothing to compound.
+// Merges OS symbol and CJK fallback faces into the current ImFont (MergeMode=true) so
+// characters outside Inter and the bundled Noto subset never render as tofu on any OS.
+void MergePlatformFallbackFonts(ImGuiIO& io, float bakedPx, bool ja)
+{
+   std::vector<std::string> paths;
+   auto addPath = [&](const std::string& p)
+   {
+      if (p.empty())
+         return;
+      for (const std::string& existing : paths)
+         if (existing == p)
+            return;
+      std::error_code ec;
+      if (std::filesystem::exists(AppPaths::FsPath(p), ec))
+         paths.push_back(p);
+   };
+   [[maybe_unused]] auto addFamily = [&](const char* family) { addPath(Platform::FontFileForFamily(family)); };
+
+#if defined(_WIN32)
+   addPath("C:\\Windows\\Fonts\\seguisym.ttf");
+   addFamily("Segoe UI Symbol");
+   if (ja)
+   {
+      addPath("C:\\Windows\\Fonts\\YuGothR.ttc");
+      addFamily("Yu Gothic");
+   }
+   addPath("C:\\Windows\\Fonts\\msyh.ttc");
+   addFamily("Microsoft YaHei");
+   addPath("C:\\Windows\\Fonts\\YuGothR.ttc");
+   addPath("C:\\Windows\\Fonts\\msgothic.ttc");
+   addPath("C:\\Windows\\Fonts\\malgun.ttf");
+#elif defined(__APPLE__)
+   addPath("/System/Library/Fonts/Apple Symbols.ttf");
+   if (ja)
+      addPath("/System/Library/Fonts/Hiragino Sans GB.ttc");
+   addPath("/System/Library/Fonts/PingFang.ttc");
+   addPath("/System/Library/Fonts/Hiragino Sans GB.ttc");
+   addPath("/System/Library/Fonts/Supplemental/Arial Unicode.ttf");
+#else
+   addFamily("Noto Sans Symbols");
+   addFamily("Noto Sans Symbols 2");
+   addFamily("DejaVu Sans");
+   addPath("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf");
+   addPath("/usr/share/fonts/TTF/DejaVuSans.ttf");
+   if (ja)
+      addFamily("Noto Sans CJK JP");
+   addFamily("Noto Sans CJK SC");
+   addFamily("Noto Sans CJK JP");
+   addFamily("WenQuanYi Zen Hei");
+   addPath("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc");
+   addPath("/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc");
+   addPath("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc");
+#endif
+
+   for (const std::string& p : paths)
+   {
+      ImFontConfig cfg;
+      cfg.MergeMode = true;
+      io.Fonts->AddFontFromFileTTF(p.c_str(), bakedPx, &cfg);
+   }
+}
+
 void ApplyUiScale(GLFWwindow* window, bool rendererReady)
 {
    // A queued language switch lands here, between frames, so no label pointer fetched earlier in
@@ -80,6 +149,7 @@ void ApplyUiScale(GLFWwindow* window, bool rendererReady)
    const float bakedPx = 0.0f; // 0 = style.FontSizeBase
    const std::string bundledInter = BundledResourcePath("fonts/Inter-Regular.ttf");
    SketchNode::SetFontPath(bundledInter);   // text() in Sketch
+   SketchEngine::FontFileFor = [](const std::string& family) { return Platform::FontFileForFamily(family); };   // textFont()
    std::string chosenFontPath;
    {
       const std::string wanted = CategoryColors::GetUiFont();
@@ -90,10 +160,20 @@ void ApplyUiScale(GLFWwindow* window, bool rendererReady)
    const char* candidates[] = {
       chosenFontPath.c_str(), // empty for the default, or if the bundled file is missing
       bundledInter.c_str(),
+#if defined(_WIN32)
+      "C:\\Windows\\Fonts\\segoeui.ttf",
+      "C:\\Windows\\Fonts\\arial.ttf",
+#elif defined(__APPLE__)
       "/System/Library/Fonts/SFNS.ttf",
       "/System/Library/Fonts/HelveticaNeue.ttc",
       "/System/Library/Fonts/Helvetica.ttc",
       "/System/Library/Fonts/Supplemental/Arial.ttf",
+#else
+      "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+      "/usr/share/fonts/TTF/DejaVuSans.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+      "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+#endif
    };
    // ImGui bakes only Basic Latin + Latin-1 unless told otherwise, so names in other scripts
    // (ł, ő, Ж, λ, ạ) drew as '?'. Latin Extended-A/B, Greek, Cyrillic, Latin Extended
@@ -126,7 +206,7 @@ void ApplyUiScale(GLFWwindow* window, bool rendererReady)
    }
    if (uiFont == nullptr)
       io.Fonts->AddFontDefault();
-   // Every weight is its own ImFont, so each carries the same merged stack: CJK, Lucide, Infinite Glyphs.
+   // Every weight is its own ImFont, so each carries the same merged stack: CJK, Infinite Glyphs.
    auto mergeExtras = [&]()
    {
       // CJK: Inter has no Han/kana, so a subsetted Noto face is merged for exactly the glyphs the
@@ -145,34 +225,11 @@ void ApplyUiScale(GLFWwindow* window, bool rendererReady)
             cjkCfg.MergeMode = true;
             io.Fonts->AddFontFromFileTTF(notoPath.c_str(), bakedPx, &cjkCfg);
          }
+         MergePlatformFallbackFonts(io, bakedPx, ja);
       }
-      // Merge a small slice of the Lucide icon font (external/icons/Lucide,
-      // ISC license) into the same atlas at PUA codepoints, so icon glyphs
-      // can be dropped into ordinary ImGui::Text/Button calls alongside UI
-      // text (see IconsLucide.h). MergeMode=true means it rides the same
-      // baseline/line-height as the font just loaded rather than becoming a
-      // separate selectable font - the standard ImGui icon-font idiom.
-      // Restricted to one explicit range (currently just the "search" glyph,
-      // U+E151) rather than Lucide's full 1000+ icon set - the atlas only
-      // pays texture memory for glyphs actually in use.
-      if (true)
-      {
-         const std::string bundledLucide = BundledResourcePath("icons/lucide.ttf");
-         if (!bundledLucide.empty())
-         {
-            static const ImWchar iconRanges[] = { 0xE151, 0xE151, 0 };
-            ImFontConfig iconCfg;
-            iconCfg.MergeMode = true;
-            iconCfg.PixelSnapH = true;
-            iconCfg.GlyphMinAdvanceX = UiScale::kBaseFontSize;
-#ifndef NDEBUG
-            iconCfg.SizePixels = UiScale::kBaseFontSize; // Debug ImGui asserts a reference size beside GlyphMinAdvanceX
-#endif
-            io.Fonts->AddFontFromFileTTF(bundledLucide.c_str(), bakedPx, &iconCfg, iconRanges);
-         }
-      }
-      // Infinite Glyphs (art/icons/src -> tools/design/build_glyphs.py): our own icon set, merged the
-      // same way as Lucide above. Codepoints come from the generated Glyphs.gen.h.
+      // Infinite Glyphs (art/icons/src -> tools/design/build_glyphs.py): our own icon set, merged into
+      // the same atlas at PUA codepoints with MergeMode=true so glyphs ride the same baseline/line-height
+      // as the UI text. Codepoints come from the generated Glyphs.gen.h.
       if (true)
       {
          const std::string bundledGlyphs = BundledResourcePath("icons/infinite-glyphs.ttf");
@@ -235,11 +292,6 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    auto& searchPopupCentered = fc.searchPopupCentered;
    auto& searchPopupOpen = fc.searchPopupOpen;
    auto& searchRequestClose = fc.searchRequestClose;
-   auto& clipboard = fc.clipboard;
-   auto& clipboardSources = fc.clipboardSources;
-   auto& clipboardOrigIndex = fc.clipboardOrigIndex;
-   auto& clipboardOrigGroup = fc.clipboardOrigGroup;
-   auto& clipboardCluster = fc.clipboardCluster;
    auto& tSettingsInit = fc.tSettingsInit;
    auto& sFirstFrameEndMs = fc.sFirstFrameEndMs;
    auto& frameId = fc.frameId;
@@ -249,7 +301,9 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    // infinite-basic); empty when the folder is absent, which the node treats as
    // "no kit". Set first so headless jobs that load patches see it too.
    DrumSequencerNode::SetKitDir(BundledResourcePath("drumkits/infinite-basic"));
-   const double sMainStartMs = Bench::ScopedStageTimer::NowMs();
+   // The user's own per-genre kits (tools/drumkits/build_kits.py); absent folder = bundled kit only.
+   if (const std::string sup = AppPaths::AppSupportDir(); !sup.empty())
+      DrumSequencerNode::SetUserKitRoot(sup + "/kits");
    sMainRssStartMb = Bench::ProcessRssMb();
    sMainFootStartMb = Bench::ProcessFootprintMb();
    
@@ -334,8 +388,6 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
 
    // B6 Canvas navigation fixture state (docs/plans/perf/benchmark-suite.md §4)
    
-   
-   static int sBenchB6NodeCount = 300;
    
    static bool sBenchB6Collapsed = false;
    
@@ -579,7 +631,10 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
       return RunAutosaveMarkerTest();
 
    if (getenv("INFINITE_REMOVEBGTEST") != nullptr)
+   {
+      RegisterNodes();
       return RunRemoveBgTest();
+   }
 
    if (getenv("INFINITE_NETWORKTEST") != nullptr)
       return RunNetworkTest();
@@ -662,6 +717,19 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
       return RunAliasTest() ? 0 : 1;
    if (getenv("INFINITE_OVERSAMPLETEST") != nullptr)
       return RunOversampleTest() ? 0 : 1;
+   // Field kernels' aliasing against oversampling factor, the ground truth
+   // for docs/research/aliasing-aware-field (phase 0). Report only.
+   if (getenv("INFINITE_FIELDALIASTEST") != nullptr)
+      return RunFieldAliasTest() ? 0 : 1;
+   // Per-segment oversampling plans against the whole kernel (phase 2a, H2).
+   if (getenv("INFINITE_FIELDRATEPLAN") != nullptr)
+      return RunFieldRatePlanTest() ? 0 : 1;
+   // Phase 4: score a folder of held-out kernels (same rig, frozen analysis).
+   if (getenv("INFINITE_FIELDHELDOUT") != nullptr)
+      return RunFieldHeldOutTest() ? 0 : 1;
+   // Phase 6: the same kernels on real clips (interleaved-copy oracle).
+   if (getenv("INFINITE_FIELDREAL") != nullptr)
+      return RunFieldRealTest() ? 0 : 1;
 
    // Pitch Shifter quality: purity, chord, unity null, transients (selftest/PitchTests.cpp).
    if (getenv("INFINITE_PITCHTEST") != nullptr)
@@ -718,6 +786,8 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    // render vs realtime, frame-rate dependence (selftest/ModAudit.cpp).
    if (getenv("INFINITE_MODAUDIT") != nullptr)
       return RunModAudit() ? 0 : 1;
+   if (getenv("INFINITE_BCI_SELFTEST") != nullptr)
+      return RunBciSelftest() ? 0 : 1;
    // Synth audit: pitch, aliasing, level, rate, determinism, CPU (selftest/SynthAudit.cpp).
    if (getenv("INFINITE_SYNTHAUDIT") != nullptr)
       return RunSynthAudit() ? 0 : 1;
@@ -765,6 +835,9 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
 
    if (getenv("INFINITE_FIELDSAMPLETEST") != nullptr)
       return RunFieldSampleTest();
+
+   if (getenv("INFINITE_SPECTRALFIELDTEST") != nullptr)
+      return RunSpectralFieldTest();
 
    if (getenv("INFINITE_FIELDNOTESTEST") != nullptr)
       return RunFieldNotesTest();
@@ -1297,6 +1370,22 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
       return ok ? 0 : 1;
    }
 
+   if (getenv("INFINITE_RHITEST") != nullptr)
+   {
+      const bool ok = RunRhiTest();
+      glfwDestroyWindow(window);
+      glfwTerminate();
+      return ok ? 0 : 1;
+   }
+
+   if (getenv("INFINITE_ENGINETEST") != nullptr)
+   {
+      const bool ok = RunEngineTest();
+      glfwDestroyWindow(window);
+      glfwTerminate();
+      return ok ? 0 : 1;
+   }
+
    if (getenv("INFINITE_3DBENCH") != nullptr)
    {
       const bool ok = RunThreeDBench();
@@ -1488,16 +1577,23 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    glfwSetWindowContentScaleCallback(window, [](GLFWwindow*, float, float) { UiScale::RequestRescale(); });
 
    ImGuiStyle& style = ImGui::GetStyle();
-   style.FrameRounding = 3.0f;
+   style.FrameRounding = tok::radius_control;   // UI system sheet 2f: every control (tok::control_h)
    style.SelectableRounding = style.FrameRounding; // was a vendored ImGui patch before 1.92
-   style.GrabRounding = 3.0f;
-   style.WindowRounding = 4.0f;
-   style.ItemSpacing = ImVec2(6, 5);
+   style.GrabRounding = tok::radius_control;
+   style.WindowRounding = tok::radius_control;
+   style.ItemSpacing = ImVec2(6, tok::row_gap);   // owner 2026-11-16: row gap 3 (Block 4b shot 1)
+#ifndef NDEBUG
+   // Block 4b row-pitch shots: the same panels at another row gap, without a rebuild per value.
+   if (const char* rg = getenv("INFINITE_ROW_GAP"))
+      style.ItemSpacing.y = (float)atof(rg);
+#endif
+   // UI system sheet: every frame (button, field, slider, dropdown, check row) is one control tall (tok::control_h).
+   style.FramePadding.y = (tok::control_h - UiScale::kBaseFontSize) * 0.5f;
    // Popups/context menus and scrollbars are chrome, not node bodies - they
    // don't share WindowRounding/FrameRounding's blast radius (node-ui-pillars
    // P1-P9 grid math), so they can read softer without touching a single
    // knob row. Left unset before this, which meant they inherited 0.
-   style.PopupRounding = 12.0f;
+   style.PopupRounding = tok::radius_container;   // containers: popover, menu, card, dialog
    style.ScrollbarRounding = 10.0f;
    // 12 pt track with a 3 pt inset: a 6 pt pill with an even gutter on both sides.
    style.ScrollbarSize = 12.0f;
@@ -1628,6 +1724,7 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    config.SettingsFile = graphPath.c_str();
    config.EnableSmoothZoom = true; // trackpad momentum made stepped zoom feel jumpy
    Patch::LoadRecents();
+   app::LoadUserFonts();   // fonts added in the 2D View's font list, before any text renders
    // CategoryColors::LoadPreference() already ran earlier, before the font/DPI
    // block, so gUiScale is available in time for font baking.
    LoadGeneralSettings();
@@ -1659,6 +1756,10 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    // uncapped regardless - they don't want to be paced by the display.
    if (!gHeadlessTestWindow)
       SetCanvasSwapInterval(gVsync ? 1 : 0);
+   // R0 of the real-time engine plan: a bench run with the display out of the loop, so frame_ms is the work
+   // and not the next vsync.
+   if (getenv("INFINITE_BENCH_UNPACED") != nullptr)
+      SetCanvasSwapInterval(0);
    LoadBrowserFilterPrefs();
    gBrowserFavorites.Load();
 
@@ -2828,9 +2929,7 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
          auto* mat = static_cast<MaterialNode*>(gNodes[2].node.get());
          auto* render = static_cast<Render3DNode*>(gNodes[5].node.get());
          auto* out = static_cast<OutputNode*>(gNodes[6].node.get());
-         auto* path = static_cast<PathNode*>(gNodes[7].node.get());
          auto* palette = static_cast<PaletteNode*>(gNodes[8].node.get());
-         auto* ramp = static_cast<RampNode*>(gNodes[9].node.get());
          auto* wave = static_cast<WavetableNode*>(gNodes[10].node.get());
          auto* midi = static_cast<MidiNotesNode*>(gNodes[11].node.get());
          auto* filter = static_cast<NoteFilterNode*>(gNodes[12].node.get());
@@ -3920,6 +4019,10 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
             sBenchB2Variant += ",passes=1";
          if (const char* t = getenv("INFINITE_BENCH_GPUTIMERS"); t && strcmp(t, "0") == 0)
             sBenchB2Variant += ",gputimers=0";
+         if (getenv("INFINITE_BENCH_UNPACED") != nullptr)
+            sBenchB2Variant += ",unpaced=1";
+         if (getenv("INFINITE_BENCH_B4MUSIC") != nullptr)
+            sBenchB2Variant += ",music=1";
 
          BuildBenchB4Scene(scaleStr, shadowStr, isAnim, sBenchB2Render3DIdx, sBenchB2OutputIdx, sBenchB4CamIdx, sBenchB4LfoIdx);
       }
@@ -4172,7 +4275,7 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
             if (strlen(b6Arg) > 0 && strcmp(b6Arg, "1") != 0 && std::atoi(b6Arg) > 0)
                nodeCount = std::atoi(b6Arg);
          }
-         sBenchB6NodeCount = nodeCount;
+         (void)nodeCount;
 
          sBenchB6TotalFrames = getenv("INFINITE_BENCH_B6FRAMES") ? std::max(60, std::atoi(getenv("INFINITE_BENCH_B6FRAMES"))) : 600;
 
@@ -4410,6 +4513,7 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
       gArrangePanelOpen = o.find("arrange") != std::string::npos;
       gModMatrixOpen = o.find("modmatrix") != std::string::npos;
       gPerfPanelOpen = o.find("perf") != std::string::npos;
+      gMixerPanelOpen = o.find("mixer") != std::string::npos;
       gViewportPanelOpen = o.find("viewport") != std::string::npos;
       gNodePanelOpen = o.find("library") != std::string::npos;
       gHistoryOpen = o.find("history") != std::string::npos;
@@ -4417,10 +4521,12 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
       gPianoRollOpen = o.find("pianoroll") != std::string::npos;
       gTerminalOpen = o.find("terminal") != std::string::npos;
       gCurveEditorOpen = o.find("curveeditor") != std::string::npos;
+      gDrumPanelOpen = o.find("drums") != std::string::npos;
       if (o.find("chatcode") != std::string::npos)
          ChatShotOpenCode();
       gShotNodeMenu = o.find("nodemenu") != std::string::npos;
       gView3DOpen = o.find("view3d") != std::string::npos;
+      gView2DOpen = o.find("view2d") != std::string::npos;
       // "historydemo": a few named edits so the History panel has rows for a review shot.
       if (o.find("historydemo") != std::string::npos)
          for (const char* l : {"Add Shape", "Move node", "Connect cable", "amount 0.20 \xE2\x86\x92 0.55", "Bypass"})
@@ -4429,7 +4535,7 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
       if (const size_t dk = o.find("dock="); dk != std::string::npos)
       {
          const int d = atoi(o.c_str() + dk + 5);
-         gModMatrixDock = gPerfPanelDock = gViewportPanelDock = d;
+         gModMatrixDock = gPerfPanelDock = gViewportPanelDock = gMixerPanelDock = d;
       }
       // "perfdemo": one of each Performance control, for design review screenshots.
       // "perfedit" is the same in Edit Mode with the first two cards selected and the third in MIDI learn.
@@ -4459,7 +4565,7 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
       if (o.find("arrangedemo") != std::string::npos)
       {
          gArrangePanelOpen = true;
-         gArrangePanelHeight = 900.0f;
+         gArrangePanelHeight = o.find("arrshort") != std::string::npos ? 480.0f : 900.0f;   // arrshort: Clip Settings overflows into columns
          size_t firstAudio = 0;
          while (firstAudio < gArrange.lanes.size() && gArrange.lanes[firstAudio].type != Arrange::kLaneAudio) ++firstAudio;
          if (firstAudio + 1 < gArrange.lanes.size()) gArrange.lanes[firstAudio + 1].solo = true;
@@ -4718,6 +4824,7 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
          Splash::Begin(0.0f); // the card window failed: fall back to the in-window splash
    }
    else if (splashEnabled)
-      Splash::Begin(splashTest ? (float)atof(splashTest) : 0.0f);   return -1;
+      Splash::Begin(splashTest ? (float)atof(splashTest) : 0.0f);
+   return -1;
 }
 }

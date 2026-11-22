@@ -1,6 +1,7 @@
 #include "AudioFileWriter.h"
 #include "shine.h"
 #include "core/Provenance.h"
+#include "platform/AppPaths.h"
 
 #include <algorithm>
 #include <cmath>
@@ -382,12 +383,9 @@ namespace AudioRecordings
 {
    std::string GetRecordingsDirectory()
    {
-      const char* home = getenv("HOME");
-      std::string base;
-      if (home != nullptr)
-         base = std::string(home) + "/Library/Application Support/Infinite";
-      else
-         base = "/tmp/Infinite";
+      std::string base = AppPaths::AppSupportDir(); // fork: separate recordings
+      if (base.empty())
+         base = std::string("/tmp/") + ForkIdentity::kDataDirName;
 
       mkdir(base.c_str(), 0755);
       std::string dir = base + "/Recordings";

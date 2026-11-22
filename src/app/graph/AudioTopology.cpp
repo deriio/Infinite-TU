@@ -30,7 +30,7 @@ namespace app
       // audio pin at slot 1" comment a few hundred lines up), so a node like
       // Sample Player - note pin at slot 0, its recording input at slot 1 -
       // has a real gap at slot 0 that isn't "past its declared slot count".
-      // Scanning the full range costs nothing (kMaxAudioSlots is 8) and
+      // Scanning the full range costs nothing (kMaxAudioSlots is 32) and
       // matches the equally-generic teardown loop nearby, which never
       // assumed contiguity either.
       for (int slot = 0; slot < kMaxAudioSlots && slot < kAudioMaxNodeInputs; slot++)
@@ -222,7 +222,7 @@ namespace app
 
    bool ArrangeTimelineRoutingActive()
    {
-      return gAudioMode != AudioMode::Canvas ||
+      return (gAudioMode != AudioMode::Canvas && gAudioMode != AudioMode::Mixer) ||
              (gOfflineRender.active && gOfflineRender.arrangeDriven && gOfflineRender.timelineAudio) ||
              (gArrangeWavRender.active && gArrangeWavRender.timelineAudio);
    }
@@ -231,6 +231,16 @@ namespace app
    bool StudioOnlyRouting()
    {
       return gAudioMode == AudioMode::Studio &&
+             !(gOfflineRender.active && gOfflineRender.arrangeDriven && gOfflineRender.timelineAudio) &&
+             !(gArrangeWavRender.active && gArrangeWavRender.timelineAudio);
+   }
+
+
+   // Mixer mode keeps canvas routing but only Audio Outs fed straight by a Mixer (a console) reach the device.
+   // An arrangement render still plays the arrangement.
+   bool MixerOnlyRouting()
+   {
+      return gAudioMode == AudioMode::Mixer &&
              !(gOfflineRender.active && gOfflineRender.arrangeDriven && gOfflineRender.timelineAudio) &&
              !(gArrangeWavRender.active && gArrangeWavRender.timelineAudio);
    }
@@ -346,6 +356,24 @@ namespace app
                lane = &l;
                break;
             }
+         // The card shows the page's own notes: built from gArrange, so Session audio (which strips the
+         // timeline clips from the playing model) does not empty it.
+         {
+            const Arrange::Lane* own = lane ? Arrange::FindLane(gArrange, lane->id) : nullptr;
+            const uint64_t dkey = own ? ((gArrange.revision * 0x9E3779B97F4A7C15ull) ^ own->id) | 1 : 0;
+            if (dkey != pr->displayKey)
+            {
+               pr->displayKey = dkey;
+               if (own)
+               {
+                  auto d = std::make_unique<Arrange::NoteSchedule>();
+                  Arrange::BuildNoteSchedule(*own, *d);
+                  pr->SetDisplaySchedule(std::move(d));
+               }
+               else
+                  pr->SetDisplaySchedule(nullptr);
+            }
+         }
          uint64_t key = 0;
          if (lane)
          {
@@ -406,6 +434,7 @@ namespace app
       // Studio mode routes like Timeline (canvas bypassed) but schedules nothing: the take plays outside the graph.
       // An arrangement render still schedules its clips whatever the mode.
       const bool studioOnly = StudioOnlyRouting();
+      const bool mixerOnly = MixerOnlyRouting();
       if (timelineRouting && !studioOnly)
       {
          // Straight off the model (WP5b): ticks convert to beats with no
@@ -571,7 +600,7 @@ namespace app
       for (GraphNode& gn : gNodes)
       {
          auto* spatial = dynamic_cast<SpatialMixerNode*>(gn.node.get());
-         if (spatial == nullptr || timelineRouting || spatial->ConnectedCount() == 0)
+         if (spatial == nullptr || timelineRouting || mixerOnly || spatial->ConnectedCount() == 0)
             continue;
          CollectAudioChain(spatial, visited, order, bufferIndexOf, nextBufferIndex);
          const int idx = AudioBufferIndexOf(spatial, 0, bufferIndexOf);
@@ -614,7 +643,7 @@ namespace app
                   // resolved's own node is still walked into `order` above,
                   // so if it happens to BE (or feed) an active clip's node,
                   // that clip's own terminal below still finds it processed.
-                  if (!timelineRouting)
+                  if (!timelineRouting && (!mixerOnly || IsMixerPageTerminal(gn.node.get(), resolved)))
                   {
                      // Capture is set unconditionally, gated at write-time on
                      // the ring's own `enabled` flag - see AudioTerminal's comment.
@@ -774,6 +803,8 @@ namespace app
                      }
                   }
                }
+               if (inbox == nullptr)
+                  consumer->EnsureNoteDrain(); // a source that went away may still owe note-offs
                noteWires.push_back(NoteWire{ consumer, slot, inbox, cursor });
             }
          }
@@ -928,6 +959,7 @@ namespace app
 
       AudioTopology topology;
       topology.order = std::move(order);
+      gAudioTopologyTerminalCount = (int)terminals.size();
       topology.terminalBufferIndices = std::move(terminals);
       topology.clipWindows = std::move(clipWindows);
       topology.numBuffers = nextBufferIndex;
@@ -950,6 +982,7 @@ namespace app
       gArrangeAudioBuiltRevision = gArrange.StructuralRevision();
       gArrangeAudioBuiltRouting = timelineRouting;
       gArrangeAudioBuiltStudio = studioOnly;
+      gArrangeAudioBuiltMixer = mixerOnly;
       gArrangeAudioBuiltSessionGen = ArrangeSessionGeneration();
       gAudioTopologyRebuildCount++;
       ReapArrangeTerminalCompensation();
@@ -975,7 +1008,8 @@ namespace app
       if (gArrange.StructuralRevision() == gArrangeAudioBuiltRevision &&
           ArrangeSessionGeneration() == gArrangeAudioBuiltSessionGen &&
           ArrangeTimelineRoutingActive() == gArrangeAudioBuiltRouting &&
-          StudioOnlyRouting() == gArrangeAudioBuiltStudio)
+          StudioOnlyRouting() == gArrangeAudioBuiltStudio &&
+          MixerOnlyRouting() == gArrangeAudioBuiltMixer)
          return false;
       const unsigned long long before = gAudioTopologyRebuildCount;
       RebuildAudioTopology();

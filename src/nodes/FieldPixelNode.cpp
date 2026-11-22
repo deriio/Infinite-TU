@@ -1,7 +1,12 @@
 #include "FieldPixelNode.h"
+#include "core/bci/BciTypes.h"
+#include "field/MaterialRegistry.h"
 #include "field/FieldLex.h"
 #include "field/FieldParse.h"
 #include "Transport.h"
+#include "Geometry3DNodes.h"
+#include "UtilityNodes.h"
+#include <algorithm>
 #include "gl3.h"
 #include <cmath>
 
@@ -26,6 +31,8 @@ namespace
                if (p.isDeclared && p.name == node->varName)
                   return (double)p.value;
             }
+            if (node->varName.rfind("brain.", 0) == 0)
+               return (double)Bci::ReadBrainGlobal(node->varName);
             auto it = env.find(node->varName);
             if (it != env.end()) return it->second;
             return 0.0;
@@ -981,17 +988,39 @@ const std::vector<std::string>& FieldPixelNode::PresetNames()
    {
       for (const auto& p : Presets())
          kNames.push_back(p.name);
+      for (const auto& p : MaterialPresets())
+         kNames.push_back(std::string("Material: ") + p.name);
    }
    return kNames;
+}
+
+const std::vector<FieldPixelNode::Preset>& FieldPixelNode::MaterialPresets()
+{
+   static const std::vector<Preset> kRecipes = {
+#define FLD_RECIPE(name, code) { name, code },
+#include "FieldMaterialRecipes.h"
+#undef FLD_RECIPE
+   };
+   return kRecipes;
 }
 
 void FieldPixelNode::LoadPreset(int index)
 {
    const auto& p = Presets();
+   const auto& m = MaterialPresets();
    if (index >= 0 && index < (int)p.size())
    {
       code = p[index].code;
-      Apply();
+      domain = 0;
+      if (Apply())
+         mParamTable.ResetDeclaredToDefaults(); // a preset starts at its own declared values
+   }
+   else if (index >= (int)p.size() && index < (int)(p.size() + m.size()))
+   {
+      code = m[index - p.size()].code;
+      domain = 1;
+      if (Apply())
+         mParamTable.ResetDeclaredToDefaults(); // a preset starts at its own declared values
    }
 }
 
@@ -1023,7 +1052,8 @@ void FieldPixelNode::LoadDeviceFile(const Field::DeviceFile& device)
    auto itA = device.nodeSettings.find("animate");
    if (itA != device.nodeSettings.end())
       animate = itA->second != 0.0;
-   Apply();
+   if (Apply())
+      mParamTable.ResetDeclaredToDefaults(); // params the file omits start at their defaults
    for (const auto& kv : device.params)
    {
       Field::ParamEntry* p = mParamTable.Find(kv.first);
@@ -1037,6 +1067,13 @@ FieldPixelNode::FieldPixelNode()
    code = Presets()[0].code;
 }
 
+struct FieldPixelNode::MatPreview
+{
+   GeometryNode sphere;
+   MaterialNode mat;
+   Render3DNode render;
+};
+
 FieldPixelNode::~FieldPixelNode()
 {
    if (mProgram != 0)
@@ -1049,15 +1086,74 @@ FieldPixelNode::~FieldPixelNode()
 // The ping-pong pair holds STATE, not picture. A state kernel renders its
 // colour into mOut on a second pass, so `col` means the same thing whether or
 // not the kernel declares state cells.
-unsigned int FieldPixelNode::GetOutputTexture() { return GLUtil::FboTexture(mOut); }
+unsigned int FieldPixelNode::GetOutputTexture()
+{
+   if (domain == 1)
+      return mPreview ? mPreview->render.GetOutputTexture() : 0;
+   return GLUtil::FboTexture(mOut);
+}
 unsigned int FieldPixelNode::GetOutputTexture(int index)
 {
    if (index == 1 && exposeAuxTexture && !mIR.declaredStates.empty())
       return mState.CurrentOutputTexture();
    return index == 0 ? GetOutputTexture() : 0;
 }
-int FieldPixelNode::GetOutputWidth() const { return mOut.w; }
-int FieldPixelNode::GetOutputHeight() const { return mOut.h; }
+int FieldPixelNode::GetOutputWidth() const { return domain == 1 ? (mPreview ? mPreview->render.GetOutputWidth() : 0) : mOut.w; }
+int FieldPixelNode::GetOutputHeight() const { return domain == 1 ? (mPreview ? mPreview->render.GetOutputHeight() : 0) : mOut.h; }
+
+const std::vector<std::string>& FieldPixelNode::DomainNames()
+{
+   static const std::vector<std::string> kNames = { "Image", "Material" };
+   return kNames;
+}
+
+// Row 3.4: the first 16 params are live (MaterialParams, carried per material to the shader), so moving them keeps
+// the id and the shaders; params past 16 are baked, and a new value there is a new id.
+std::string FieldPixelNode::LastError() const
+{
+   if (!mLastError.empty() || domain != 1 || mMatId == 0)
+      return mLastError;
+   return Field::MaterialProgramError(mMatId);
+}
+
+void FieldPixelNode::MaterialParams(float out[16]) const
+{
+   for (int i = 0; i < 16; i++) out[i] = 0.0f;
+   const size_t n = std::min(mIR.declaredParams.size(), (size_t)Field::kMaterialLiveParams);
+   for (size_t i = 0; i < n; i++)
+   {
+      const auto& p = mIR.declaredParams[i];
+      const Field::ParamEntry* e = mParamTable.Find(p.name);
+      out[i] = e ? e->value : (float)p.defaultValue;
+   }
+}
+
+int FieldPixelNode::MaterialProgramId() const
+{
+   return (domain == 1 && Field::MaterialProgramError(mMatId).empty()) ? mMatId : 0;
+}
+
+void FieldPixelNode::RefreshMaterialProgram()
+{
+   std::vector<float> values;
+   values.reserve(mIR.declaredParams.size());
+   for (const auto& p : mIR.declaredParams)
+   {
+      const Field::ParamEntry* e = mParamTable.Find(p.name);
+      values.push_back(e ? e->value : (float)p.defaultValue);
+   }
+   if (mMatTried && values == mMatValues)
+      return;
+   mMatTried = true;
+   std::string err;
+   const int id = Field::RegisterMaterialProgram(code, values, err);
+   mMatValues = values;
+   mMatId = id;
+   if (id == 0)
+      mLastError = err;
+   else
+      mLastError.clear();
+}
 
 bool FieldPixelNode::Apply()
 {
@@ -1080,11 +1176,36 @@ bool FieldPixelNode::Apply()
 
    Field::PixelIRProgram ir;
    Field::FieldError irErr;
-   if (!Field::LowerPixelProgramToIR(ast, ir, irErr))
+   const Field::PixelProgramKind kind = domain == 1 ? Field::PixelProgramKind::Material : Field::PixelProgramKind::Image;
+   if (!Field::LowerPixelProgramToIR(ast, ir, irErr, kind))
    {
       mLastError = "line " + std::to_string(irErr.span.line) + ", col " + std::to_string(irErr.span.col) + ": " + irErr.message;
+      mMatId = 0;
+      mMatApplied = false;
       return false;
    }
+
+   // Material domain (row 1.3): no picture of its own. The program is compiled into the Render 3D shaders through
+   // Field::RegisterMaterialProgram; the GL image program is dropped so nothing renders here.
+   if (domain == 1)
+   {
+      if (mProgram != 0)
+      {
+         glDeleteProgram(mProgram);
+         mProgram = 0;
+      }
+      mIR = std::move(ir);
+      mEmitResult = Field::GlslEmitResult();
+      mParamTable.Reconcile(mIR.declaredParams, mNodeIndex, mNotice);
+      mMatApplied = true;
+      mMatId = 0;
+      mMatTried = false;
+      mLastError.clear();
+      RefreshMaterialProgram();
+      return mMatId != 0;
+   }
+   mMatApplied = false;
+   mMatId = 0;
 
    // Emit and compile against LOCALS. Keeping the last working program means
    // keeping the IR and uniform table that describe it too: if mIR were swapped
@@ -1185,6 +1306,42 @@ void FieldPixelNode::CookIfNeeded(int frameId)
       return;
    mLastCookFrame = frameId;
 
+   if (domain == 1)
+   {
+      if (!mMatApplied && mLastError.empty())
+         Apply();
+      else if (mMatApplied)
+         RefreshMaterialProgram();
+      if (MaterialProgramId() != 0)
+      {
+         if (!mPreview)
+         {
+            mPreview = std::make_unique<MatPreview>();
+            const auto& names = GeometryNode::ShapeNames();
+            for (size_t i = 0; i < names.size(); i++)
+               if (names[i] == "Sphere")
+                  mPreview->sphere.shape = (int)i;
+            mPreview->mat.input = &mPreview->sphere;
+            mPreview->mat.FieldInput().Connect(this);
+            Render3DNode& r = mPreview->render;
+            r.geometry[0] = &mPreview->mat;
+            r.width = r.height = 384.0f;
+            r.envAsBackground = false;
+            r.bgOpacity = 0.0f;
+            r.camAzimuth = 0.0f;
+            r.camElevation = 15.0f;
+            r.camDistance = 2.6f;
+         }
+         mPreview->render.CookIfNeeded(frameId);
+      }
+      return;
+   }
+   if (mMatApplied) // switched back to Image without an Apply
+   {
+      mMatApplied = false;
+      mMatId = 0;
+      Apply();
+   }
    if (mProgram == 0 && mLastError.empty())
       Apply();
    if (mProgram == 0)
@@ -1278,6 +1435,10 @@ void FieldPixelNode::CookIfNeeded(int frameId)
             // of trusting positional alignment between two unrelated arrays.
             if (const Field::ParamEntry* p = mParamTable.Find(slot.varName))
                glUniform1f(loc, p->value);
+         }
+         else if (slot.varName.rfind("brain.", 0) == 0)
+         {
+            glUniform1f(loc, Bci::ReadBrainGlobal(slot.varName));
          }
       }
 

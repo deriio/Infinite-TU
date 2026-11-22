@@ -828,8 +828,6 @@ if ($Failed -gt 0) { exit 1 }
       c.folderAccess = j.value("folderAccess", false);
       c.introduced = j.value("introduced", false);
       c.tried = j.value("tried", false);
-      c.customBaseUrl = j.value("customBaseUrl", std::string());
-      c.customPreset = j.value("customPreset", std::string());
       if (const std::string k = j.value("customKeyEnv", std::string()); !k.empty())
          c.customKeyEnv = k;
       for (const char* key : { "folders", "commands" })
@@ -852,6 +850,14 @@ if ($Failed -gt 0) { exit 1 }
          for (auto it = j["models"].begin(); it != j["models"].end(); ++it)
             if (it.value().is_string() && FindAgent(it.key()) != nullptr)
                c.models[it.key()] = it.value().get<std::string>();
+      if (j.contains("customPreset") && j["customPreset"].is_string())
+         c.customPreset = j["customPreset"].get<std::string>();
+      if (j.contains("customBaseUrl") && j["customBaseUrl"].is_string())
+         c.customBaseUrl = j["customBaseUrl"].get<std::string>();
+      if (j.contains("customModel") && j["customModel"].is_string())
+         c.customModel = j["customModel"].get<std::string>();
+      else if (c.models.count("custom"))
+         c.customModel.clear(); // fork: legacy configuration uses models["custom"] and the environment key
       return c;
    }
 
@@ -866,6 +872,7 @@ if ($Failed -gt 0) { exit 1 }
                                                                 { "workspace", c.workspace }, { "folderAccess", c.folderAccess }, { "introduced", c.introduced }, { "tried", c.tried },
                                                                 { "customBaseUrl", c.customBaseUrl }, { "customKeyEnv", c.customKeyEnv }, { "customPreset", c.customPreset },
                                                                 { "models", c.models }, { "folders", c.folders }, { "commands", c.commands },
+                                                                { "customModel", c.customModel },
                                                                 { "usage", usage } }.dump(2) << "\n";
    }
 

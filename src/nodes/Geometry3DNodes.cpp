@@ -1,5 +1,14 @@
 #include "Geometry3DNodes.h"
+#include "engine/Ies.h"
+#include "platform/AppPaths.h"
 #include "Render3DTonemap.h"
+#include "Render3DSheen.h"
+#include "Render3DThinFilm.h"
+#include "Render3DBsdf.h"
+#include "Render3DFresnel.h"
+#include "Render3DAb.h"
+#include "Render3DHair.h"
+#include "Render3DShared.h"
 #include "ColorSpace.h"
 
 #include "gl3.h"
@@ -11,6 +20,8 @@
 #include <string>
 
 #include "Transport.h"
+#include "field/MaterialRegistry.h"
+#include "MeshWear.h"
 #include "BenchReport.h"
 #include "SceneNodes.h"
 #include "GeometryOpNodes.h"
@@ -42,7 +53,10 @@ namespace
    const std::vector<std::string> kSolidColorNames = { "Material", "Attribute", "Single", "Random", "Texture", "Object" };
    const std::vector<std::string> kMatcapNames = { "Clay", "Metal", "Toon", "Gloss" };
    const std::vector<std::string> kTonemapNames = { "None", "ACES", "Reinhard", "AgX", "Neutral" };
-   const std::vector<std::string> kEngineNames = { "Raster", "Path trace" };
+   // Row 8.1: Live = the Metal live engine (RT shadows, reflections, GI); Live + settle also path traces once still.
+   // Stored as 2 and 3 so old patches keep 0 = Raster, 1 = Path trace. Without Metal only the first two show.
+   const std::vector<std::string> kEngineNames = { "Raster", "Path trace", "Live", "Live + settle" };
+   const std::vector<std::string> kEngineNamesGl = { "Raster", "Path trace" };
    const std::vector<std::string> kShadowQualityNames = { "1024", "2048", "4096" };
    const std::vector<std::string> kSpriteShapeNames = { "Circle", "Square" };
    const Mesh kEmptyMesh;
@@ -259,12 +273,13 @@ namespace
       "uniform float uExposure;\n"
       "uniform int uTonemap;\n"
       "uniform float uBgOpacity;\n"
-      "vec3 toLinear(vec3 c) { c = max(c, vec3(0.0)); return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }\n"
-      "vec3 toSrgb(vec3 c) { c = max(c, vec3(0.0)); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }\n"
-      "vec3 acesFilm(vec3 x) {\n"
-      "   return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);\n"
-      "}\n"
-      R3D_TONEMAP_GLSL
+      "uniform vec4 uFog;\n"
+      "uniform vec3 uFogLo;\n"
+      "uniform vec3 uFogHi;\n"
+      "uniform vec3 uFogColor;\n"
+      "uniform vec4 uPlainBg;\n"   // w = 1: the plain clear colour (rgb, sRGB) behind fog instead of the world
+      R3D_SRGB_SRC
+      R3D_TONEMAP_SRC
       "vec2 dirToEquirect(vec3 d, float rot) {\n"
       "   float phi = atan(d.z, d.x) + rot;\n"
       "   float theta = acos(clamp(d.y, -1.0, 1.0));\n"
@@ -296,19 +311,42 @@ namespace
       "   vec4 worldH = uInvViewProj * vec4(vNdc, 1.0, 1.0);\n"
       "   vec3 worldPos = worldH.xyz / worldH.w;\n"
       "   vec3 dir = normalize(worldPos - uCamPos);\n"
-      "   vec3 col;\n"
-      "   if (uHasEnvMap == 1) {\n"
+      "   vec3 col = vec3(0.0);\n"
+      "   if (uPlainBg.w > 0.5) {\n"
+      "   } else if (uHasEnvMap == 1) {\n"
       "      col = sampleEquirectSeamSafe(uEnvMap, dirToEquirect(dir, uEnvRotation)) * uEnvIntensity;\n"
       "   } else {\n"
       "      float t = clamp(dir.y * 0.5 + 0.5, 0.0, 1.0);\n"
       "      vec3 lower = mix(toLinear(uEnvGround), toLinear(uEnvHorizon), smoothstep(0.0, 0.5, t));\n"
       "      col = mix(lower, toLinear(uEnvSky), smoothstep(0.5, 1.0, t)) * uEnvIntensity;\n"
       "   }\n"
+      // Fog in front of the sky (row 4.1): its depth along the view through the box, lit by the world's horizon colour.
+      "   float fogT = 1.0; vec3 fogS = vec3(0.0);\n"
+      "   if (uFog.x > 0.0) {\n"
+      "      vec3 inv = 1.0 / mix(dir, vec3(1e-12), lessThan(abs(dir), vec3(1e-12)));\n"
+      "      vec3 ta = (uFogLo - uCamPos) * inv, tb = (uFogHi - uCamPos) * inv;\n"
+      "      vec3 tn = min(ta, tb), tf = max(ta, tb);\n"
+      "      float t0 = max(max(tn.x, tn.y), max(tn.z, 0.0)), t1 = min(min(tf.x, tf.y), tf.z);\n"
+      "      if (t1 > t0) {\n"
+      "         float od = 0.0, st = (t1 - t0) / 12.0;\n"
+      "         vec3 c = 0.5 * (uFogLo + uFogHi), h = max(0.5 * (uFogHi - uFogLo), vec3(1e-4));\n"
+      "         for (int k = 0; k < 12; k++) {\n"
+      "            vec3 p = uCamPos + dir * (t0 + (float(k) + 0.5) * st);\n"
+      "            od += uFog.x * st * (uFog.z > 0.0 ? mix(1.0, max(1.0 - length((p - c) / h), 0.0), uFog.z) : 1.0);\n"
+      "         }\n"
+      "         fogT = exp(-od);\n"
+      "         vec3 fe = uFogHi - uFogLo;\n"
+      "         vec3 ms = 1.0 / (1.0 - uFogColor * (1.0 - exp(-uFog.x * mix(1.0, 0.2, uFog.z) * min(fe.x, min(fe.y, fe.z)))));\n"
+      "         fogS = (1.0 - fogT) * toLinear(uEnvHorizon) * uEnvIntensity * uFogColor * ms;\n"
+      "      }\n"
+      "   }\n"
+      "   if (uPlainBg.w > 0.5) {\n"
+      "      fragColor = vec4(toSrgb(toLinear(uPlainBg.rgb) * fogT + toneMap(fogS * uExposure, uTonemap)), uBgOpacity);\n"
+      "      return;\n"
+      "   }\n"
+      "   col = col * fogT + fogS;\n"
       "   col *= uExposure;\n"
-      "   if (uTonemap == 1) col = acesFilm(col);\n"
-      "   else if (uTonemap == 2) col = col / (col + vec3(1.0));\n"
-      "   else if (uTonemap == 3) col = agxTone(col);\n"
-      "   else if (uTonemap == 4) col = neutralTone(col);\n"
+      "   col = toneMap(col, uTonemap);\n"
       "   fragColor = vec4(toSrgb(col), uBgOpacity);\n"
       "}\n";
 
@@ -320,6 +358,7 @@ namespace
       "in mat4 aInstance;\n"      // per-instance transform, divisor 1
       "in vec3 aInstanceColor;\n" // per-instance tint, divisor 1
       "in vec3 aVertexColor;\n"   // per-vertex tint, from Mesh::vertexColor
+      "in vec3 aWear;\n"          // rows 4.4 / 3.3: curvature, cavity, attr per vertex (attrib off = 0)
       "uniform mat4 uModel;\n"
       "uniform int uInstanced;\n"
       "uniform int uInstanceColored;\n"
@@ -359,6 +398,7 @@ namespace
       "out vec2 vUv;\n"
       "out vec3 vInstanceColor;\n"
       "out vec3 vVertexColor;\n"
+      "out vec3 vWear;\n"
       // Motion blur's velocity cook: where this point was last frame, through last
       // frame's camera. uMotionDelta takes this frame's world to last frame's.
       "uniform int uVelocity;\n"
@@ -408,6 +448,7 @@ namespace
       "   vLocalPos = aPos;\n"
       "   vNormal = worldNormal;\n"
       "   vUv = aUv;\n"
+      "   vWear = aWear;\n"
       // White when there is no per-instance colour, so the fragment shader can
       // multiply unconditionally rather than branching on it.
       "   vInstanceColor = (uInstanceColored == 1) ? instanceColor : vec3(1.0);\n"
@@ -432,12 +473,21 @@ namespace
       "#else\n"
       "#define KILL_FRAGMENT discard\n"
       "#endif\n"
+      // Field material programs (row 1.3): EnsureShader splices their library here (MaterialRegistry.h).
+      "//@FLD_MAT_LIB@\n"
+      "#ifndef FLD_MAT_ANY\n"
+      "#define FLD_MAT_ANY 0\n"
+      "#endif\n"
+      "uniform float uFldProgram;\n" // the draw's program id, 0 = none
+      "uniform vec4 uFldPrm[4];\n"   // row 3.4: its live knobs
+      "uniform float uFldTime;\n"
       "in vec3 vWorldPos;\n"
       "in vec3 vLocalPos;\n"
       "in vec3 vNormal;\n"
       "in vec2 vUv;\n"
       "in vec3 vInstanceColor;\n"
       "in vec3 vVertexColor;\n"
+      "in vec3 vWear;\n"
       "in vec4 vLightSpacePos;\n"
       "in vec4 vCurClip;\n"
       "in vec4 vPrevClip;\n"
@@ -458,6 +508,8 @@ namespace
       "uniform float uMistIntensity;\n"
       "uniform float uMistHeight;\n"
       "uniform int uObjectIndex;\n"
+      "uniform int uPassMask;\n"
+      "uniform int uDrawSlot;\n"
       "uniform int uSolid;\n"
       "uniform int uSolidLighting;\n"
       "uniform int uSolidColor;\n"
@@ -479,9 +531,13 @@ namespace
       "uniform float uSubsurface;\n"
       "uniform vec3 uSubsurfaceColor;\n"
       "uniform float uSubsurfaceRadius;\n"
+      "uniform vec3 uSssRadius;\n"
+      "uniform float uTranslucency;\n"
+      "uniform float uSssK;\n"
       "uniform float uSheen;\n"
       "uniform vec3 uSheenColor;\n"
       "uniform float uSheenRoughness;\n"
+      "uniform float uSheenDir;\n"   // row 5.1
       "uniform float uIridescence;\n"
       "uniform float uIridescenceIor;\n"
       "uniform float uIridescenceThickness;\n"
@@ -495,24 +551,34 @@ namespace
       "uniform sampler2D uSceneColor;\n"
       "uniform float uSceneMaxLod;\n"
       "uniform vec2 uScreenSize;\n"
-      "uniform vec3 uLightDir[8];\n"
-      "uniform vec3 uLightAim[8];\n"
+      "uniform vec3 uLightDir[64];\n"
+      "uniform vec3 uLightAim[64];\n"
       "uniform int uWire;\n"
-      "uniform vec3 uLightColor[8];\n"
-      "uniform float uLightIntensity[8];\n"
-      "uniform int uLightType[8];\n"
-      "uniform float uLightSpotAngle[8];\n"
-      "uniform float uLightSpotPenumbra[8];\n"
-      "uniform vec2 uLightArea[8];\n"
-      "uniform vec4 uLightTerms[8];\n"   // diffuse, specular, transmission, falloff (< 0: hard)
-      "uniform float uLightCutoff[8];\n"  // no light past this distance; 0 = none
+      "uniform vec3 uLightColor[64];\n"
+      "uniform float uLightIntensity[64];\n"
+      "uniform int uLightType[64];\n"
+      "uniform float uLightSpotAngle[64];\n"
+      "uniform float uLightSpotPenumbra[64];\n"
+      "uniform vec2 uLightArea[64];\n"
+      "uniform vec4 uLightTerms[64];\n"   // diffuse, specular, transmission, falloff (< 0: hard)
+      "uniform float uLightCutoff[64];\n"  // no light past this distance; 0 = none
+      // Row 4.2: point / spot keep an IES row + 1 in uLightArea.y (0 = none): four profiles x 32 vertical samples
+      // (0..180 degrees off the aim), azimuth-averaged, four to a vec4.
+      "uniform vec4 uIesTab[32];\n"
       "float lightFalloff(float dist, float k) {\n"
       "   if (k >= 0.0) return 1.0 / (1.0 + dist * dist * k);\n"
       "   return min(1.0 / max(dist * dist * -k, 1e-4), 20.0);\n"
       "}\n"
+      R3D_AREA_SRC
       "uniform int uLightCount;\n"
       "uniform int uLightMask;\n"
       "uniform vec3 uAmbient;\n"
+      "uniform sampler3D uProbeTex;\n"
+      "uniform sampler3D uProbeDepth;\n"
+      "uniform int uHasProbes;\n"
+      "uniform vec3 uProbeLo;\n"
+      "uniform vec3 uProbeStep;\n"
+      "uniform ivec3 uProbeDims;\n"
       "uniform float uRim;\n"
       "uniform vec3 uCamPos;\n"
       "uniform sampler2D uTexture;\n"
@@ -529,12 +595,29 @@ namespace
       "uniform int uHasRoughnessMap;\n"
       "uniform int uHasMetallicMap;\n"
       "uniform int uHasNormalMap;\n"
+      "uniform int uRibbonPrim;\n"
+      "uniform int uHair;\n"            // Hair model: the Chiang fibre BSDF along vNormal (Render3DHair.h)
+      "uniform vec3 uHairSigma;\n"
+      "uniform float uHairRadial;\n"
+      "uniform float uHairShift;\n"
+      "uniform int uFurMesh;\n"
       "uniform int uHasAoMap;\n"
       "uniform int uHasEmissionMap;\n"
       "uniform int uHasClearcoatMap;\n"
       "uniform int uHasSheenMap;\n"
       "uniform int uHasOpacityMap;\n"
       "uniform int uHasTransmissionMap;\n"
+      // Row 2.4 field images: all 16 texture units are taken, so img(slot, uv) borrows the four map units a material
+      // wires least; the draw binds the picture there and switches that map off.
+      "#if FLD_MAT_ANY\n"
+      "vec4 fldImg(int slot, vec2 uv)\n"
+      "{\n"
+      "   if (slot == 0) return texture(uClearcoatMap, uv);\n"
+      "   if (slot == 1) return texture(uSheenMap, uv);\n"
+      "   if (slot == 2) return texture(uTransmissionMap, uv);\n"
+      "   return texture(uAoMap, uv);\n"
+      "}\n"
+      "#endif\n"
       "uniform float uNormalStrength;\n"
       "uniform int uNormalBump;\n"
       // Mapping: which coordinate space the material maps sample (UV /
@@ -546,6 +629,9 @@ namespace
       "uniform vec3 uMapRotate;\n"
       "uniform vec3 uMapScale;\n"
       "uniform float uTriplanarBlend;\n"
+      "uniform float uBreakup;\n"
+      "uniform float uDetailScale;\n"
+      "uniform float uDetailStrength;\n"
       "uniform vec3 uObjLo;\n"
       "uniform vec3 uObjHi;\n"
       "uniform float uExposure;\n"
@@ -561,6 +647,13 @@ namespace
       "uniform float uEnvRotation;\n"
       "uniform float uEnvMaxLod;\n"
       "uniform sampler2DShadow uShadowMap;\n"
+      "uniform mat4 uLightViewProj;\n"
+      // Fog (row 4.1): x peak extinction per unit (0 off), y HG g, z falloff (0 even box .. 1 soft puff); the box and
+      // the scattered share (linear).
+      "uniform vec4 uFog;\n"
+      "uniform vec3 uFogLo;\n"
+      "uniform vec3 uFogHi;\n"
+      "uniform vec3 uFogColor;\n"
       "uniform int uShadowsOn;\n"
       "uniform int uShadowLight;\n"
       "uniform float uShadowBias;\n"
@@ -573,6 +666,23 @@ namespace
       "uniform int uIsSprite;\n"
       "uniform int uSpriteShape;\n" // 0 circle, 1 square
       "\n"
+      "float fogShapeGL(vec3 p) {\n"
+      "   if (uFog.z <= 0.0) return 1.0;\n"
+      "   vec3 c = 0.5 * (uFogLo + uFogHi), h = max(0.5 * (uFogHi - uFogLo), vec3(1e-4));\n"
+      "   return mix(1.0, max(1.0 - length((p - c) / h), 0.0), uFog.z);\n"
+      "}\n"
+      // Optical depth from p toward the light (direction ld, up to tmax) through the fog box, 6 midpoints.
+      "float fogLightOD(vec3 p, vec3 ld, float tmax) {\n"
+      "   vec3 li = 1.0 / mix(ld, vec3(1e-12), lessThan(abs(ld), vec3(1e-12)));\n"
+      "   vec3 la = (uFogLo - p) * li, lb = (uFogHi - p) * li;\n"
+      "   vec3 n0 = min(la, lb), f0 = max(la, lb);\n"
+      "   float a = max(max(n0.x, n0.y), max(n0.z, 0.0)), b = min(min(f0.x, f0.y), min(f0.z, tmax));\n"
+      "   if (b <= a) return 0.0;\n"
+      "   if (uFog.z <= 0.0) return uFog.x * (b - a);\n"
+      "   float ls = (b - a) / 6.0, acc = 0.0;\n"
+      "   for (int j = 0; j < 6; j++) acc += fogShapeGL(p + ld * (a + (float(j) + 0.5) * ls));\n"
+      "   return uFog.x * acc * ls;\n"
+      "}\n"
       "vec2 gShadowDzDuv = vec2(0.0);\n"   // set at the top of main(), where derivatives are defined
       "float shadowFactor(vec3 normal, vec3 lightDir) {\n"
       "   if (uShadowsOn == 0) return 1.0;\n"
@@ -623,20 +733,12 @@ namespace
       "   return mix(1.0, lit / 16.0, uShadowStrength);\n"
       "}\n"
       "\n"
-      "vec3 toLinear(vec3 c) { c = max(c, vec3(0.0)); return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c)); }\n"
-      "vec3 toSrgb(vec3 c) { c = max(c, vec3(0.0)); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(vec3(0.0031308), c)); }\n"
+      R3D_SRGB_SRC
       "\n"
-      "vec3 acesFilm(vec3 x) {\n"
-      "   return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0);\n"
-      "}\n"
-      R3D_TONEMAP_GLSL
+      R3D_TONEMAP_SRC
       "\n"
       "vec3 toneDisplay(vec3 c) {\n"
-      "   if (uTonemap == 1) return acesFilm(c);\n"
-      "   if (uTonemap == 2) return c / (c + vec3(1.0));\n"
-      "   if (uTonemap == 3) return agxTone(c);\n"
-      "   if (uTonemap == 4) return neutralTone(c);\n"
-      "   return c;\n"
+      "   return toneMap(c, uTonemap);\n"
       "}\n"
       "\n"
       "float ditherOffset() {\n"
@@ -662,6 +764,69 @@ namespace
       "   return mix(env, toLinear(uEnvHorizon), rough * rough) * uEnvIntensity;\n"
       "}\n"
       "\n"
+      // Diffuse light from the probe grid. Each probe holds six axis faces (slabs along z) mixed by n
+      // squared, and per face the mean distance to what it saw and its square. The eight probes around
+      // a point weigh by trilinear share, by facing the point's side, and by whether they could see it
+      // (a Chebyshev test on that distance), so light behind a wall stays out. Past the grid's edge
+      // it fades to the world over one cell.
+      "vec4 probeFace(ivec3 c, int f) {\n"
+      "   return texelFetch(uProbeTex, ivec3(c.xy, f * uProbeDims.z + c.z), 0);\n"
+      "}\n"
+      "vec2 probeDepth(ivec3 c, int f) {\n"
+      "   return texelFetch(uProbeDepth, ivec3(c.xy, f * uProbeDims.z + c.z), 0).xy;\n"
+      "}\n"
+      "vec3 probeIrr(vec3 p, vec3 n, vec3 r, out vec3 irrR) {\n"
+      "   vec3 envIrr = sampleEnv(n, 1.0);\n"
+      "   irrR = sampleEnv(r, 1.0);\n"
+      "   if (uHasProbes == 0) return envIrr;\n"
+      "   vec3 envR = irrR;\n"
+      "   float minStep = min(uProbeStep.x, min(uProbeStep.y, uProbeStep.z));\n"
+      "   vec3 q = p + n * 0.25 * minStep;\n"
+      "   vec3 g = (q - uProbeLo) / uProbeStep;\n"
+      "   vec3 dmax = vec3(uProbeDims - 1);\n"
+      "   float fade = clamp(1.0 - length(max(-g, vec3(0.0)) + max(g - dmax, vec3(0.0))), 0.0, 1.0);\n"
+      "   if (fade <= 0.0) return envIrr;\n"
+      "   vec3 r2 = r * r;\n"
+      "   ivec3 fr3 = ivec3(r.x >= 0.0 ? 0 : 1, r.y >= 0.0 ? 2 : 3, r.z >= 0.0 ? 4 : 5);\n"
+      "   vec3 sumR = vec3(0.0);\n"
+      "   g = clamp(g, vec3(0.0), dmax);\n"
+      "   ivec3 b = min(ivec3(floor(g)), uProbeDims - 2);\n"
+      "   vec3 fr = g - vec3(b);\n"
+      "   vec3 n2 = n * n;\n"
+      "   ivec3 fn = ivec3(n.x >= 0.0 ? 0 : 1, n.y >= 0.0 ? 2 : 3, n.z >= 0.0 ? 4 : 5);\n"
+      "   vec3 sum = vec3(0.0);\n"
+      "   float wsum = 0.0;\n"
+      "   for (int i = 0; i < 8; i++) {\n"
+      "      ivec3 o = ivec3(i & 1, (i >> 1) & 1, (i >> 2) & 1);\n"
+      "      ivec3 c = b + o;\n"
+      "      vec3 tri = mix(1.0 - fr, fr, vec3(o));\n"
+      "      float w = tri.x * tri.y * tri.z;\n"
+      "      vec3 pp = uProbeLo + vec3(c) * uProbeStep;\n"
+      "      vec3 d = q - pp;\n"
+      "      float dist = max(length(d), 1e-4);\n"
+      "      vec3 dir = d / dist;\n"
+      "      float face = (dot(-dir, n) + 1.0) * 0.5;\n"
+      "      w *= face * face + 0.05;\n"
+      "      vec3 dd = dir * dir;\n"
+      "      ivec3 fd = ivec3(dir.x >= 0.0 ? 0 : 1, dir.y >= 0.0 ? 2 : 3, dir.z >= 0.0 ? 4 : 5);\n"
+      "      vec2 m = probeDepth(c, fd.x) * dd.x + probeDepth(c, fd.y) * dd.y + probeDepth(c, fd.z) * dd.z;\n"
+      "      if (dist > m.x) {\n"
+      "         float var = max(m.y - m.x * m.x, 0.01 * minStep * minStep);\n"
+      "         float dx = dist - m.x;\n"
+      "         float ch = var / (var + dx * dx);\n"
+      "         w *= ch * ch * ch;\n"
+      "      }\n"
+      "      vec4 fx = probeFace(c, fn.x), fy = probeFace(c, fn.y), fz = probeFace(c, fn.z);\n"
+      "      w *= fx.a;\n"
+      "      sum += (fx.rgb * n2.x + fy.rgb * n2.y + fz.rgb * n2.z) * w;\n"
+      "      wsum += w;\n"
+      "      sumR += (probeFace(c, fr3.x).rgb * r2.x + probeFace(c, fr3.y).rgb * r2.y + probeFace(c, fr3.z).rgb * r2.z) * w;\n"
+      "   }\n"
+      "   if (wsum < 1e-5) return envIrr;\n"
+      "   irrR = mix(envR, sumR / wsum, fade);\n"
+      "   return mix(envIrr, sum / wsum, fade);\n"
+      "}\n"
+      "\n"
       "float distributionGGX(float nDotH, float rough) {\n"
       "   float a = rough * rough;\n"
       "   float a2 = a * a;\n"
@@ -678,33 +843,33 @@ namespace
       "   float d = (xDotH * xDotH) / (ax * ax) + (yDotH * yDotH) / (ay * ay) + nDotH * nDotH;\n"
       "   return 1.0 / max(3.14159265 * ax * ay * d * d, 1e-7);\n"
       "}\n"
-      "float distributionCharlie(float nDotH, float rough) {\n"
-      "   float invR = 1.0 / max(rough, 0.01);\n"
-      "   float cos2h = nDotH * nDotH;\n"
-      "   float sin2h = max(1.0 - cos2h, 0.0078125);\n"
-      "   return (2.0 + invR) * pow(sin2h, invR * 0.5) / 6.2831853;\n"
-      "}\n"
-      "vec3 evalIridescence(float nDotV, float iridIor, float thickness) {\n"
-      "   float sinTheta2 = max(1.0 - nDotV * nDotV, 0.0);\n"
-      "   float cosThetaPrime = sqrt(max(iridIor * iridIor - sinTheta2, 0.0));\n"
-      "   float delta = 2.0 * 3.14159265 * thickness * cosThetaPrime;\n"
-      "   vec3 lambda = vec3(650.0, 530.0, 470.0);\n"
-      "   vec3 phi = delta / lambda;\n"
-      "   return 0.5 + 0.5 * cos(phi);\n"
-      "}\n"
+      R3D_SHEEN_GLSL
+      "#define HAIR_ATAN2(y, x) atan(y, x)\n"
+      "#define HAIR_OUT out float\n"
+      R3D_HAIR_SRC
+      R3D_THINFILM_SRC
       "float geometrySchlickGGX(float nDotV, float rough) {\n"
       "   float r = rough + 1.0;\n"
       "   float k = (r * r) / 8.0;\n"
       "   return nDotV / (nDotV * (1.0 - k) + k);\n"
       "}\n"
+      R3D_BSDF_SRC
+      R3D_FRESNEL_SRC
+      "#ifdef R3D_AB_GGX\n"
+      "#define R3D_G2(nv, nl, r) ggxG2(nv, nl, r)\n"
+      "#else\n"
+      "#define R3D_G2(nv, nl, r) (geometrySchlickGGX(nv, r) * geometrySchlickGGX(nl, r))\n"
+      "#endif\n"
       "vec3 fresnelSchlick(float cosTheta, vec3 f0) {\n"
-      "   return f0 + (1.0 - f0) * pow(clamp(1.0 - cosTheta, 0.0, 1.0), 5.0);\n"
+      "   return fresnelExact(cosTheta, f0);\n"
       "}\n"
+      "bool gPom = false;\n"
+      "vec2 gPomDx = vec2(0.0), gPomDy = vec2(0.0);\n"
       "void getCotangentFrame(vec3 normal, vec3 pos, vec2 uv, out vec3 tangent, out vec3 bitangent) {\n"
       "   vec3 dp1 = dFdx(pos);\n"
       "   vec3 dp2 = dFdy(pos);\n"
-      "   vec2 duv1 = dFdx(uv);\n"
-      "   vec2 duv2 = dFdy(uv);\n"
+      "   vec2 duv1 = gPom ? gPomDx : dFdx(uv);\n"
+      "   vec2 duv2 = gPom ? gPomDy : dFdy(uv);\n"
       "   vec3 dp2perp = cross(dp2, normal);\n"
       "   vec3 dp1perp = cross(normal, dp1);\n"
       "   vec3 t = dp2perp * duv1.x + dp1perp * duv2.x;\n"
@@ -718,29 +883,87 @@ namespace
       "      bitangent = normalize(cross(normal, tangent));\n"
       "   }\n"
       "}\n"
+      // A repeating read at an explicit LOD from the unwrapped uv's derivatives, so fract() leaves no mip seam.
+      "vec4 tapRepeat(sampler2D tex, vec2 uv, vec2 dx, vec2 dy) {\n"
+      "   vec2 size = vec2(textureSize(tex, 0));\n"
+      "   float rho = max(length(dx * size), length(dy * size));\n"
+      "   return textureLod(tex, fract(uv), max(log2(max(rho, 1e-6)), 0.0));\n"
+      "}\n"
+      "float brkHash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n"
+      "float brkNoise(vec2 p) {\n"
+      "   vec2 i = floor(p); vec2 f = fract(p); f = f * f * (3.0 - 2.0 * f);\n"
+      "   return mix(mix(brkHash(i), brkHash(i + vec2(1.0, 0.0)), f.x), mix(brkHash(i + vec2(0.0, 1.0)), brkHash(i + vec2(1.0, 1.0)), f.x), f.y);\n"
+      "}\n"
+      // Breakup (repetition hiding after Quilez): a slow noise picks one of 8 tile offsets per area and blends neighbours.
+      // Row 4.2: under parallax the shifted uv steps between pixels, so reads take the unshifted uv's LOD.
+      "vec4 tapMap(sampler2D tex, vec2 uv) {\n"
+      "   if (gPom) { vec2 size = vec2(textureSize(tex, 0)); return textureLod(tex, uv, max(log2(max(max(length(gPomDx * size), length(gPomDy * size)), 1e-6)), 0.0)); }\n"
+      "   if (uBreakup <= 0.001) return texture(tex, uv);\n"
+      "   vec2 dx = dFdx(uv), dy = dFdy(uv);\n"
+      "   float k = brkNoise(uv * 0.6) * 8.0;\n"
+      "   float i = floor(k), fk = k - i;\n"
+      "   vec4 ca = tapRepeat(tex, uv + sin(vec2(3.0, 7.0) * i), dx, dy);\n"
+      "   vec4 cb = tapRepeat(tex, uv + sin(vec2(3.0, 7.0) * (i + 1.0)), dx, dy);\n"
+      "   vec4 u = mix(ca, cb, smoothstep(0.2, 0.8, fk - 0.1 * dot(ca.rgb - cb.rgb, vec3(1.0))));\n"
+      "   return uBreakup >= 0.999 ? u : mix(tapRepeat(tex, uv, dx, dy), u, uBreakup);\n"
+      "}\n"
+      "vec3 tangentSample(vec2 uv, float strength, bool tile) {\n"
+      "   vec3 sampled;\n"
+      "   vec2 dx = dFdx(uv), dy = dFdy(uv);\n"
+      "   if (gPom) { dx = gPomDx * (tile ? uDetailScale : 1.0); dy = gPomDy * (tile ? uDetailScale : 1.0); }\n"
+      "   if (uNormalBump == 1) {\n"
+      // The four taps sit one texel apart at the mip the sampler reads (0 without mips), so a far bump keeps its
+      // true mean slope instead of flattening.
+      "      vec2 tsz = vec2(textureSize(uNormalMap, 0));\n"
+      "      float mipS = sqrt(max(max(dot(dx * tsz, dx * tsz), dot(dy * tsz, dy * tsz)), 1.0));\n"
+      "      vec2 px = mipS / vec2(textureSize(uNormalMap, 0));\n"
+      "      const vec3 lum = vec3(0.2126, 0.7152, 0.0722);\n"
+      "      float hl = dot((tile ? tapRepeat(uNormalMap, uv - vec2(px.x, 0.0), dx, dy) : tapMap(uNormalMap, uv - vec2(px.x, 0.0))).rgb, lum);\n"
+      "      float hr = dot((tile ? tapRepeat(uNormalMap, uv + vec2(px.x, 0.0), dx, dy) : tapMap(uNormalMap, uv + vec2(px.x, 0.0))).rgb, lum);\n"
+      "      float hd = dot((tile ? tapRepeat(uNormalMap, uv - vec2(0.0, px.y), dx, dy) : tapMap(uNormalMap, uv - vec2(0.0, px.y))).rgb, lum);\n"
+      "      float hu = dot((tile ? tapRepeat(uNormalMap, uv + vec2(0.0, px.y), dx, dy) : tapMap(uNormalMap, uv + vec2(0.0, px.y))).rgb, lum);\n"
+      "      sampled = normalize(vec3((hl - hr) * 2.0 / mipS, (hd - hu) * 2.0 / mipS, 1.0));\n"
+      "   } else {\n"
+      "      sampled = (tile ? tapRepeat(uNormalMap, uv, dx, dy) : tapMap(uNormalMap, uv)).rgb * 2.0 - 1.0;\n"
+      "   }\n"
+      "   sampled.xy *= strength;\n"
+      "   sampled.z = max(sampled.z, 1e-3);\n"
+      "   return sampled;\n"
+      "}\n"
       "vec3 applyNormalMap(vec3 normal, vec2 uv) {\n"
       "   vec3 tangent, bitangent;\n"
       "   getCotangentFrame(normal, vWorldPos, uv, tangent, bitangent);\n"
       "   mat3 tbn = mat3(tangent, bitangent, normal);\n"
-      "   vec3 sampled;\n"
-      "   if (uNormalBump == 1) {\n"
-      // Grayscale height: slope from central differences, +Z up. Height
-      // falls toward +U/+V -> normal tilts toward +U/+V.
-      "      vec2 px = 1.0 / vec2(textureSize(uNormalMap, 0));\n"
-      "      const vec3 lum = vec3(0.2126, 0.7152, 0.0722);\n"
-      "      float hl = dot(texture(uNormalMap, uv - vec2(px.x, 0.0)).rgb, lum);\n"
-      "      float hr = dot(texture(uNormalMap, uv + vec2(px.x, 0.0)).rgb, lum);\n"
-      "      float hd = dot(texture(uNormalMap, uv - vec2(0.0, px.y)).rgb, lum);\n"
-      "      float hu = dot(texture(uNormalMap, uv + vec2(0.0, px.y)).rgb, lum);\n"
-      "      sampled = normalize(vec3((hl - hr) * 2.0, (hd - hu) * 2.0, 1.0));\n"
-      "   } else {\n"
-      "      sampled = texture(uNormalMap, uv).rgb * 2.0 - 1.0;\n"
+      "   vec3 sampled = tangentSample(uv, uNormalStrength, false);\n"
+      // Detail: the same map again at uv * detail scale, always tiling, whiteout-blended on top.
+      "   if (uDetailScale > 0.0) {\n"
+      "      vec3 d = tangentSample(uv * uDetailScale, uDetailStrength, true);\n"
+      "      sampled = normalize(vec3(sampled.xy + d.xy, sampled.z * d.z));\n"
       "   }\n"
-      "   sampled.xy *= uNormalStrength;\n"
-      // A texel with z <= 0 (any image that is not a normal map) would flip the surface, so
-      // strength 0 must land exactly on the plain normal.
-      "   sampled.z = max(sampled.z, 1e-3);\n"
       "   return normalize(tbn * sampled);\n"
+      "}\n"
+      // Row 4.2: parallax occlusion on a bump (grey height) map, as the Metal raster: height 1 is the surface, a full
+      // step is 4 x strength texels deep (the relief the bump normal reads); secant refine; 8-step self-shadow.
+      "float gPomH = 1.0, gPomScale = 0.0;\n"
+      "vec3 gPomT = vec3(0.0), gPomB = vec3(0.0), gPomN = vec3(0.0, 0.0, 1.0);\n"
+      "float pomH(vec2 uv) { return dot(tapMap(uNormalMap, uv).rgb, vec3(0.2126, 0.7152, 0.0722)); }\n"
+      "vec2 pomMarch(vec2 uv, vec3 vTS, float scale) {\n"
+      "   float ns = mix(32.0, 8.0, abs(vTS.z)), dl = 1.0 / ns;\n"
+      "   vec2 dUv = -vTS.xy / max(vTS.z, 0.1) * scale / ns;\n"
+      "   float layer = 1.0, hc = pomH(uv), hp = hc;\n"
+      "   vec2 c = uv, cp = uv;\n"
+      "   for (int i = 0; i < 32 && hc < layer; i++) { cp = c; hp = hc; c += dUv; layer -= dl; hc = pomH(c); }\n"
+      "   float a = hc - layer, b = hp - (layer + dl);\n"
+      "   float w = a - b > 1e-6 ? a / (a - b) : 0.0;\n"
+      "   gPomH = layer + w * dl;\n"
+      "   return mix(c, cp, w);\n"
+      "}\n"
+      "float pomShadow(vec2 c, vec3 lTS) {\n"
+      "   if (gPomScale <= 0.0 || lTS.z <= 0.0 || gPomH >= 0.999) return 1.0;\n"
+      "   vec2 dUv = lTS.xy / max(lTS.z, 0.1) * gPomScale * (1.0 - gPomH) / 8.0;\n"
+      "   float m = 0.0;\n"
+      "   for (int i = 1; i <= 8; i++) m = max(m, pomH(c + dUv * float(i)) - (gPomH + (1.0 - gPomH) * float(i) / 8.0));\n"
+      "   return 1.0 - smoothstep(0.0, 0.05, m);\n"
       "}\n"
       "\n"
       "vec3 fresnelSchlickRoughness(float cosTheta, vec3 f0, float rough) {\n"
@@ -791,7 +1014,7 @@ namespace
       "}\n"
       "\n"
       "vec4 sampleMap(sampler2D tex, vec3 n, vec2 uv) {\n"
-      "   if (uMapSpace == 0 || uTriplanarBlend <= 0.001) return uIsSprite == 1 ? sampleSprite(tex, uv) : texture(tex, uv);\n"
+      "   if (uMapSpace == 0 || uTriplanarBlend <= 0.001) return uIsSprite == 1 ? sampleSprite(tex, uv) : tapMap(tex, uv);\n"
       "   vec3 base;\n"
       "   if (uMapSpace == 1) {\n"
       "      vec3 sz = max(uObjHi - uObjLo, vec3(1e-5));\n"
@@ -804,7 +1027,7 @@ namespace
       "   float sharpness = 1.0 + (1.0 - uTriplanarBlend) * 7.0;\n"
       "   vec3 w = pow(max(an, vec3(1e-4)), vec3(sharpness));\n"
       "   w /= (w.x + w.y + w.z);\n"
-      "   return texture(tex, base.yz) * w.x + texture(tex, base.xz) * w.y + texture(tex, base.xy) * w.z;\n"
+      "   return tapMap(tex, base.yz) * w.x + tapMap(tex, base.xz) * w.y + tapMap(tex, base.xy) * w.z;\n"
       "}\n"
       "\n"
       // Solid mode (Blender's Solid viewport shading, made here, not ported). Studio: a fixed
@@ -881,7 +1104,12 @@ namespace
       "   if (uTwoSided == 1 && !gl_FrontFacing) n = -n;\n"
       // Data passes leave out what is more see-through than the threshold, the way a
       // depth or index pass cannot hold half a value.
-      "   if (uRenderPass >= 1 && uRenderPass <= 9 && alpha < uPassThreshold) KILL_FRAGMENT;\n"
+      "   if (((uRenderPass >= 1 && uRenderPass <= 9) || uRenderPass >= 11) && alpha < uPassThreshold) KILL_FRAGMENT;\n"
+      // Row 7.3 mask: white on the objects whose index is uPassMask.
+      "   int passId = uObjectIndex > 0 ? uObjectIndex : uDrawSlot;\n"
+      "   if (uRenderPass == 12) { fragColor = vec4(vec3(passId == uPassMask ? 1.0 : 0.0), alpha); return; }\n"
+      // Row 7.3 id: one flat colour per object (its pass index, else its geometry slot), golden-ratio hues.
+      "   if (uRenderPass == 13) { float hh = fract(float(passId) * 0.618034); fragColor = vec4(clamp(abs(fract(hh + vec3(0.0, 2.0, 1.0) / 3.0) * 6.0 - 3.0) - 1.0, 0.0, 1.0) * (0.55 + 0.45 * fract(float(passId) * 0.381966)), alpha); return; }\n"
       "   if (uRenderPass == 1) {\n"
       "      float d = clamp((length(vWorldPos - uCamPos) - uNear) / max(0.001, uFar - uNear), 0.0, 1.0);\n"
       "      fragColor = vec4(vec3(d), alpha);\n"
@@ -936,9 +1164,29 @@ namespace
       "   if (uShading == 2) { fragColor = vec4(vUv, 0.0, alpha); return; }\n"
       "\n"
       "   vec2 mapUv = computeMapUv(n);\n"
+      "   {\n"
+      "      vec2 pdx = dFdx(mapUv), pdy = dFdy(mapUv);\n"
+      "      vec3 pp1 = dFdx(vWorldPos), pp2 = dFdy(vWorldPos);\n"
+      "#ifndef R3D_AB_NOPOM\n"
+      "      if (uHasNormalMap == 1 && uNormalBump == 1 && uMapSpace == 0 && uFurMesh == 0 && uHair == 0 && uIsSprite == 0 && uBreakup <= 0.001) {\n"
+      "         vec2 tsz = vec2(textureSize(uNormalMap, 0));\n"
+      "         float rho = max(length(pdx * tsz), length(pdy * tsz));\n"
+      "         float sc = 4.0 * uNormalStrength / tsz.x * (1.0 - smoothstep(4.0, 8.0, rho));\n"
+      "         vec3 t = cross(pp2, n) * pdx.x + cross(n, pp1) * pdy.x, bt = cross(pp2, n) * pdx.y + cross(n, pp1) * pdy.y;\n"
+      "         vec3 V = normalize(uCamPos - vWorldPos);\n"
+      "         if (sc > 1e-6 && max(dot(t, t), dot(bt, bt)) > 1e-12 && dot(V, n) > 0.0) {\n"
+      "            gPom = true; gPomDx = pdx; gPomDy = pdy; gPomScale = sc;\n"
+      "            gPomT = normalize(t); gPomB = normalize(bt); gPomN = n;\n"
+      "            mapUv = pomMarch(mapUv, vec3(dot(V, gPomT), dot(V, gPomB), dot(V, n)), sc);\n"
+      "         }\n"
+      "      }\n"
+      "#endif\n"
+      "   }\n"
       "   vec3 base = toLinear(uBaseColor) * vInstanceColor * vVertexColor;\n"
       "   if (uHasTexture == 1) base *= toLinear(sampleMap(uTexture, n, mapUv).rgb);\n"
       "   if (uShading == 3) { fragColor = vec4(toSrgb(base), alpha); return; }\n"
+      // Row 7.3 albedo: the first-hit base colour with its maps, linear.
+      "   if (uRenderPass == 11) { fragColor = vec4(base, alpha); return; }\n"
       "\n"
       "   vec3 viewDir = normalize(uCamPos - vWorldPos);\n"
       "   float rough = uRoughness;\n"
@@ -947,7 +1195,14 @@ namespace
       "   float metal = uMetallic;\n"
       "   if (uHasMetallicMap == 1) metal *= sampleMap(uMetallicMap, n, mapUv).r;\n"
       "   metal = clamp(metal, 0.0, 1.0);\n"
-      "   if (uHasNormalMap == 1) n = applyNormalMap(n, mapUv);\n"
+      // Hair shades a Fur mesh's strands only (the skin keeps the material); the strand reads as its albedo under diffuse light.
+      "   bool hairHere = uHair == 1 && (uFurMesh == 0 || gl_PrimitiveID >= uRibbonPrim);\n"
+      "   if (hairHere) { base = hairAlbedo(uHairSigma, uHairRadial) * vInstanceColor * vVertexColor; metal = 0.0; }\n"
+      // A fur mesh skips the normal map: on ribbons it means nothing, and on the skin under the coat it lights bumps the coat hides.
+      "   if (uHasNormalMap == 1 && uFurMesh == 0 && !hairHere) n = applyNormalMap(n, mapUv);\n"
+      // Hair: the vertex normal is the strand (Fur's Tangent normals); the ribbon's face toward us carries the rest.
+      "   vec3 hT = normalize(vNormal);\n"
+      "   if (hairHere) { vec3 gN = cross(dFdx(vWorldPos), dFdy(vWorldPos)); if (dot(gN, gN) > 1e-20) { gN = normalize(gN); n = dot(gN, viewDir) < 0.0 ? -gN : gN; } }\n"
       "   float ao = (uHasAoMap == 1) ? sampleMap(uAoMap, n, mapUv).r : 1.0;\n"
       "   float cc = uClearcoat;\n"
       "   if (uHasClearcoatMap == 1) cc *= sampleMap(uClearcoatMap, n, mapUv).r;\n"
@@ -957,8 +1212,43 @@ namespace
       "   if (uHasTransmissionMap == 1) trans *= sampleMap(uTransmissionMap, n, mapUv).r;\n"
       "   vec3 emiss = toLinear(uEmissionColor) * uEmission;\n"
       "   if (uHasEmissionMap == 1) emiss *= toLinear(sampleMap(uEmissionMap, n, mapUv).rgb);\n"
+      // Field material program (row 1.3): after the maps; it replaces what it writes. Its tangent-space normal goes
+      // through the cotangent frame of the mesh uv, its height is a bump by the surface gradient
+      // (n' = |det| n - sign(det) (dh/dx r1 + dh/dy r2)); derivatives come before the cut.
+      "#if FLD_MAT_ANY\n"
+      "   if (uFldProgram > 0.5) {\n"
+      "      FldMat o;\n"
+      "      o.base = base; o.roughness = rough; o.metallic = metal; o.normal = vec3(0.0, 0.0, 1.0); o.height = 0.0;\n"
+      "      o.emission = emiss; o.opacity = alpha; o.mask = 1.0;\n"
+      "      o.prm0 = uFldPrm[0]; o.prm1 = uFldPrm[1]; o.prm2 = uFldPrm[2]; o.prm3 = uFldPrm[3];\n"
+      "      fldMatDispatch(int(uFldProgram + 0.5), o, vLocalPos, n, vUv, uFldTime, vWorldPos, normalize(uCamPos - vWorldPos), vec4(gl_FrontFacing ? 0.0 : 1.0, 0.0, vWear.x, vWear.y), vec4(vWear.z, 0.0, 0.0, 0.0));\n"
+      "      vec3 dp1 = dFdx(vWorldPos), dp2 = dFdy(vWorldPos);\n"
+      "      vec2 duv1 = dFdx(vUv), duv2 = dFdy(vUv);\n"
+      "      float dhx = dFdx(o.height), dhy = dFdy(o.height);\n"
+      "      base = o.base; rough = clamp(o.roughness, 0.045, 1.0); metal = clamp(o.metallic, 0.0, 1.0);\n"
+      "      emiss = o.emission; alpha = o.opacity;\n"
+      "      if (o.mask < 0.5 || (uAlphaCutoff > 0.0 && alpha < uAlphaCutoff)) KILL_FRAGMENT;\n"
+      "      if (!hairHere) {\n"
+      "         vec3 dp2perp = cross(dp2, n), dp1perp = cross(n, dp1);\n"
+      "         vec3 t = dp2perp * duv1.x + dp1perp * duv2.x, bt = dp2perp * duv1.y + dp1perp * duv2.y;\n"
+      "         if (max(dot(t, t), dot(bt, bt)) > 1e-12) { t = normalize(t); bt = normalize(bt); }\n"
+      "         else { t = abs(n.z) < 0.999 ? normalize(cross(n, vec3(0.0, 0.0, 1.0))) : normalize(cross(n, vec3(1.0, 0.0, 0.0))); bt = normalize(cross(n, t)); }\n"
+      "         n = normalize(t * o.normal.x + bt * o.normal.y + n * o.normal.z);\n"
+      "         vec3 r1 = cross(dp2, n), r2 = cross(n, dp1);\n"
+      "         float det = dot(dp1, r1);\n"
+      "         vec3 nb = abs(det) * n - sign(det) * (dhx * r1 + dhy * r2);\n"
+      "         if (dot(nb, nb) > 1e-30) n = normalize(nb);\n"
+      "      }\n"
+      "   }\n"
+      "#endif\n"
       "\n"
       "   float nDotV = max(dot(n, viewDir), 1e-4);\n"
+      "   vec3 shN = n;\n"   // row 5.1: the sheen lobe leans along the uv tangent
+      "   if (uSheenDir != 0.0) { vec3 shT, shB; getCotangentFrame(n, vWorldPos, vUv, shT, shB); shN = sheenTilt(n, shT, uSheenDir); }\n"
+      "   float shNV = max(dot(shN, viewDir), 1e-4);\n"
+      "   float shMax = sh * max(uSheenColor.r, max(uSheenColor.g, uSheenColor.b));\n"
+      "   float shEv = shMax > 0.0 ? sheenE(shNV, uSheenRoughness) : 0.0;\n"
+      "   float shBase = 1.0 - shMax * shEv;\n"
       "   float iorF0 = pow((uIor - 1.0) / (uIor + 1.0), 2.0);\n"
       "   vec3 dielectricF0 = vec3(clamp(iorF0 * 2.0 * uSpecular, 0.0, 1.0));\n"
       "   vec3 f0 = mix(dielectricF0, base, metal);\n"
@@ -980,9 +1270,19 @@ namespace
       "   }\n"
       "\n"
       "   vec3 floorBounce = vec3(0.0);\n"
-      "   for (int i = 0; i < 8; i++) {\n"
+      // Subsurface (C9): light bleeds past the terminator by how far it scatters against how sharply the surface
+      // curves there, per channel: w = K * radius * curvature, diffuse (N.L + w) / (1 + w)^2 (energy conserving).
+      "   vec3 ssW = vec3(0.0);\n"
+      "   if (uSubsurface > 0.0) {\n"
+      "      vec3 sdn1 = dFdx(n), sdn2 = dFdy(n), sdp1 = dFdx(vWorldPos), sdp2 = dFdy(vWorldPos);\n"
+      "      float kap = sqrt((dot(sdn1, sdn1) + dot(sdn2, sdn2)) / max(dot(sdp1, sdp1) + dot(sdp2, sdp2), 1e-12));\n"
+      "      ssW = clamp(uSssK * uSssRadius * kap, 0.0, 1.0);\n"
+      "   }\n"
+      "   float frontD = (1.0 - uSubsurface) * (1.0 - uTranslucency);\n"
+      "   vec3 kD0 = (vec3(1.0) - f0) * (1.0 - metal) * ccAtten;\n"
+      "   for (int i = 0; i < 64; i++) {\n"
       "      if (i >= uLightCount) break;\n"
-      "      if ((uLightMask & (1 << i)) == 0) continue;\n"
+      "      if (i < 32 && (uLightMask & (1 << i)) == 0) continue;\n"
       "      if (uLightType[i] == 3) {\n"
       "         col += base * (1.0 - metal) * toLinear(uLightColor[i]) * uLightIntensity[i] * uLightTerms[i].x;\n"
       "         continue;\n"
@@ -1007,7 +1307,10 @@ namespace
       "         float tHit = dot(lp - vWorldPos, fwd) / min(rf, -0.05);\n"
       "         vec3 hit = vWorldPos + refl * max(tHit, 0.0);\n"
       "         vec3 rel = hit - lp;\n"
-      "         vec3 nearP = lp + rgt * clamp(dot(rel, rgt), -half2.x, half2.x) + upv * clamp(dot(rel, upv), -half2.y, half2.y);\n"
+      "         vec2 q = clamp(vec2(dot(rel, rgt), dot(rel, upv)), -half2, half2);\n"
+      // Area shape 1 (packed in the spot-angle slot): a disc or ellipse, so the nearest point is held inside it.
+      "         if (uLightSpotAngle[i] > 0.5) { vec2 e = q / half2; float el = length(e); if (el > 1.0) q /= el; }\n"
+      "         vec3 nearP = lp + rgt * q.x + upv * q.y;\n"
       "         lightDir = normalize(nearP - vWorldPos);\n"
       // The highlight comes from that point; the diffuse comes from the panel as a whole. Shading
       // it from the moving point printed the rectangle's clamp lines across floors and spheres.
@@ -1016,6 +1319,17 @@ namespace
       "         shadeDir = toCentre / max(dist, 1e-4);\n"
       "         attenuation = lightFalloff(dist, uLightTerms[i].w);\n"
       "         attenuation *= clamp(dot(-shadeDir, fwd) * 4.0, 0.0, 1.0);\n"
+      // Spread: every point of the panel casts its own cone, so average it over a 3x3 grid of the panel.
+      "         if (uLightSpotPenumbra[i] < 179.5) {\n"
+      "            float ks = 0.0;\n"
+      "            for (int gy = -1; gy <= 1; ++gy) for (int gx = -1; gx <= 1; ++gx) {\n"
+      "               vec2 g = vec2(float(gx), float(gy)) * 0.6667 * half2;\n"
+      "               if (uLightSpotAngle[i] > 0.5 && gx != 0 && gy != 0) g *= 0.7071;\n"
+      "               vec3 dp = normalize(vWorldPos - (lp + rgt * g.x + upv * g.y));\n"
+      "               ks += areaSpreadK(uLightSpotPenumbra[i], dot(dp, fwd));\n"
+      "            }\n"
+      "            attenuation *= ks / 9.0;\n"
+      "         }\n"
       "         if (uLightCutoff[i] > 0.0 && dist > uLightCutoff[i]) attenuation = 0.0;\n"
       "      } else if (uLightType[i] == 1 || uLightType[i] == 4) {\n"
       "         vec3 toLight = uLightDir[i] - vWorldPos;\n"
@@ -1034,9 +1348,17 @@ namespace
       "            if (smoothW > 0.0) spotAtten *= smoothstep(0.0, smoothW, cosCur - cosOuter);\n"
       "            attenuation *= spotAtten;\n"
       "         }\n"
+      "         if (uLightArea[i].y > 0.5) {\n"
+      "            int ir = (int(uLightArea[i].y + 0.5) - 1) * 32;\n"
+      "            float th = acos(clamp(dot(-lightDir, uLightAim[i]), -1.0, 1.0)) * (31.0 / 3.14159265);\n"
+      "            int v0 = min(int(th), 30), k0 = ir + v0, k1 = k0 + 1;\n"
+      "            attenuation *= max(mix(uIesTab[k0 >> 2][k0 & 3], uIesTab[k1 >> 2][k1 & 3], th - float(v0)), 0.0);\n"
+      "         }\n"
       "      } else {\n"
       "         lightDir = normalize(uLightDir[i]);\n"
       "      }\n"
+      // Fog (row 4.1): light reaching the surface crosses the medium (a sun all the way, a lamp up to itself).
+      "      if (uFog.x > 0.0) attenuation *= exp(-fogLightOD(vWorldPos, lightDir, (uLightType[i] == 0 || uLightType[i] == 2) ? 1e4 : length(uLightDir[i] - vWorldPos)));\n"
       "      vec3 halfway = normalize(lightDir + viewDir);\n"
       "      if (uLightType[i] != 5) shadeDir = lightDir;\n"
       "      float nDotL;\n"
@@ -1046,10 +1368,23 @@ namespace
       "      } else {\n"
       "         nDotL = max(dot(n, shadeDir), 0.0);\n"
       "      }\n"
-      "      float sssWrap = uSubsurfaceRadius * 0.5;\n"   // was saturated by half the slider
-      "      float sssNdotL = clamp((dot(n, lightDir) + sssWrap) / (1.0 + sssWrap), 0.0, 1.0);\n"
-      "      vec3 sssRadiance = toLinear(uLightColor[i]) * uLightIntensity[i] * attenuation;\n"
-      "      col += base * uSubsurfaceColor * sssNdotL * uSubsurface * sssRadiance * uLightTerms[i].x;\n"
+      "      if (hairHere) {\n"
+      "         vec3 hRad = toLinear(uLightColor[i]) * uLightIntensity[i] * attenuation;\n"
+      "         float hSh = (i == uShadowLight) ? shadowFactor(dot(n, shadeDir) < 0.0 ? -n : n, shadeDir) : 1.0;\n"
+      "         floorBounce += hRad * max(lightDir.y, 0.0) * uLightTerms[i].x;\n"
+      "         col += hairAvg(viewDir, shadeDir, hT, uHairSigma, clamp(uRoughness, 0.02, 1.0), uHairRadial, uHairShift, uIor) * hRad * hSh * uLightTerms[i].x * (uFurMesh == 1 ? 0.4 : 1.0);\n"
+      "         continue;\n"
+      "      }\n"
+      // The subsurface and translucent shares of the diffuse; the plain Lambert share is frontD below. The wrap band
+      // past the terminator is unshadowed (the shadow map has no thickness); the back side reads it from behind.
+      "      float nlS = dot(n, shadeDir);\n"
+      "      if (uSubsurface > 0.0 || uTranslucency > 0.0) {\n"
+      "         vec3 rX = toLinear(uLightColor[i]) * uLightIntensity[i] * attenuation;\n"
+      "         float sF = (i == uShadowLight && nlS > 0.0) ? shadowFactor(n, shadeDir) : 1.0;\n"
+      "         vec3 dX = (1.0 - uTranslucency) * uSubsurface * max(vec3(nlS) + ssW, 0.0) / ((1.0 + ssW) * (1.0 + ssW)) * sF;\n"
+      "         if (uTranslucency > 0.0 && nlS < 0.0) dX += uTranslucency * (-nlS) * ((i == uShadowLight) ? shadowFactor(-n, shadeDir) : 1.0);\n"
+      "         col += kD0 * base / 3.14159265 * dX * rX * uLightTerms[i].x * (gl_PrimitiveID >= uRibbonPrim ? 0.4 : 1.0);\n"
+      "      }\n"
       "      if (nDotL <= 0.0) continue;\n"
       "      float nDotH = max(dot(n, halfway), 0.0);\n"
       "\n"
@@ -1059,13 +1394,13 @@ namespace
       "      } else {\n"
       "         d = distributionGGX(nDotH, rough);\n"
       "      }\n"
-      "      float g = geometrySchlickGGX(nDotV, rough) * geometrySchlickGGX(nDotL, rough);\n"
+      "      float g = R3D_G2(nDotV, nDotL, rough);\n"
       "      vec3 f = fresnelSchlick(max(dot(halfway, viewDir), 0.0), f0);\n"
       "      if (uIridescence > 0.0) {\n"
-      "         vec3 irid = evalIridescence(nDotV, uIridescenceIor, uIridescenceThickness);\n"
-      "         f = mix(f, f * irid * 2.0, uIridescence);\n"
+      "         f *= thinFilmGain(nDotV, uIridescenceIor, uIridescenceThickness, f0, uIridescence);\n"
       "      }\n"
       "      vec3 specular = (d * g * f) / max(4.0 * nDotV * nDotL, 1e-7);\n"
+      "      specular *= ggxMs(f0, rough, nDotV);\n"
       "\n"
       // Every term is finite (ccRough >= 0.02), so with no clearcoat the lobe
       // is exactly 0 and skipping it changes no pixel - it is a GGX, two
@@ -1073,46 +1408,103 @@ namespace
       "      float clearcoatSpec = 0.0;\n"
       "      if (cc != 0.0) {\n"
       "         float ccD = distributionGGX(nDotH, ccRough);\n"
-      "         float ccG = geometrySchlickGGX(nDotV, ccRough) * geometrySchlickGGX(nDotL, ccRough);\n"
+      "         float ccG = R3D_G2(nDotV, nDotL, ccRough);\n"
       "         float ccF = 0.04 + 0.96 * pow(clamp(1.0 - max(dot(halfway, viewDir), 0.0), 0.0, 1.0), 5.0);\n"
       "         clearcoatSpec = (ccD * ccG * ccF) / max(4.0 * nDotV * nDotL, 1e-7) * cc;\n"
       "      }\n"
       "\n"
       "      vec3 sheenSpec = vec3(0.0);\n"
+      "      float shK = 1.0;\n"
       "      if (sh > 0.0) {\n"
-      "         float shD = distributionCharlie(nDotH, uSheenRoughness);\n"
-      // Charlie D with the Neubelt visibility term; without it the lobe was about 4x too bright.
-      "         float shV = 1.0 / max(4.0 * (nDotL + nDotV - nDotL * nDotV), 1e-4);\n"
-      "         sheenSpec = uSheenColor * shD * shV * sh;\n"
+      "         shK = shBase;\n"  // Cycles scales the base by the sheen albedo at the view angle only
+      "         float shL = uSheenDir != 0.0 ? max(dot(shN, lightDir), 0.0) : nDotL;\n"
+      "         sheenSpec = uSheenColor * sh * sheenLtc(shL, shNV, dot(lightDir, viewDir), uSheenRoughness) * (uSheenDir != 0.0 ? shL / max(nDotL, 1e-4) : 1.0);\n"
       "      }\n"
       "\n"
       "      vec3 kD = (vec3(1.0) - f) * (1.0 - metal) * ccAtten;\n"
       "      vec3 radiance = toLinear(uLightColor[i]) * uLightIntensity[i] * attenuation;\n"
       "      float shadow = (i == uShadowLight) ? shadowFactor(n, shadeDir) : 1.0;\n"
+      "      if (gPom) shadow *= pomShadow(mapUv, vec3(dot(lightDir, gPomT), dot(lightDir, gPomB), dot(lightDir, gPomN)));\n"
       // Floor bounce, no scene lookup: the light that reaches a floor under the point, at grey 0.5, lights
       // the normals that face down in proportion to how far down they face.
       "      floorBounce += radiance * max(lightDir.y, 0.0) * uLightTerms[i].x;\n"
-      "      col += (kD * base / 3.14159265 * uLightTerms[i].x + (specular * ccAtten + vec3(clearcoatSpec) + sheenSpec) * uLightTerms[i].y) * radiance * nDotL * shadow;\n"
+      "      col += ((kD * base / 3.14159265 * frontD * uLightTerms[i].x + specular * ccAtten * uLightTerms[i].y) * shK + (vec3(clearcoatSpec) + sheenSpec) * uLightTerms[i].y) * radiance * nDotL * shadow * (gl_PrimitiveID >= uRibbonPrim ? 0.4 : 1.0);\n"
       "      if (trans > 0.0) glassSpec += (specular + vec3(clearcoatSpec)) * radiance * nDotL * shadow * uLightTerms[i].z;\n"
       "   }\n"
       "\n"
-      "   col += base / 3.14159265 * floorBounce * (0.25 * (1.0 - n.y)) * (1.0 - metal) * ccAtten * ao;\n"
+      "   if (uHasProbes == 0) col += base / 3.14159265 * floorBounce * (0.25 * (1.0 - n.y)) * (1.0 - metal) * ccAtten * ao;\n"
       "   vec3 reflectDir = reflect(-viewDir, n);\n"
-      "   vec3 irradiance = sampleEnv(n, 1.0) * toLinear(uAmbient) * 3.0;\n"
+      "   vec3 probeR;\n"
+      "   vec3 irradiance = probeIrr(vWorldPos, n, reflectDir, probeR) * toLinear(uAmbient) * 3.0;\n"
+      // Raster has no strand self-shadowing: a strand's light, averaged root (buried) to tip (open), is ~0.4 of an open
+      // surface's, and what reaches it inside the coat has bounced off other strands (tinted by their colour).
+      "   if (gl_PrimitiveID >= uRibbonPrim) irradiance *= 0.4 * base;\n"
       "   vec3 reflection = sampleEnv(reflectDir, rough);\n"
+      // Reflections start from the probes' light along the mirror direction; the world's sharp detail
+      // over its blur is added in the share of the world the probes see that way.
+      "   float specVis = 1.0;\n"
+      "   vec3 envBlurR = sampleEnv(reflectDir, 1.0);\n"
+      "   if (uHasProbes == 1) {\n"
+      "      const vec3 lw = vec3(0.2126, 0.7152, 0.0722);\n"
+      "      specVis = clamp(dot(probeR, lw) / max(dot(envBlurR, lw), 1e-4), 0.0, 1.0);\n"
+      "      reflection = max(probeR + (reflection - envBlurR) * specVis, vec3(0.0));\n"
+      "   }\n"
       "   vec3 fAmbient = fresnelSchlickRoughness(nDotV, f0, rough);\n"
       "   if (uIridescence > 0.0) {\n"
-      "      vec3 irid = evalIridescence(nDotV, uIridescenceIor, uIridescenceThickness);\n"
-      "      fAmbient = mix(fAmbient, fAmbient * irid * 2.0, uIridescence);\n"
+      "      fAmbient *= thinFilmGain(nDotV, uIridescenceIor, uIridescenceThickness, f0, uIridescence);\n"
       "   }\n"
-      "   col += (vec3(1.0) - fAmbient) * (1.0 - metal) * base * irradiance * ao * ccAtten;\n"
-      "   col += reflection * fAmbient * ao * ccAtten;\n"
-      "   if (cc != 0.0) col += sampleEnv(reflectDir, ccRough) * (cc * ccFv) * ao;\n"
+      "   col += ((vec3(1.0) - fAmbient) * (1.0 - metal) * base * shBase + uSheenColor * (sh * shEv)) * irradiance * ao * ccAtten;\n"
+      "   col += reflection * fAmbient * ao * ccAtten * shBase;\n"
+      "   if (cc != 0.0) col += (uHasProbes == 1 ? max(probeR + (sampleEnv(reflectDir, ccRough) - envBlurR) * specVis, vec3(0.0)) : sampleEnv(reflectDir, ccRough)) * (cc * ccFv) * ao;\n"
       "   glassSpec += reflection * fAmbient * ao;\n"
       "\n"
       "   col += base * pow(1.0 - nDotV, 3.0) * uRim;\n"
       "   col += emiss;\n"
       "\n"
+      // Fog (row 4.1): single scattering of the sun along the view through the box, 12 jittered steps; at each the
+      // sun's shadow map gives the shaft and its own path through the medium dims it. Same shape as Metal's fogShape.
+      "   if (uFog.x > 0.0) {\n"
+      "      vec3 fd = vWorldPos - uCamPos; float fl = length(fd); fd /= max(fl, 1e-6);\n"
+      "      vec3 inv = 1.0 / mix(fd, vec3(1e-12), lessThan(abs(fd), vec3(1e-12)));\n"
+      "      vec3 ta = (uFogLo - uCamPos) * inv, tb = (uFogHi - uCamPos) * inv;\n"
+      "      vec3 tn = min(ta, tb), tf = max(ta, tb);\n"
+      "      float t0 = max(max(tn.x, tn.y), max(tn.z, 0.0)), t1 = min(min(tf.x, tf.y), min(tf.z, fl));\n"
+      "      if (t1 > t0) {\n"
+      "         float st = (t1 - t0) / 12.0;\n"
+      "         float jit = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));\n"
+      "         float od = 0.0; vec3 fin = vec3(0.0);\n"
+      "         for (int k = 0; k < 12; k++) {\n"
+      "            vec3 p = uCamPos + fd * (t0 + (float(k) + jit) * st);\n"
+      "            float dk = fogShapeGL(p);\n"
+      "            float Tv = exp(-(od + uFog.x * dk * jit * st));\n"
+      "            od += uFog.x * dk * st;\n"
+      "            if (dk <= 0.0) continue;\n"
+      // Skylight scattered in: the world's blurred zenith (horizon colour for a gradient world), dimmed by the fog above.
+      "            fin += dk * Tv * sampleEnv(vec3(0.0, 1.0, 0.0), 1.0) * exp(-fogLightOD(p, vec3(0.0, 1.0, 0.0), 1e4));\n"
+      "            for (int i = 0; i < 8; i++) {\n"
+      "               if (i >= uLightCount) break;\n"
+      "               if (uLightType[i] != 0 && uLightType[i] != 2) continue;\n"
+      "               vec3 ld = normalize(uLightDir[i]);\n"
+      "               float vis = 1.0;\n"
+      "               if (i == uShadowLight && uShadowsOn != 0) {\n"
+      "                  vec4 lp = uLightViewProj * vec4(p, 1.0);\n"
+      "                  vec3 pr = lp.xyz / max(lp.w, 1e-6) * 0.5 + 0.5;\n"
+      "                  if (pr.z <= 1.0 && all(greaterThanEqual(pr.xy, vec2(0.0))) && all(lessThanEqual(pr.xy, vec2(1.0))))\n"
+      "                     vis = mix(1.0, texture(uShadowMap, vec3(pr.xy, pr.z - uShadowBias)), uShadowStrength);\n"
+      "               }\n"
+      "               if (vis <= 0.0) continue;\n"
+
+      "               float g = uFog.y, c = dot(ld, fd);\n"
+      "               float ph = (1.0 - g * g) / (12.5663706 * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5));\n"
+      "               fin += dk * Tv * vis * exp(-fogLightOD(p, ld, 1e4)) * ph * toLinear(uLightColor[i]) * uLightIntensity[i];\n"
+      "            }\n"
+      "         }\n"
+      // Multiple scattering, as Metal's vis pass: 1 / (1 - a (1 - exp(-sigma D))), D the box's smallest extent.
+      "         vec3 fe = uFogHi - uFogLo;\n"
+      "         vec3 ms = 1.0 / (1.0 - uFogColor * (1.0 - exp(-uFog.x * mix(1.0, 0.2, uFog.z) * min(fe.x, min(fe.y, fe.z)))));\n"
+      "         col = col * exp(-od) + fin * (uFog.x * st) * uFogColor * ms;\n"
+      "      }\n"
+      "   }\n"
       "   col = toneDisplay(col * uExposure);\n"
       "   col = toSrgb(col) + ditherOffset();\n"
       "\n"
@@ -1149,6 +1541,36 @@ namespace
 
 const std::vector<std::string>& GeometryNode::ShapeNames() { return kShapeNames; }
 const std::vector<std::string>& GeometryNode::ShadingNames() { return kShadingNames; }
+
+// The Hair model's uniforms (the shader shades a Fur mesh's strands with it, the skin with the rest of the material).
+// Subsurface radius per channel in scene units (Blender's Subsurface Radius times Scale, as blender_scene.py maps it).
+static void SetSssUniforms(GLuint prog, const Material& m)
+{
+   float r[3];
+   for (int k = 0; k < 3; k++)
+      r[k] = std::max(m.subsurfaceColor[k], 0.0f) * 0.2f * std::max(m.subsurfaceRadius, 0.0f);
+   glUniform3fv(GLUtil::UniformLoc(prog, "uSssRadius"), 1, r);
+   glUniform1f(GLUtil::UniformLoc(prog, "uTranslucency"), std::clamp(m.translucency, 0.0f, 1.0f));
+   glUniform1f(GLUtil::UniformLoc(prog, "uSssK"), 4.0f); // curvature wrap gain, fitted on mat_subsurface (as live SSS_K)
+}
+
+static void SetHairUniforms(GLuint prog, const Material& m)
+{
+   glUniform1i(GLUtil::UniformLoc(prog, "uHair"), m.hair ? 1 : 0);
+   if (!m.hair)
+      return;
+   float lc[3], lt[3], sa[3];
+   for (int k = 0; k < 3; k++)
+   {
+      lc[k] = ColorSpace::SrgbToLinear(m.color[k]);
+      lt[k] = ColorSpace::SrgbToLinear(m.hairTint[k]);
+   }
+   const float bn = std::clamp(m.radialRoughness, 0.02f, 1.0f);
+   r3dhair::Sigma(m.hair, m.melanin, m.melaninRedness, lc, lt, bn, sa);
+   glUniform3fv(GLUtil::UniformLoc(prog, "uHairSigma"), 1, sa);
+   glUniform1f(GLUtil::UniformLoc(prog, "uHairRadial"), bn);
+   glUniform1f(GLUtil::UniformLoc(prog, "uHairShift"), m.hairShift * 0.017453293f);
+}
 
 GeometryNode::~GeometryNode()
 {
@@ -1285,6 +1707,7 @@ Material GeometryNode::GetMaterial() const
    m.sheenColor[1] = sheenColor[1];
    m.sheenColor[2] = sheenColor[2];
    m.sheenRoughness = sheenRoughness;
+   m.sheenDirection = sheenDirection;
    m.iridescence = iridescence;
    m.iridescenceIor = iridescenceIor;
    m.iridescenceThickness = iridescenceThickness;
@@ -1337,7 +1760,7 @@ const std::vector<std::string>& Render3DNode::SolidColorNames() { return kSolidC
 const std::vector<std::string>& Render3DNode::MatcapNames() { return kMatcapNames; }
 const std::vector<std::string>& Render3DNode::SampleNames() { return kSampleNames; }
 const std::vector<std::string>& Render3DNode::TonemapNames() { return kTonemapNames; }
-const std::vector<std::string>& Render3DNode::EngineNames() { return kEngineNames; }
+const std::vector<std::string>& Render3DNode::EngineNames() { return LiveEngineAvailable() ? kEngineNames : kEngineNamesGl; }
 int Render3DNode::PathTraceSampleCount() const { return std::clamp(ptSamples, 1, 4096); }
 const std::vector<std::string>& Render3DNode::ShadowQualityNames() { return kShadowQualityNames; }
 
@@ -1353,13 +1776,16 @@ void Render3DNode::RigLight::From(const LightNode& n)
    }
    type = n.type;
    // Unnormalized, an area light gives out more the bigger it is (1 x 1 = as normalized).
-   intensity = n.intensity * ((type == 5 && !n.normalize) ? std::max(0.01f, n.areaWidth * n.areaHeight) : 1.0f);
+   // A disc covers pi/4 of its width x height box.
+   intensity = n.intensity * ((type == 5 && !n.normalize) ? std::max(0.01f, n.areaWidth * n.areaHeight * (n.areaShape == 1 ? 0.78539816f : 1.0f)) : 1.0f);
    intensity *= std::exp2(n.exposure);
    cutoff = n.useCutoff ? std::max(0.001f, n.cutoffDistance) : 0.0f;
    spotAngle = n.spotAngle;
    spotPenumbra = n.spotPenumbra;
    areaW = n.areaWidth;
    areaH = n.areaHeight;
+   areaShape = n.areaShape == 1 ? 1 : 0;
+   areaSpread = std::clamp(n.areaSpread, 1.0f, 180.0f);
    diffuse = n.diffuse;
    specular = n.specular;
    transmission = n.transmission;
@@ -1368,6 +1794,7 @@ void Render3DNode::RigLight::From(const LightNode& n)
    shadowSoft = std::max(0.0f, n.shadowRadius) / 0.25f * std::max(0.0f, n.shadowFilter);
    shadowRes = n.shadowRes;
    shadowClip = n.shadowClip;
+   ies = (type == 1 || type == 4) ? n.iesFile : std::string();
 }
 const std::vector<std::string>& Render3DNode::SpriteShapeNames() { return kSpriteShapeNames; }
 const std::vector<std::string>& Render3DNode::SpriteSizeModeNames() { return kSpriteSizeModeNames; }
@@ -1414,6 +1841,7 @@ bool Render3DNode::EnsureShadowShader()
    glAttachShader(mShadowProgram, vert);
    glAttachShader(mShadowProgram, frag);
    glLinkProgram(mShadowProgram);
+   GLUtil::ForgetUniformLocations();
    glDeleteShader(vert);
    glDeleteShader(frag);
 
@@ -1508,6 +1936,7 @@ bool Render3DNode::EnsureEnvBgShader()
    glAttachShader(mEnvBgProgram, vert);
    glAttachShader(mEnvBgProgram, frag);
    glLinkProgram(mEnvBgProgram);
+   GLUtil::ForgetUniformLocations();
    glDeleteShader(vert);
    glDeleteShader(frag);
 
@@ -1619,7 +2048,11 @@ Render3DNode::~Render3DNode()
    ReleaseHdr();
    ReleasePano();
    ReleasePathTrace();
+   ReleaseProbes();
+   ReleaseEngine();
    ReleaseShadowTargets();
+   for (GLUtil::Fbo& f : mPassFbo)
+      GLUtil::DestroyFbo(f);
    for (GpuMesh& gpu : mGpu)
       ReleaseGpuMesh(gpu);
    if (mProgramFull != 0) glDeleteProgram(mProgramFull);
@@ -1636,6 +2069,7 @@ void Render3DNode::ReleaseGpuMesh(GpuMesh& gpu)
    if (gpu.instanceVbo != 0) { Bench::GpuMem::ReleaseBuffer(gpu.instanceVbo); glDeleteBuffers(1, &gpu.instanceVbo); gpu.instanceVbo = 0; }
    if (gpu.instanceColorVbo != 0) { Bench::GpuMem::ReleaseBuffer(gpu.instanceColorVbo); glDeleteBuffers(1, &gpu.instanceColorVbo); gpu.instanceColorVbo = 0; }
    if (gpu.vertexColorVbo != 0) { Bench::GpuMem::ReleaseBuffer(gpu.vertexColorVbo); glDeleteBuffers(1, &gpu.vertexColorVbo); gpu.vertexColorVbo = 0; }
+   if (gpu.wearVbo != 0) { Bench::GpuMem::ReleaseBuffer(gpu.wearVbo); glDeleteBuffers(1, &gpu.wearVbo); gpu.wearVbo = 0; }
    if (gpu.vao != 0) { glDeleteVertexArrays(1, &gpu.vao); gpu.vao = 0; }
    gpu = GpuMesh();
 }
@@ -1678,14 +2112,14 @@ static void BindGpuInstances(unsigned int program, const GpuPoints& gp, Instance
    glActiveTexture(GL_TEXTURE12);
    glBindTexture(GL_TEXTURE_2D, gp.colorTex);
    glActiveTexture(GL_TEXTURE0);
-   glUniform1i(glGetUniformLocation(program, "uPointPos"), 11);
-   glUniform1i(glGetUniformLocation(program, "uPointColor"), 12);
-   glUniform1i(glGetUniformLocation(program, "uPointTexW"), gp.texW);
-   glUniformMatrix4fv(glGetUniformLocation(program, "uPointModel"), 1, GL_FALSE, gp.pointMatrix.m);
-   glUniform1f(glGetUniformLocation(program, "uPointSizeScale"), instancer.GpuInstanceSizeScale());
-   glUniformMatrix4fv(glGetUniformLocation(program, "uInstanceGroup"), 1, GL_FALSE, groupMatrix.m);
+   glUniform1i(GLUtil::UniformLoc(program, "uPointPos"), 11);
+   glUniform1i(GLUtil::UniformLoc(program, "uPointColor"), 12);
+   glUniform1i(GLUtil::UniformLoc(program, "uPointTexW"), gp.texW);
+   glUniformMatrix4fv(GLUtil::UniformLoc(program, "uPointModel"), 1, GL_FALSE, gp.pointMatrix.m);
+   glUniform1f(GLUtil::UniformLoc(program, "uPointSizeScale"), instancer.GpuInstanceSizeScale());
+   glUniformMatrix4fv(GLUtil::UniformLoc(program, "uInstanceGroup"), 1, GL_FALSE, groupMatrix.m);
    const Mat4 shape = instancer.GpuInstanceShapeModel();
-   glUniformMatrix4fv(glGetUniformLocation(program, "uShapeModel"), 1, GL_FALSE, shape.m);
+   glUniformMatrix4fv(GLUtil::UniformLoc(program, "uShapeModel"), 1, GL_FALSE, shape.m);
 }
 
 bool Render3DNode::EnsureShader()
@@ -1719,9 +2153,11 @@ bool Render3DNode::EnsureShader()
       glBindAttribLocation(program, 3, "aInstance"); // occupies locations 3..6
       glBindAttribLocation(program, 7, "aInstanceColor");
       glBindAttribLocation(program, 8, "aVertexColor");
+      glBindAttribLocation(program, 9, "aWear");
       glAttachShader(program, vert);
       glAttachShader(program, frag);
       glLinkProgram(program);
+      GLUtil::ForgetUniformLocations();
 
       GLint linked = 0;
       glGetProgramiv(program, GL_LINK_STATUS, &linked);
@@ -1737,9 +2173,15 @@ bool Render3DNode::EnsureShader()
    };
 
    const unsigned int vert = compile(GL_VERTEX_SHADER, kVertSrc);
-   const unsigned int frag = compile(GL_FRAGMENT_SHADER, kFragSrc);
+   std::string fragSrc = R3dAbGlsl(kFragSrc); // with the active A/B switches (Render3DAb.h)
+   if (!mFldGlsl.empty())
+   {
+      const size_t at = fragSrc.find("//@FLD_MAT_LIB@");
+      if (at != std::string::npos) fragSrc.insert(at, mFldGlsl);
+   }
+   const unsigned int frag = compile(GL_FRAGMENT_SHADER, fragSrc.c_str());
    // The same source with INF_NO_DISCARD defined after the #version line.
-   std::string opaqueSrc = kFragSrc;
+   std::string opaqueSrc = fragSrc;
    opaqueSrc.insert(opaqueSrc.find('\n') + 1, "#define INF_NO_DISCARD\n");
    const unsigned int opaqueFrag = compile(GL_FRAGMENT_SHADER, opaqueSrc.c_str());
    if (vert != 0 && frag != 0)
@@ -1759,7 +2201,7 @@ bool Render3DNode::EnsureShader()
 bool Render3DNode::EnsureResources(int w, int h, int sampleCount)
 {
    // HDR needs the float target to hold light above 1.0 until the tonemap at the end.
-   const bool wantFloat = floatOutput || HdrActive();
+   const bool wantFloat = floatOutput || HdrActive() || mPassKeepFloat;
    if (mFbo != 0 && mWidth == w && mHeight == h && mActiveSamples == sampleCount && mFloatTarget == wantFloat)
       return true;
 
@@ -2046,6 +2488,8 @@ void Render3DNode::CookIfNeeded(int frameId)
       CookPano(frameId);
       return;
    }
+   if (passes && renderPass == 0)
+      CookPasses(frameId);
    if (mCubeColor != 0 || mPano.tex != 0)   // projection went back to Perspective: give the cube memory back
       ReleasePanoTargets();
    mPanoValid = false;
@@ -2076,11 +2520,77 @@ void Render3DNode::CookIfNeeded(int frameId)
    }
    else if (mPathTrace != nullptr)
       ReleasePathTrace();
+   // Owner opt-in until the face toggle is approved; a number 2..15 also sets liveEngineFeatures (1 = defaults).
+   static const char* sEngineEnvValue = std::getenv("INFINITE_LIVE_ENGINE");
+   static const bool sEngineEnv = sEngineEnvValue != nullptr;
+   if (engine >= 2 && !liveEngine)
+      liveEngineFeatures = engine == 3 ? 15 : 7;
+   if (sEngineEnv && std::atoi(sEngineEnvValue) > 1)
+      liveEngineFeatures = std::atoi(sEngineEnvValue) & 15;
+   if ((LiveActive() || sEngineEnv) && renderPass == 0 && mFaceOverride < 0 && !SolidActive())
+   {
+      // Live on export: Supersample averages jittered live frames, as the raster export does (Settle traces its own
+      // sub-pixel samples). Pixel-thin geometry such as fur strands needs it.
+      if (supersample > 1 && !mInAccumulate && (liveEngineFeatures & 8) == 0 && Transport::Instance().IsOfflineMode())
+      {
+         mAccumEngine = true;
+         const bool ok = Accumulate(frameId);
+         mAccumEngine = false;
+         if (ok)
+            return;
+      }
+      if (CookEngine(frameId))
+         return;
+   }
    // Supersampling only ever adds passes on an offline render; a live cook is
    // always the single pass so the real-time cost never changes.
    if (supersample > 1 && !mInAccumulate && renderPass == 0 && Transport::Instance().IsOfflineMode() && Accumulate(frameId))
       return;
    CookOnce(frameId);
+}
+
+const char* Render3DNode::OutputLabel(int index) const
+{
+   static const char* kNames[] = { "image", "depth", "normal", "albedo", "mask", "id" };
+   return (passes && index >= 0 && index < 6) ? kNames[index] : "out";
+}
+
+unsigned int Render3DNode::GetOutputTexture(int index)
+{
+   if (index == 0) return GetOutputTexture();
+   return (passes && index >= 1 && index <= 5 && mPassValid) ? mPassFbo[index - 1].tex : 0;
+}
+
+// Row 7.3: the pass outputs, each drawn by the raster data pass of that name into the shared target, then copied
+// out, before the image (any engine) is drawn. Redrawn only when the scene changed, or on every export frame.
+void Render3DNode::CookPasses(int frameId)
+{
+   const SceneSignature sig = BuildSceneSignature();
+   if (mPassValid && sig == mPassSig && !Transport::Instance().IsOfflineMode())
+      return;
+   static const int kPass[5] = { 1, 3, 11, 12, 13 }; // depth, normal, albedo, mask, id
+   const int keepSamples = samples;
+   if (LiveActive()) samples = 0; // the live image draws single-sample: the shared target keeps its shape
+   mPassKeepFloat = floatOutput || HdrActive();
+   const int w = GLUtil::TargetSide(width, 16), h = GLUtil::TargetSide(height, 16);
+   mPassValid = true;
+   for (int k = 0; k < 5; k++)
+   {
+      renderPass = kPass[k];
+      mHasSceneBuilt = false;
+      CookOnce(frameId);
+      if (mFbo == 0 || !GLUtil::EnsureFbo(mPassFbo[k], w, h, GL_RGBA16F, "Render3D_Pass")) { mPassValid = false; continue; }
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, mFbo);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, mPassFbo[k].fbo);
+      glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+      glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+   }
+   renderPass = 0;
+   samples = keepSamples;
+   mPassKeepFloat = false;
+   mHasSceneBuilt = false; // the image draws over the shared target next
+   mPassSig = sig;
 }
 
 // This frame's world to last frame's for one source; still when it was not drawn last frame.
@@ -2090,6 +2600,70 @@ Mat4 Render3DNode::MotionDelta(const void* source, const Mat4& model)
       mCurModel[source] = model;
    auto found = mPrevModel.find(source);
    return found != mPrevModel.end() ? Mat4::Multiply(found->second, Mat4::Inverse(model)) : Mat4::Identity();
+}
+
+// Row 1.3: the Field material programs the drawn sources use. A new set relinks the forward programs with their
+// library; a library that fails to compile relinks without it (the knobs draw).
+namespace
+{
+   // "" when the fragment shader compiles with this material library spliced in, else "GLSL: " + its first error line.
+   std::string FragmentErrorWith(const char* frag, const std::string& lib)
+   {
+      std::string src = R3dAbGlsl(frag);
+      const size_t at = src.find("//@FLD_MAT_LIB@");
+      if (at != std::string::npos) src.insert(at, lib);
+      const char* p = src.c_str();
+      const unsigned int sh = glCreateShader(GL_FRAGMENT_SHADER);
+      glShaderSource(sh, 1, &p, nullptr);
+      glCompileShader(sh);
+      GLint ok = 0;
+      glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+      std::string e;
+      if (!ok)
+      {
+         char log[1024] = { 0 };
+         glGetShaderInfoLog(sh, sizeof(log), nullptr, log);
+         e = log;
+         e = "GLSL: " + e.substr(0, std::min(e.find('\n'), (size_t)160));
+      }
+      glDeleteShader(sh);
+      return e;
+   }
+}
+
+void Render3DNode::SyncFieldPrograms()
+{
+   std::vector<int> ids;
+   for (IGeometrySource* s : FlattenedGeometry())
+      if (s != nullptr)
+         if (const int id = s->GetMaterial().fieldProgram) ids.push_back(id);
+   unsigned long long key = 0;
+   std::string lib = Field::BuildMaterialLibrary(ids, Field::MaterialLang::Glsl, key);
+   if (key == mFldKey)
+      return;
+   mFldKey = key;
+   mFldGlsl = std::move(lib);
+   if (mProgramFull != 0) glDeleteProgram(mProgramFull);
+   if (mProgramOpaque != 0) glDeleteProgram(mProgramOpaque);
+   mProgramFull = mProgramOpaque = mProgram = 0;
+   mShaderTried = false;
+   if (!EnsureShader() && !mFldGlsl.empty())
+   {
+      // row 1.5: mark the programs that fail alone (their materials draw the knobs), build the rest
+      Field::IsolateFailingPrograms(ids, Field::MaterialLang::Glsl,
+                                    [](const std::string& one) { return FragmentErrorWith(kFragSrc, one); });
+      mFldGlsl = Field::BuildMaterialLibrary(ids, Field::MaterialLang::Glsl, mFldKey);
+      if (mProgramFull != 0) glDeleteProgram(mProgramFull);
+      if (mProgramOpaque != 0) glDeleteProgram(mProgramOpaque);
+      mProgramFull = mProgramOpaque = mProgram = 0;
+      mShaderTried = false;
+      if (!EnsureShader() && !mFldGlsl.empty())
+      {
+         mFldGlsl.clear();
+         mShaderTried = false;
+         EnsureShader();
+      }
+   }
 }
 
 void Render3DNode::CookOnce(int frameId)
@@ -2125,6 +2699,11 @@ void Render3DNode::CookOnce(int frameId)
       if (auto* node = dynamic_cast<INode*>(mDraw[i]))
          node->CookIfNeeded(frameId);
    }
+   // After the geometry cooks: a Material's Field Pixel registers its program in that cook, so a one-frame render
+   // (row 1.4) has the program in the shader on frame 1.
+   SyncFieldPrograms();
+   if (!EnsureShader())
+      return;
 
    // An Environment node patched into the env slot. envInput is an ordinary
    // image cable, but the environment sample needs more than a texture handle
@@ -2266,6 +2845,25 @@ void Render3DNode::CookOnce(int frameId)
    float lightArea[kMaxLights * 2];
    float lightTerms[kMaxLights * 4];
    float lightCutoff[kMaxLights] = {};
+   float iesTab[128] = {};
+   std::vector<const std::vector<float>*> iesRows;
+   // Row 4.2: a light's IES profile, azimuth-averaged into one of four 32-sample rows.
+   auto iesSlot = [&](const RigLight& l) -> float
+   {
+      if (l.ies.empty() || !(l.type == 1 || l.type == 4)) return 0.0f;
+      auto tab = engine::LoadIes(AppPaths::FsPath(l.ies));
+      if (!tab) return 0.0f;
+      for (size_t k = 0; k < iesRows.size(); k++) if (iesRows[k] == tab.get()) return float(k + 1);
+      if (iesRows.size() >= 4) return 0.0f;
+      const size_t r = iesRows.size(); iesRows.push_back(tab.get());
+      for (int v = 0; v < engine::kIesV; v++)
+      {
+         float sum = 0.0f;
+         for (int h = 0; h < engine::kIesH; h++) sum += (*tab)[(size_t)(h * engine::kIesV + v)];
+         iesTab[r * 32 + (size_t)v] = sum / (float)engine::kIesH;
+      }
+      return float(r + 1);
+   };
    RigLight caster;   // the first light's shadow settings; the built-in light keeps the defaults
    for (int i = 0; i < kMaxLights; i++)
    {
@@ -2290,13 +2888,15 @@ void Render3DNode::CookOnce(int frameId)
          }
          lightPower[lightCount] = l.intensity;
          lightTypes[lightCount] = l.type;
-         lightSpotAngle[lightCount] = l.spotAngle;
-         lightSpotPenumbra[lightCount] = l.spotPenumbra;
+         // An area light carries its shape and spread in the spot slots (as the GPU light record does).
+         lightSpotAngle[lightCount] = l.type == 5 ? float(l.areaShape) : l.spotAngle;
+         lightSpotPenumbra[lightCount] = l.type == 5 ? l.areaSpread : l.spotPenumbra;
          lightArea[lightCount * 2 + 0] = std::max(0.01f, l.areaW);
          lightArea[lightCount * 2 + 1] = std::max(0.01f, l.areaH);
          const float terms[4] = { l.diffuse, l.specular, l.transmission, l.falloff };
          std::memcpy(&lightTerms[lightCount * 4], terms, sizeof(terms));
          lightCutoff[lightCount] = l.cutoff;
+         if (l.type == 1 || l.type == 4) lightArea[lightCount * 2 + 1] = iesSlot(l);
          if (lightCount == 0)
             caster = l;
          lightCount++;
@@ -2319,13 +2919,15 @@ void Render3DNode::CookOnce(int frameId)
       std::memcpy(&lightCols[lightCount * 3], l.color, sizeof(l.color));
       lightPower[lightCount] = l.intensity;
       lightTypes[lightCount] = l.type;
-      lightSpotAngle[lightCount] = l.spotAngle;
-      lightSpotPenumbra[lightCount] = l.spotPenumbra;
+      // An area light carries its shape and spread in the spot slots (as the GPU light record does).
+      lightSpotAngle[lightCount] = l.type == 5 ? float(l.areaShape) : l.spotAngle;
+      lightSpotPenumbra[lightCount] = l.type == 5 ? l.areaSpread : l.spotPenumbra;
       lightArea[lightCount * 2 + 0] = std::max(0.01f, l.areaW);
       lightArea[lightCount * 2 + 1] = std::max(0.01f, l.areaH);
       const float terms[4] = { l.diffuse, l.specular, l.transmission, l.falloff };
       std::memcpy(&lightTerms[lightCount * 4], terms, sizeof(terms));
       lightCutoff[lightCount] = l.cutoff;
+      if (l.type == 1 || l.type == 4) lightArea[lightCount * 2 + 1] = iesSlot(l);
       if (lightCount == 0)
          caster = l;
       lightCount++;
@@ -2373,6 +2975,10 @@ void Render3DNode::CookOnce(int frameId)
    if (!mVelocityPass && mFaceOverride < 0)
       StashPathTraceLights(lightCount, lightTypes, lightDirs, lightAims, lightCols, lightPower, lightSpotAngle,
                            lightSpotPenumbra, lightArea, lightTerms, lightCutoff);
+   // Probes light raster's own frames; the tracers find their own bounce light.
+   static const bool sEngineEnvSet = std::getenv("INFINITE_LIVE_ENGINE") != nullptr;
+   if (!mVelocityPass && mFaceOverride < 0 && !PathTraceActive() && !LiveActive() && !sEngineEnvSet && !SolidActive() && !probesOff)
+      UpdateProbes(sceneSig);
 
    // --- shadow pass ---------------------------------------------------
    // Depth from the light's point of view, rendered before the main pass and
@@ -2473,13 +3079,14 @@ void Render3DNode::CookOnce(int frameId)
          glDisable(GL_CULL_FACE);
 
          glUseProgram(mShadowProgram);
-         glUniformMatrix4fv(glGetUniformLocation(mShadowProgram, "uLightViewProj"),
+         glUniformMatrix4fv(GLUtil::UniformLoc(mShadowProgram, "uLightViewProj"),
                             1, GL_FALSE, mLightViewProj.m);
 
          for (int i = 0; i < (int)mDraw.size(); i++)
          {
             IGeometrySource* source = mDraw[i];
-            if (source == nullptr || mGpu[i].vao == 0 || mGpu[i].indexCount == 0 || !source->CastsShadow())
+            if (source == nullptr || mGpu[i].vao == 0 || mGpu[i].indexCount == 0 || !source->CastsShadow() ||
+                (ci < 32 && ((source->ShadowMask() >> ci) & 1u) == 0)) // row 4.2: shadow linking
                continue;
             glBindVertexArray(mGpu[i].vao);
             const Mat4 model = source->GetModelMatrix();
@@ -2488,16 +3095,22 @@ void Render3DNode::CookOnce(int frameId)
             const int instanceCount = gpuInstances != nullptr ? gpuInstances->count : mGpu[i].instanceCount;
             const bool instanced = instancer != nullptr && instanceCount > 0 &&
                                    (mGpu[i].instanceAttribsOn || gpuInstances != nullptr);
-            glUniformMatrix4fv(glGetUniformLocation(mShadowProgram, "uModel"), 1, GL_FALSE, model.m);
-            glUniform1i(glGetUniformLocation(mShadowProgram, "uInstanced"), instanced ? 1 : 0);
-            glUniform1i(glGetUniformLocation(mShadowProgram, "uGpuPoints"), (instanced && gpuInstances) ? 1 : 0);
+            glUniformMatrix4fv(GLUtil::UniformLoc(mShadowProgram, "uModel"), 1, GL_FALSE, model.m);
+            glUniform1i(GLUtil::UniformLoc(mShadowProgram, "uInstanced"), instanced ? 1 : 0);
+            glUniform1i(GLUtil::UniformLoc(mShadowProgram, "uGpuPoints"), (instanced && gpuInstances) ? 1 : 0);
             if (instanced && gpuInstances != nullptr)
                BindGpuInstances(mShadowProgram, *gpuInstances, *instancer, source->GetInstanceGroupMatrix());
+            // Fur's strands stay out: a shadow map can't resolve them, and they would blot the coat.
+            const Mesh& shadowMesh = source->GetMesh();
+            const GLsizei castCount = shadowMesh.twoSided ? (GLsizei)std::min<unsigned>(mGpu[i].indexCount, shadowMesh.ribbonStart)
+                                                          : (GLsizei)mGpu[i].indexCount;
+            if (castCount == 0)
+               continue;
             if (instanced)
-               glDrawElementsInstanced(GL_TRIANGLES, mGpu[i].indexCount, GL_UNSIGNED_INT,
+               glDrawElementsInstanced(GL_TRIANGLES, castCount, GL_UNSIGNED_INT,
                                        nullptr, (GLsizei)instanceCount);
             else
-               glDrawElements(GL_TRIANGLES, mGpu[i].indexCount, GL_UNSIGNED_INT, nullptr);
+               glDrawElements(GL_TRIANGLES, castCount, GL_UNSIGNED_INT, nullptr);
          }
 
          glBindVertexArray(0);
@@ -2542,7 +3155,7 @@ void Render3DNode::CookOnce(int frameId)
       glClearColor(1.0f, 1.0f, 1.0f, bgOpacity);
    else if (renderPass == 3)
       glClearColor(0.5f, 0.5f, 0.5f, bgOpacity);
-   else if (renderPass == 6 || renderPass == 7 || renderPass == 10)
+   else if (renderPass == 6 || renderPass == 7 || renderPass == 10 || renderPass >= 11)
       glClearColor(0.0f, 0.0f, 0.0f, bgOpacity);
    else
       glClearColor(bgColor[0], bgColor[1], bgColor[2], bgOpacity);
@@ -2554,7 +3167,9 @@ void Render3DNode::CookOnce(int frameId)
    // follows simply paints over it in the usual way.
    // A data pass keeps its own clear value; the Environment pass always shows the world,
    // the gradient one when no HDRI is patched in.
-   mEnvBgDrawn = ((hasEnvMap && envAsBackground && renderPass == 0) || renderPass == 10) && !mVelocityPass;
+   // Row 4.1: with fog on, the plain clear colour is drawn by the same shader so the fog lies in front of it too.
+   const bool fogPlainBg = renderPass == 0 && fogDensity > 0.0f && !(hasEnvMap && envAsBackground);
+   mEnvBgDrawn = ((hasEnvMap && envAsBackground && renderPass == 0) || renderPass == 10 || fogPlainBg) && !mVelocityPass;
    if (mEnvBgDrawn && EnsureEnvBgShader())
    {
       if (mEnvBgVao == 0)
@@ -2567,20 +3182,29 @@ void Render3DNode::CookOnce(int frameId)
       glDepthMask(GL_FALSE);
 
       glUseProgram(mEnvBgProgram);
-      glUniformMatrix4fv(glGetUniformLocation(mEnvBgProgram, "uInvViewProj"), 1, GL_FALSE, invViewProj.m);
-      glUniform3fv(glGetUniformLocation(mEnvBgProgram, "uCamPos"), 1, eye);
+      glUniformMatrix4fv(GLUtil::UniformLoc(mEnvBgProgram, "uInvViewProj"), 1, GL_FALSE, invViewProj.m);
+      glUniform3fv(GLUtil::UniformLoc(mEnvBgProgram, "uCamPos"), 1, eye);
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, envTex);
-      glUniform1i(glGetUniformLocation(mEnvBgProgram, "uEnvMap"), 0);
-      glUniform1i(glGetUniformLocation(mEnvBgProgram, "uHasEnvMap"), hasEnvMap ? 1 : 0);
-      glUniform1f(glGetUniformLocation(mEnvBgProgram, "uEnvRotation"), envRotationRad);
-      glUniform3fv(glGetUniformLocation(mEnvBgProgram, "uEnvSky"), 1, envSky);
-      glUniform3fv(glGetUniformLocation(mEnvBgProgram, "uEnvHorizon"), 1, envHorizon);
-      glUniform3fv(glGetUniformLocation(mEnvBgProgram, "uEnvGround"), 1, envGround);
-      glUniform1f(glGetUniformLocation(mEnvBgProgram, "uEnvIntensity"), envIntensity * envHdriIntensity);
-      glUniform1f(glGetUniformLocation(mEnvBgProgram, "uExposure"), exposure);
-      glUniform1i(glGetUniformLocation(mEnvBgProgram, "uTonemap"), HdrActive() ? 0 : tonemap);
-      glUniform1f(glGetUniformLocation(mEnvBgProgram, "uBgOpacity"), bgOpacity);
+      glUniform1i(GLUtil::UniformLoc(mEnvBgProgram, "uEnvMap"), 0);
+      glUniform1i(GLUtil::UniformLoc(mEnvBgProgram, "uHasEnvMap"), hasEnvMap ? 1 : 0);
+      glUniform1f(GLUtil::UniformLoc(mEnvBgProgram, "uEnvRotation"), envRotationRad);
+      glUniform3fv(GLUtil::UniformLoc(mEnvBgProgram, "uEnvSky"), 1, envSky);
+      {
+         float fc[3];
+         for (int k = 0; k < 3; k++) fc[k] = ColorSpace::SrgbToLinear(std::clamp(fogColor[k], 0.0f, 1.0f));
+         glUniform4f(GLUtil::UniformLoc(mEnvBgProgram, "uFog"), std::max(0.0f, fogDensity), 0.0f, std::clamp(fogFalloff, 0.0f, 1.0f), 0.0f);
+         glUniform3fv(GLUtil::UniformLoc(mEnvBgProgram, "uFogLo"), 1, fogMin);
+         glUniform3fv(GLUtil::UniformLoc(mEnvBgProgram, "uFogHi"), 1, fogMax);
+         glUniform3fv(GLUtil::UniformLoc(mEnvBgProgram, "uFogColor"), 1, fc);
+         glUniform4f(GLUtil::UniformLoc(mEnvBgProgram, "uPlainBg"), bgColor[0], bgColor[1], bgColor[2], fogPlainBg ? 1.0f : 0.0f);
+      }
+      glUniform3fv(GLUtil::UniformLoc(mEnvBgProgram, "uEnvHorizon"), 1, envHorizon);
+      glUniform3fv(GLUtil::UniformLoc(mEnvBgProgram, "uEnvGround"), 1, envGround);
+      glUniform1f(GLUtil::UniformLoc(mEnvBgProgram, "uEnvIntensity"), envIntensity * envHdriIntensity);
+      glUniform1f(GLUtil::UniformLoc(mEnvBgProgram, "uExposure"), exposure);
+      glUniform1i(GLUtil::UniformLoc(mEnvBgProgram, "uTonemap"), HdrActive() ? 0 : tonemap);
+      glUniform1f(GLUtil::UniformLoc(mEnvBgProgram, "uBgOpacity"), bgOpacity);
 
       glBindVertexArray(mEnvBgVao);
       glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -2628,60 +3252,90 @@ void Render3DNode::CookOnce(int frameId)
          continue;
       mProgram = program;
       glUseProgram(mProgram);
-      glUniformMatrix4fv(glGetUniformLocation(mProgram, "uViewProj"), 1, GL_FALSE, viewProj.m);
-      glUniformMatrix4fv(glGetUniformLocation(mProgram, "uView"), 1, GL_FALSE, view.m);
-      glUniform3fv(glGetUniformLocation(mProgram, "uCamRight"), 1, camRight);
-      glUniform3fv(glGetUniformLocation(mProgram, "uCamUp"), 1, camUp);
-      glUniform1i(glGetUniformLocation(mProgram, "uSpriteShape"), spriteShape);
-      glUniform1i(glGetUniformLocation(mProgram, "uSpriteSizeMode"), spriteSizeMode);
-      glUniform3fv(glGetUniformLocation(mProgram, "uLightDir"), kMaxLights, lightDirs);
-      glUniform3fv(glGetUniformLocation(mProgram, "uLightAim"), kMaxLights, lightAims);
-      glUniform1i(glGetUniformLocation(mProgram, "uWire"), rig != nullptr && rig->wireframe ? 1 : 0);
-      glUniform3fv(glGetUniformLocation(mProgram, "uLightColor"), kMaxLights, lightCols);
-      glUniform1fv(glGetUniformLocation(mProgram, "uLightIntensity"), kMaxLights, lightPower);
-      glUniform1iv(glGetUniformLocation(mProgram, "uLightType"), kMaxLights, lightTypes);
-      glUniform1fv(glGetUniformLocation(mProgram, "uLightSpotAngle"), kMaxLights, lightSpotAngle);
-      glUniform1fv(glGetUniformLocation(mProgram, "uLightSpotPenumbra"), kMaxLights, lightSpotPenumbra);
-      glUniform2fv(glGetUniformLocation(mProgram, "uLightArea"), kMaxLights, lightArea);
-      glUniform4fv(glGetUniformLocation(mProgram, "uLightTerms"), kMaxLights, lightTerms);
-      glUniform1fv(glGetUniformLocation(mProgram, "uLightCutoff"), kMaxLights, lightCutoff);
-      glUniform1i(glGetUniformLocation(mProgram, "uLightCount"), lightCount);
+      glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uViewProj"), 1, GL_FALSE, viewProj.m);
+      glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uView"), 1, GL_FALSE, view.m);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uCamRight"), 1, camRight);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uCamUp"), 1, camUp);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uSpriteShape"), spriteShape);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uSpriteSizeMode"), spriteSizeMode);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uLightDir"), kMaxLights, lightDirs);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uLightAim"), kMaxLights, lightAims);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uWire"), rig != nullptr && rig->wireframe ? 1 : 0);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uLightColor"), kMaxLights, lightCols);
+      glUniform1fv(GLUtil::UniformLoc(mProgram, "uLightIntensity"), kMaxLights, lightPower);
+      glUniform1iv(GLUtil::UniformLoc(mProgram, "uLightType"), kMaxLights, lightTypes);
+      glUniform1fv(GLUtil::UniformLoc(mProgram, "uLightSpotAngle"), kMaxLights, lightSpotAngle);
+      glUniform1fv(GLUtil::UniformLoc(mProgram, "uLightSpotPenumbra"), kMaxLights, lightSpotPenumbra);
+      glUniform2fv(GLUtil::UniformLoc(mProgram, "uLightArea"), kMaxLights, lightArea);
+      glUniform4fv(GLUtil::UniformLoc(mProgram, "uLightTerms"), kMaxLights, lightTerms);
+      glUniform1fv(GLUtil::UniformLoc(mProgram, "uLightCutoff"), kMaxLights, lightCutoff);
+      glUniform4fv(GLUtil::UniformLoc(mProgram, "uIesTab"), 32, iesTab);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uLightCount"), lightCount);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uFldTime"), (float)Transport::Instance().Seconds());
       const float rigAmbient[3] = { ambientColor[0] + (rig != nullptr ? rig->ambient[0] : 0.0f),
                                     ambientColor[1] + (rig != nullptr ? rig->ambient[1] : 0.0f),
                                     ambientColor[2] + (rig != nullptr ? rig->ambient[2] : 0.0f) };
-      glUniform3fv(glGetUniformLocation(mProgram, "uAmbient"), 1, rigAmbient);
-      glUniform1f(glGetUniformLocation(mProgram, "uRim"), rimIntensity);
-      glUniform3fv(glGetUniformLocation(mProgram, "uCamPos"), 1, eye);
-      glUniform1f(glGetUniformLocation(mProgram, "uExposure"), exposure);
-      glUniform1i(glGetUniformLocation(mProgram, "uTonemap"), HdrActive() ? 0 : tonemap);
-      glUniform1i(glGetUniformLocation(mProgram, "uRenderPass"), renderPass);
-      glUniform1i(glGetUniformLocation(mProgram, "uVelocity"), mVelocityPass ? 1 : 0);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uAmbient"), 1, rigAmbient);
+      {
+         const bool probes = mProbeValid && mProbeTex != 0 && !probesOff;
+         glActiveTexture(GL_TEXTURE16);
+         glBindTexture(GL_TEXTURE_3D, probes ? mProbeTex : 0);
+         glBindSampler(16, 0);
+         glActiveTexture(GL_TEXTURE0);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uProbeTex"), 16);
+         glActiveTexture(GL_TEXTURE17);
+         glBindTexture(GL_TEXTURE_3D, probes ? mProbeDepthTex : 0);
+         glBindSampler(17, 0);
+         glActiveTexture(GL_TEXTURE0);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uProbeDepth"), 17);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uHasProbes"), probes ? 1 : 0);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uProbeLo"), 1, mProbeLo);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uProbeStep"), 1, mProbeStep);
+         glUniform3iv(GLUtil::UniformLoc(mProgram, "uProbeDims"), 1, mProbeDims);
+      }
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uRim"), rimIntensity);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uCamPos"), 1, eye);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uExposure"), exposure);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uTonemap"), HdrActive() ? 0 : tonemap);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uRenderPass"), renderPass);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uPassMask"), passMask);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uVelocity"), mVelocityPass ? 1 : 0);
       if (mVelocityPass)
       {
          const float reach = std::max(1.0f, motionMax * (float)h / 1080.0f);
-         glUniform2f(glGetUniformLocation(mProgram, "uVelocityScale"), 0.5f * (float)w / (2.0f * reach),
+         glUniform2f(GLUtil::UniformLoc(mProgram, "uVelocityScale"), 0.5f * (float)w / (2.0f * reach),
                      0.5f * (float)h / (2.0f * reach));
-         glUniformMatrix4fv(glGetUniformLocation(mProgram, "uPrevViewProj"), 1, GL_FALSE, mPrevViewProj.m);
+         glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uPrevViewProj"), 1, GL_FALSE, mPrevViewProj.m);
       }
-      glUniform1f(glGetUniformLocation(mProgram, "uMistStart"), mistStart);
-      glUniform1f(glGetUniformLocation(mProgram, "uMistDepth"), mistDepth);
-      glUniform1f(glGetUniformLocation(mProgram, "uMistFalloff"), mistFalloff == 1 ? 1.0f : mistFalloff == 2 ? 0.5f : 2.0f);
-      glUniform1f(glGetUniformLocation(mProgram, "uMistIntensity"), mistIntensity);
-      glUniform1f(glGetUniformLocation(mProgram, "uMistHeight"), mistHeight);
-      glUniform1f(glGetUniformLocation(mProgram, "uPassThreshold"), passThreshold);
-      glUniform1i(glGetUniformLocation(mProgram, "uSolid"), SolidActive() ? 1 : 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uSolidLighting"), solidLighting);
-      glUniform1i(glGetUniformLocation(mProgram, "uSolidColor"), solidColor);
-      glUniform3fv(glGetUniformLocation(mProgram, "uSolidSingle"), 1, solidSingle);
-      glUniform1i(glGetUniformLocation(mProgram, "uMatcap"), matcap);
-      glUniform1i(glGetUniformLocation(mProgram, "uSolidSpecular"), solidSpecular ? 1 : 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uStudioWorld"), studioWorld ? 1 : 0);
-      glUniform1f(glGetUniformLocation(mProgram, "uStudioRotation"), studioRotation * 3.14159265f / 180.0f);
-      glUniform1f(glGetUniformLocation(mProgram, "uNear"), nearPlane);
-      glUniform1f(glGetUniformLocation(mProgram, "uFar"), farPlane);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uMistStart"), mistStart);
+      {
+         // Fog (row 4.1): the same medium the Metal engines trace.
+         float fc[3];
+         for (int k = 0; k < 3; k++) fc[k] = ColorSpace::SrgbToLinear(std::clamp(fogColor[k], 0.0f, 1.0f));
+         glUniform4f(GLUtil::UniformLoc(mProgram, "uFog"), std::max(0.0f, fogDensity), std::clamp(fogAnisotropy, -0.95f, 0.95f),
+                     std::clamp(fogFalloff, 0.0f, 1.0f), 0.0f);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uFogLo"), 1, fogMin);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uFogHi"), 1, fogMax);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uFogColor"), 1, fc);
+      }
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uMistDepth"), mistDepth);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uMistFalloff"), mistFalloff == 1 ? 1.0f : mistFalloff == 2 ? 0.5f : 2.0f);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uMistIntensity"), mistIntensity);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uMistHeight"), mistHeight);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uPassThreshold"), passThreshold);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uSolid"), SolidActive() ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uSolidLighting"), solidLighting);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uSolidColor"), solidColor);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uSolidSingle"), 1, solidSingle);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uMatcap"), matcap);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uSolidSpecular"), solidSpecular ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uStudioWorld"), studioWorld ? 1 : 0);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uStudioRotation"), studioRotation * 3.14159265f / 180.0f);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uNear"), nearPlane);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uFar"), farPlane);
       glActiveTexture(GL_TEXTURE1);
       glBindTexture(GL_TEXTURE_2D, shadowsActive ? mShadowTex : DummyShadowTexture());
-      glUniform1i(glGetUniformLocation(mProgram, "uShadowMap"), 1);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uShadowMap"), 1);
       {
          static GLuint sRawDepth = 0;   // reads the shadow map without the depth compare
          if (sRawDepth == 0)
@@ -2696,31 +3350,31 @@ void Render3DNode::CookOnce(int frameId)
          glActiveTexture(GL_TEXTURE15);
          glBindTexture(GL_TEXTURE_2D, shadowsActive ? mShadowTex : DummyShadowTexture());
          glBindSampler(15, sRawDepth);
-         glUniform1i(glGetUniformLocation(mProgram, "uShadowDepth"), 15);
-         glUniform1f(glGetUniformLocation(mProgram, "uPenumbraScale"), shadowsActive ? penumbraScale : 0.0f);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uShadowDepth"), 15);
+         glUniform1f(GLUtil::UniformLoc(mProgram, "uPenumbraScale"), shadowsActive ? penumbraScale : 0.0f);
       }
-      glUniform1i(glGetUniformLocation(mProgram, "uShadowsOn"), shadowsActive ? 1 : 0);
-      glUniform1f(glGetUniformLocation(mProgram, "uShadowBias"), shadowBiasDepth);
-      glUniform1f(glGetUniformLocation(mProgram, "uShadowSoftness"),
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uShadowsOn"), shadowsActive ? 1 : 0);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uShadowBias"), shadowBiasDepth);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uShadowSoftness"),
                   shadowKernel);
-      glUniform1i(glGetUniformLocation(mProgram, "uShadowLight"), ci);
-      glUniform1f(glGetUniformLocation(mProgram, "uShadowStrength"), shadowStrength);
-      glUniform1f(glGetUniformLocation(mProgram, "uShadowTexel"),
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uShadowLight"), ci);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uShadowStrength"), shadowStrength);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uShadowTexel"),
                   mShadowSize > 0 ? 1.0f / (float)mShadowSize : 0.0f);
-      glUniformMatrix4fv(glGetUniformLocation(mProgram, "uLightViewProj"), 1, GL_FALSE,
+      glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uLightViewProj"), 1, GL_FALSE,
                          mLightViewProj.m);
       glActiveTexture(GL_TEXTURE0);
 
-      glUniform3fv(glGetUniformLocation(mProgram, "uEnvSky"), 1, envSky);
-      glUniform3fv(glGetUniformLocation(mProgram, "uEnvHorizon"), 1, envHorizon);
-      glUniform3fv(glGetUniformLocation(mProgram, "uEnvGround"), 1, envGround);
-      glUniform1f(glGetUniformLocation(mProgram, "uEnvIntensity"), envIntensity * envHdriIntensity);
-      glUniform1i(glGetUniformLocation(mProgram, "uHasEnvMap"), hasEnvMap ? 1 : 0);
-      glUniform1f(glGetUniformLocation(mProgram, "uEnvRotation"), envRotationRad);
-      glUniform1f(glGetUniformLocation(mProgram, "uEnvMaxLod"), envMaxLod);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uEnvSky"), 1, envSky);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uEnvHorizon"), 1, envHorizon);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uEnvGround"), 1, envGround);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uEnvIntensity"), envIntensity * envHdriIntensity);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uHasEnvMap"), hasEnvMap ? 1 : 0);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uEnvRotation"), envRotationRad);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uEnvMaxLod"), envMaxLod);
       glActiveTexture(GL_TEXTURE6);
       glBindTexture(GL_TEXTURE_2D, hasEnvMap ? envTex : DummyEnvTexture());
-      glUniform1i(glGetUniformLocation(mProgram, "uEnvMap"), 6);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uEnvMap"), 6);
       glActiveTexture(GL_TEXTURE0);
    }
 
@@ -2974,8 +3628,8 @@ void Render3DNode::CookOnce(int frameId)
       glBindTexture(GL_TEXTURE_2D, surface != 0 ? surface : WhiteTexture());
       if (surface != 0)
          PrepareSurfaceTexture(SurfaceWrapMode(cloud));
-      glUniform1i(glGetUniformLocation(mProgram, "uTexture"), 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uHasTexture"), surface != 0 ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uTexture"), 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uHasTexture"), surface != 0 ? 1 : 0);
       // Per-channel material maps (roughness/metallic/normal/ao) don't apply
       // to a swatch-less billboard; explicitly off rather than left however
       // the previous slot's draw call last set them.
@@ -2984,19 +3638,20 @@ void Render3DNode::CookOnce(int frameId)
                                            "uHasClearcoatMap", "uHasSheenMap",
                                               "uHasOpacityMap", "uHasTransmissionMap" };
       for (int map = kMapRoughness; map < kMapCount; map++)
-         glUniform1i(glGetUniformLocation(mProgram, kHasUniform[map]), 0);
+         glUniform1i(GLUtil::UniformLoc(mProgram, kHasUniform[map]), 0);
 
-      glUniformMatrix4fv(glGetUniformLocation(mProgram, "uModel"), 1, GL_FALSE, Mat4::Identity().m);
+      glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uModel"), 1, GL_FALSE, Mat4::Identity().m);
       if (MotionActive())
-         glUniformMatrix4fv(glGetUniformLocation(mProgram, "uMotionDelta"), 1, GL_FALSE, MotionDelta(cloud, model).m);
-      glUniform1i(glGetUniformLocation(mProgram, "uLightMask"), (int)cloud->LightMask());
-      glUniform1i(glGetUniformLocation(mProgram, "uObjectIndex"), cloud->PassIndex());
-      { float oc[3]; cloud->ObjectColor(oc); glUniform3fv(glGetUniformLocation(mProgram, "uObjectColor"), 1, oc); }
-      glUniform1f(glGetUniformLocation(mProgram, "uDrawRandom"), std::fmod((float)i * 0.618034f, 1.0f));
-      glUniform1i(glGetUniformLocation(mProgram, "uInstanced"), 1);
-      glUniform1i(glGetUniformLocation(mProgram, "uInstanceColored"), 1);
-      glUniform1i(glGetUniformLocation(mProgram, "uIsSprite"), 1);
-      glUniform1i(glGetUniformLocation(mProgram, "uGpuPoints"), gpuDraw ? 1 : 0);
+         glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uMotionDelta"), 1, GL_FALSE, MotionDelta(cloud, model).m);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uLightMask"), (int)cloud->LightMask());
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uObjectIndex"), cloud->PassIndex());
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uDrawSlot"), i + 1);
+      { float oc[3]; cloud->ObjectColor(oc); glUniform3fv(GLUtil::UniformLoc(mProgram, "uObjectColor"), 1, oc); }
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uDrawRandom"), std::fmod((float)i * 0.618034f, 1.0f));
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uInstanced"), 1);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uInstanceColored"), 1);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uIsSprite"), 1);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uGpuPoints"), gpuDraw ? 1 : 0);
       if (gpuDraw)
       {
          // Units 11/12: above every unit the material maps, env and shadow
@@ -3006,39 +3661,44 @@ void Render3DNode::CookOnce(int frameId)
          glActiveTexture(GL_TEXTURE12);
          glBindTexture(GL_TEXTURE_2D, gpuPoints->colorTex);
          glActiveTexture(GL_TEXTURE0);
-         glUniform1i(glGetUniformLocation(mProgram, "uPointPos"), 11);
-         glUniform1i(glGetUniformLocation(mProgram, "uPointColor"), 12);
-         glUniform1i(glGetUniformLocation(mProgram, "uPointTexW"), gpuPoints->texW);
-         glUniformMatrix4fv(glGetUniformLocation(mProgram, "uPointModel"), 1, GL_FALSE, gpuPointModel.m);
-         glUniform1f(glGetUniformLocation(mProgram, "uPointSizeScale"), gpuSizeScale);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uPointPos"), 11);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uPointColor"), 12);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uPointTexW"), gpuPoints->texW);
+         glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uPointModel"), 1, GL_FALSE, gpuPointModel.m);
+         glUniform1f(GLUtil::UniformLoc(mProgram, "uPointSizeScale"), gpuSizeScale);
       }
-      glUniform3fv(glGetUniformLocation(mProgram, "uBaseColor"), 1, material.color);
-      glUniform1f(glGetUniformLocation(mProgram, "uMetallic"), material.metallic);
-      glUniform1f(glGetUniformLocation(mProgram, "uRoughness"), material.roughness);
-      glUniform1f(glGetUniformLocation(mProgram, "uOpacity"), material.opacity);
-      glUniform1i(glGetUniformLocation(mProgram, "uShading"), material.shading);
-      glUniform3fv(glGetUniformLocation(mProgram, "uEmissionColor"), 1, material.emissionColor);
-      glUniform1f(glGetUniformLocation(mProgram, "uEmission"), material.emission);
-      glUniform1f(glGetUniformLocation(mProgram, "uIor"), material.ior);
-      glUniform1f(glGetUniformLocation(mProgram, "uSpecular"), material.specular);
-      glUniform1f(glGetUniformLocation(mProgram, "uClearcoat"), material.clearcoat);
-      glUniform1f(glGetUniformLocation(mProgram, "uClearcoatRoughness"), material.clearcoatRoughness);
-      glUniform1f(glGetUniformLocation(mProgram, "uSubsurface"), material.subsurface);
-      glUniform3fv(glGetUniformLocation(mProgram, "uSubsurfaceColor"), 1, material.subsurfaceColor);
-      glUniform1f(glGetUniformLocation(mProgram, "uSubsurfaceRadius"), material.subsurfaceRadius);
-      glUniform1f(glGetUniformLocation(mProgram, "uSheen"), material.sheen);
-      glUniform3fv(glGetUniformLocation(mProgram, "uSheenColor"), 1, material.sheenColor);
-      glUniform1f(glGetUniformLocation(mProgram, "uSheenRoughness"), material.sheenRoughness);
-      glUniform1f(glGetUniformLocation(mProgram, "uIridescence"), material.iridescence);
-      glUniform1f(glGetUniformLocation(mProgram, "uIridescenceIor"), material.iridescenceIor);
-      glUniform1f(glGetUniformLocation(mProgram, "uIridescenceThickness"), material.iridescenceThickness);
-      glUniform1f(glGetUniformLocation(mProgram, "uAnisotropy"), material.anisotropy);
-      glUniform1f(glGetUniformLocation(mProgram, "uAnisotropyRotation"), material.anisotropyRotation);
-      glUniform1f(glGetUniformLocation(mProgram, "uDispersion"), 0.0f);
-      glUniform1f(glGetUniformLocation(mProgram, "uAlphaCutoff"), material.alphaCutoff);
-      glUniform1i(glGetUniformLocation(mProgram, "uTextureAlpha"), material.textureAlpha ? 1 : 0);
-      glUniform1f(glGetUniformLocation(mProgram, "uTransmission"), 0.0f);
-      glUniform1f(glGetUniformLocation(mProgram, "uTransmissionRoughness"), 0.0f);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uBaseColor"), 1, material.color);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uFldProgram"), (float)material.fieldProgram);
+      glUniform4fv(GLUtil::UniformLoc(mProgram, "uFldPrm"), 4, material.fieldParams);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uMetallic"), material.metallic);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uRoughness"), material.roughness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uOpacity"), material.opacity);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uShading"), material.shading);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uEmissionColor"), 1, material.emissionColor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uEmission"), material.emission);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIor"), material.ior);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSpecular"), material.specular);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uClearcoat"), material.clearcoat);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uClearcoatRoughness"), material.clearcoatRoughness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSubsurface"), material.subsurface);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uSubsurfaceColor"), 1, material.subsurfaceColor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSubsurfaceRadius"), material.subsurfaceRadius);
+      SetSssUniforms(mProgram, material);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSheen"), material.sheen);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uSheenColor"), 1, material.sheenColor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSheenRoughness"), material.sheenRoughness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSheenDir"), material.sheenDirection);
+      SetHairUniforms(mProgram, material);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIridescence"), material.iridescence);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIridescenceIor"), material.iridescenceIor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIridescenceThickness"), material.iridescenceThickness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uAnisotropy"), material.anisotropy);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uAnisotropyRotation"), material.anisotropyRotation);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uDispersion"), 0.0f);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uAlphaCutoff"), material.alphaCutoff);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uTextureAlpha"), material.textureAlpha ? 1 : 0);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uTransmission"), 0.0f);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uTransmissionRoughness"), 0.0f);
 
       glDrawElementsInstanced(GL_TRIANGLES, gpu.indexCount, GL_UNSIGNED_INT,
                               nullptr, (GLsizei)gpu.instanceCount);
@@ -3080,8 +3740,8 @@ void Render3DNode::CookOnce(int frameId)
          useProgram(variant ? mProgramOpaque : mProgramFull);
          sOpaqueVariantDraws += variant ? 1 : 0;
       }
-      glUniform1i(glGetUniformLocation(mProgram, "uIsSprite"), 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uGpuPoints"), 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uIsSprite"), 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uGpuPoints"), 0);
 
       const Mesh& mesh = source->GetMesh();
       // HasGeometry(), not Empty(): a vertices-only mesh (Points to
@@ -3111,7 +3771,9 @@ void Render3DNode::CookOnce(int frameId)
       }
 
       const unsigned long long revision = source->MeshRevision();
-      if (gpu.meshRevision != revision)
+      const Field::MaterialProgramEntry* wearProg = Field::FindMaterialProgram(source->GetMaterial().fieldProgram);
+      const bool wantWear = wearProg != nullptr && (wearProg->usesWear || wearProg->usesAttr) && !mesh.vertices.empty();
+      if (gpu.meshRevision != revision || gpu.hasWear != wantWear)
       {
          glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
          glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(Vertex),
@@ -3150,6 +3812,24 @@ void Render3DNode::CookOnce(int frameId)
          {
             glDisableVertexAttribArray(8);
          }
+         // Location 9: curvature, cavity (row 4.4) and attr (row 3.3), only for a material program that reads them.
+         gpu.hasWear = wantWear;
+         if (wantWear)
+         {
+            const std::vector<float> wear = MeshWear::Stream(&mesh.vertices[0].px, sizeof(Vertex) / sizeof(float), mesh.vertices.size(),
+                                                             mesh.indices.data(), mesh.indices.size(), wearProg->usesWear, mesh.vertexMask);
+            if (gpu.wearVbo == 0)
+               glGenBuffers(1, &gpu.wearVbo);
+            glBindBuffer(GL_ARRAY_BUFFER, gpu.wearVbo);
+            glBufferData(GL_ARRAY_BUFFER, wear.size() * sizeof(float), wear.data(), GL_STATIC_DRAW);
+            Bench::GpuMem::RecordBuffer(gpu.wearVbo, Bench::GpuMemCategory::MeshBuffers, wear.size() * sizeof(float), "Render3D_Wear");
+            glEnableVertexAttribArray(9);
+            glVertexAttribPointer(9, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+         }
+         else
+         {
+            glDisableVertexAttribArray(9);
+         }
 
          // Bounds computed here rather than per frame: this is the one place
          // the vertices are already being walked.
@@ -3186,8 +3866,8 @@ void Render3DNode::CookOnce(int frameId)
       glBindTexture(GL_TEXTURE_2D, surface != 0 ? surface : WhiteTexture());
       if (surface != 0)
          PrepareSurfaceTexture(wrapMode);
-      glUniform1i(glGetUniformLocation(mProgram, "uTexture"), 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uHasTexture"), surface != 0 ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uTexture"), 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uHasTexture"), surface != 0 ? 1 : 0);
 
       // The remaining material channels. Units 0 and 1 are taken by albedo and
       // the shadow map, so these start at 2, and units 6 & 7 by env and sceneColor.
@@ -3211,34 +3891,54 @@ void Render3DNode::CookOnce(int frameId)
             glBindTexture(GL_TEXTURE_2D, tex != 0 ? tex : WhiteTexture());
             if (tex != 0)
             {
+               // Mips + trilinear, as the albedo: a far map averages instead of aliasing. One level sharper than
+               // the footprint, since the reference keeps fine map detail the exact level would blur (measured).
+               PrepareSurfaceTexture(wrapMode);
+               glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, -1.0f);
+            }
+            else if (tex != 0)
+            {
                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, wrapMode);
                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, wrapMode);
             }
-            glUniform1i(glGetUniformLocation(mProgram, kMapUniform[map]), unit);
-            glUniform1i(glGetUniformLocation(mProgram, kHasUniform[map]), tex != 0 ? 1 : 0);
+            glUniform1i(GLUtil::UniformLoc(mProgram, kMapUniform[map]), unit);
+            glUniform1i(GLUtil::UniformLoc(mProgram, kHasUniform[map]), tex != 0 ? 1 : 0);
+         }
+         // Row 2.4: a field image takes its borrowed unit (clearcoat, sheen, transmission, AO maps give way).
+         static const int kFldImgMap[4] = { kMapClearcoat, kMapSheen, kMapTransmission, kMapAmbientOcclusion };
+         for (int k = 0; k < 4; k++)
+         {
+            if (material.fieldImage[k] == 0) continue;
+            glActiveTexture(GL_TEXTURE0 + kMapUnit[kFldImgMap[k]]);
+            glBindTexture(GL_TEXTURE_2D, material.fieldImage[k]);
+            PrepareSurfaceTexture(GL_REPEAT);
+            glUniform1i(GLUtil::UniformLoc(mProgram, kHasUniform[kFldImgMap[k]]), 0);
          }
          glActiveTexture(GL_TEXTURE0);
       }
       {
          const Material mat = source->GetMaterial();
-         glUniform1f(glGetUniformLocation(mProgram, "uNormalStrength"), mat.normalStrength);
-         glUniform1i(glGetUniformLocation(mProgram, "uNormalBump"), mat.normalBump);
+         glUniform1f(GLUtil::UniformLoc(mProgram, "uNormalStrength"), mat.normalStrength);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uNormalBump"), mat.normalBump);
+         glUniform1f(GLUtil::UniformLoc(mProgram, "uDetailScale"), mat.detailScale);
+         glUniform1f(GLUtil::UniformLoc(mProgram, "uDetailStrength"), mat.detailStrength);
       }
 
       {
          const MappingTransform mapping = source->GetMappingTransform();
-         glUniform1i(glGetUniformLocation(mProgram, "uMapSpace"), mapping.space);
-         glUniform3fv(glGetUniformLocation(mProgram, "uMapTranslate"), 1, mapping.translate);
-         glUniform3fv(glGetUniformLocation(mProgram, "uMapRotate"), 1, mapping.rotate);
-         glUniform3fv(glGetUniformLocation(mProgram, "uMapScale"), 1, mapping.scale);
-         glUniform1f(glGetUniformLocation(mProgram, "uTriplanarBlend"), mapping.triplanarBlend);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uMapSpace"), mapping.space);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uMapTranslate"), 1, mapping.translate);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uMapRotate"), 1, mapping.rotate);
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uMapScale"), 1, mapping.scale);
+         glUniform1f(GLUtil::UniformLoc(mProgram, "uTriplanarBlend"), mapping.triplanarBlend);
+         glUniform1f(GLUtil::UniformLoc(mProgram, "uBreakup"), mapping.breakup);
          // Object-space bounds computed at upload time, so Generated coordinates
          // normalise into this mesh's own box rather than a hardcoded -1..1.
          static const float kFallbackLo[3] = { -1.0f, -1.0f, -1.0f };
          static const float kFallbackHi[3] = { 1.0f, 1.0f, 1.0f };
-         glUniform3fv(glGetUniformLocation(mProgram, "uObjLo"), 1,
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uObjLo"), 1,
                       gpu.hasBounds ? gpu.lo : kFallbackLo);
-         glUniform3fv(glGetUniformLocation(mProgram, "uObjHi"), 1,
+         glUniform3fv(GLUtil::UniformLoc(mProgram, "uObjHi"), 1,
                       gpu.hasBounds ? gpu.hi : kFallbackHi);
       }
 
@@ -3248,8 +3948,8 @@ void Render3DNode::CookOnce(int frameId)
       const GpuPoints* gpuInstances = GpuInstancesFor(source, instancer, material);
       const bool instanced = instancer != nullptr &&
                              (gpuInstances != nullptr || instancer->InstanceCount() > 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uInstanced"), instanced ? 1 : 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uGpuPoints"), gpuInstances != nullptr ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uInstanced"), instanced ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uGpuPoints"), gpuInstances != nullptr ? 1 : 0);
       if (gpuInstances != nullptr)
       {
          // The copies come from the point textures; the per-instance
@@ -3401,45 +4101,51 @@ void Render3DNode::CookOnce(int frameId)
          gpu.instanceAttribsOn = false;
          gpu.instanceColored = false;
       }
-      glUniform1i(glGetUniformLocation(mProgram, "uInstanceColored"),
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uInstanceColored"),
                   (instanced && gpu.instanceColored) ? 1 : 0);
-      glUniform1i(glGetUniformLocation(mProgram, "uHasVertexColor"), gpu.hasVertexColor ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uHasVertexColor"), gpu.hasVertexColor ? 1 : 0);
 
-      glUniformMatrix4fv(glGetUniformLocation(mProgram, "uModel"), 1, GL_FALSE, model.m);
+      glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uModel"), 1, GL_FALSE, model.m);
       if (MotionActive())
-         glUniformMatrix4fv(glGetUniformLocation(mProgram, "uMotionDelta"), 1, GL_FALSE, MotionDelta(source, model).m);
-      glUniform1i(glGetUniformLocation(mProgram, "uLightMask"), (int)source->LightMask());
-      glUniform1i(glGetUniformLocation(mProgram, "uObjectIndex"), source->PassIndex());
-      { float oc[3]; source->ObjectColor(oc); glUniform3fv(glGetUniformLocation(mProgram, "uObjectColor"), 1, oc); }
-      glUniform1f(glGetUniformLocation(mProgram, "uDrawRandom"), std::fmod((float)i * 0.618034f, 1.0f));
-      glUniformMatrix3fv(glGetUniformLocation(mProgram, "uNormalMatrix"), 1, GL_FALSE, normalMatrix);
-      glUniform3fv(glGetUniformLocation(mProgram, "uBaseColor"), 1, material.color);
-      glUniform1f(glGetUniformLocation(mProgram, "uMetallic"), material.metallic);
-      glUniform1f(glGetUniformLocation(mProgram, "uRoughness"), material.roughness);
-      glUniform1f(glGetUniformLocation(mProgram, "uOpacity"), material.opacity);
-      glUniform1i(glGetUniformLocation(mProgram, "uShading"), material.shading);
-      glUniform3fv(glGetUniformLocation(mProgram, "uEmissionColor"), 1, material.emissionColor);
-      glUniform1f(glGetUniformLocation(mProgram, "uEmission"), material.emission);
-      glUniform1f(glGetUniformLocation(mProgram, "uIor"), material.ior);
-      glUniform1f(glGetUniformLocation(mProgram, "uSpecular"), material.specular);
-      glUniform1f(glGetUniformLocation(mProgram, "uClearcoat"), material.clearcoat);
-      glUniform1f(glGetUniformLocation(mProgram, "uClearcoatRoughness"), material.clearcoatRoughness);
-      glUniform1f(glGetUniformLocation(mProgram, "uSubsurface"), material.subsurface);
-      glUniform3fv(glGetUniformLocation(mProgram, "uSubsurfaceColor"), 1, material.subsurfaceColor);
-      glUniform1f(glGetUniformLocation(mProgram, "uSubsurfaceRadius"), material.subsurfaceRadius);
-      glUniform1f(glGetUniformLocation(mProgram, "uSheen"), material.sheen);
-      glUniform3fv(glGetUniformLocation(mProgram, "uSheenColor"), 1, material.sheenColor);
-      glUniform1f(glGetUniformLocation(mProgram, "uSheenRoughness"), material.sheenRoughness);
-      glUniform1f(glGetUniformLocation(mProgram, "uIridescence"), material.iridescence);
-      glUniform1f(glGetUniformLocation(mProgram, "uIridescenceIor"), material.iridescenceIor);
-      glUniform1f(glGetUniformLocation(mProgram, "uIridescenceThickness"), material.iridescenceThickness);
-      glUniform1f(glGetUniformLocation(mProgram, "uAnisotropy"), material.anisotropy);
-      glUniform1f(glGetUniformLocation(mProgram, "uAnisotropyRotation"), material.anisotropyRotation);
-      glUniform1f(glGetUniformLocation(mProgram, "uDispersion"), material.dispersion);
-      glUniform1f(glGetUniformLocation(mProgram, "uAlphaCutoff"), material.alphaCutoff);
-      glUniform1i(glGetUniformLocation(mProgram, "uTextureAlpha"), material.textureAlpha ? 1 : 0);
-      glUniform1f(glGetUniformLocation(mProgram, "uTransmission"), material.transmission);
-      glUniform1f(glGetUniformLocation(mProgram, "uTransmissionRoughness"), material.transmissionRoughness);
+         glUniformMatrix4fv(GLUtil::UniformLoc(mProgram, "uMotionDelta"), 1, GL_FALSE, MotionDelta(source, model).m);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uLightMask"), (int)source->LightMask());
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uObjectIndex"), source->PassIndex());
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uDrawSlot"), i + 1);
+      { float oc[3]; source->ObjectColor(oc); glUniform3fv(GLUtil::UniformLoc(mProgram, "uObjectColor"), 1, oc); }
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uDrawRandom"), std::fmod((float)i * 0.618034f, 1.0f));
+      glUniformMatrix3fv(GLUtil::UniformLoc(mProgram, "uNormalMatrix"), 1, GL_FALSE, normalMatrix);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uBaseColor"), 1, material.color);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uFldProgram"), (float)material.fieldProgram);
+      glUniform4fv(GLUtil::UniformLoc(mProgram, "uFldPrm"), 4, material.fieldParams);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uMetallic"), material.metallic);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uRoughness"), material.roughness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uOpacity"), material.opacity);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uShading"), material.shading);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uEmissionColor"), 1, material.emissionColor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uEmission"), material.emission);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIor"), material.ior);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSpecular"), material.specular);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uClearcoat"), material.clearcoat);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uClearcoatRoughness"), material.clearcoatRoughness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSubsurface"), material.subsurface);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uSubsurfaceColor"), 1, material.subsurfaceColor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSubsurfaceRadius"), material.subsurfaceRadius);
+      SetSssUniforms(mProgram, material);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSheen"), material.sheen);
+      glUniform3fv(GLUtil::UniformLoc(mProgram, "uSheenColor"), 1, material.sheenColor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSheenRoughness"), material.sheenRoughness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSheenDir"), material.sheenDirection);
+      SetHairUniforms(mProgram, material);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIridescence"), material.iridescence);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIridescenceIor"), material.iridescenceIor);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uIridescenceThickness"), material.iridescenceThickness);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uAnisotropy"), material.anisotropy);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uAnisotropyRotation"), material.anisotropyRotation);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uDispersion"), material.dispersion);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uAlphaCutoff"), material.alphaCutoff);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uTextureAlpha"), material.textureAlpha ? 1 : 0);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uTransmission"), material.transmission);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uTransmissionRoughness"), material.transmissionRoughness);
 
       // A flat mesh (a Plane) has no inside, so culling its back makes it vanish
       // when the camera passes under it: draw both sides, lit from the side seen.
@@ -3449,8 +4155,15 @@ void Render3DNode::CookOnce(int frameId)
          extentMin = std::min(extentMin, gpu.hi[k] - gpu.lo[k]);
          extentMax = std::max(extentMax, gpu.hi[k] - gpu.lo[k]);
       }
-      const bool twoSided = backfaceCull && gpu.hasBounds && extentMax > 0.0f && extentMin <= extentMax * 1e-4f;
-      glUniform1i(glGetUniformLocation(mProgram, "uTwoSided"), twoSided ? 1 : 0);
+      const bool twoSided = backfaceCull && ((gpu.hasBounds && extentMax > 0.0f && extentMin <= extentMax * 1e-4f) ||
+                                             source->GetMesh().twoSided);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uTwoSided"), twoSided ? 1 : 0);
+      {
+         const Mesh& ribbonMesh = source->GetMesh();
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uRibbonPrim"),
+                     ribbonMesh.twoSided ? (int)(ribbonMesh.ribbonStart / 3) : 0x7fffffff);
+         glUniform1i(GLUtil::UniformLoc(mProgram, "uFurMesh"), ribbonMesh.twoSided ? 1 : 0);
+      }
       if (twoSided)
          glDisable(GL_CULL_FACE);
 
@@ -3486,7 +4199,6 @@ void Render3DNode::CookOnce(int frameId)
       // Put the secondary maps' wrap mode back to the FBO default they were
       // created with - same reasoning as RestoreSurfaceTexture below: these
       // textures are owned by other nodes and must not be left mutated.
-      if (wrapMode != GL_CLAMP_TO_EDGE)
       {
          static const int kMapUnit[] = { 0, 2, 3, 4, 5, 8, 9, 10, 13, 14 };
          for (int map = kMapRoughness; map < kMapCount; map++)
@@ -3496,6 +4208,8 @@ void Render3DNode::CookOnce(int frameId)
                continue;
             glActiveTexture(GL_TEXTURE0 + kMapUnit[map]);
             glBindTexture(GL_TEXTURE_2D, tex);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_LOD_BIAS, 0.0f);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
          }
@@ -3577,10 +4291,10 @@ void Render3DNode::CookOnce(int frameId)
       glUseProgram(mProgram);
       glActiveTexture(GL_TEXTURE7);
       glBindTexture(GL_TEXTURE_2D, mSceneColorTex);
-      glUniform1i(glGetUniformLocation(mProgram, "uSceneColor"), 7);
+      glUniform1i(GLUtil::UniformLoc(mProgram, "uSceneColor"), 7);
       glActiveTexture(GL_TEXTURE0);
-      glUniform1f(glGetUniformLocation(mProgram, "uSceneMaxLod"), mSceneMaxLod);
-      glUniform2f(glGetUniformLocation(mProgram, "uScreenSize"), (float)w, (float)h);
+      glUniform1f(GLUtil::UniformLoc(mProgram, "uSceneMaxLod"), mSceneMaxLod);
+      glUniform2f(GLUtil::UniformLoc(mProgram, "uScreenSize"), (float)w, (float)h);
 
       // No depth write: two overlapping transmissive surfaces both sample the
       // same pre-transmission snapshot rather than compositing against each

@@ -27,7 +27,6 @@
 // cursor/selection state explicitly once the field is confirmed active.
 #include "imgui_internal.h"
 #include <cstdarg>
-#include "TablerIcons.h"
 
 #include "stb_image_write.h"
 #include "stb_image.h"
@@ -45,7 +44,6 @@
 #include <sys/stat.h>
 #include "platform/AppPaths.h"
 #include "platform/Platform.h"
-#include "IconsLucide.h"
 #include "core/SysInfo.h"
 #include "core/BenchReport.h"
 #include "core/BenchFrameTail.h"
@@ -79,6 +77,17 @@
 #else
    #define MODKEY "Ctrl"
 #endif
+
+// Every child window ends here, never with a bare ImGui::EndChild (ratchet "raw EndChild" = 0). If the last thing
+// drawn moved the cursor with SetCursorPos and drew nothing after, ImGui aborts on EndChild ("submit an item e.g.
+// Dummy()"): that crashed the Timeline and Sample Studio inspectors. The empty item commits the move; otherwise
+// nothing changes.
+inline void EndChildSafe()
+{
+   if (ImGui::GetCurrentWindow()->DC.IsSetPos)
+      ImGui::Dummy(ImVec2(0.0f, 0.0f));
+   ImGui::EndChild();
+}
 
 // Test fixtures live in the OS temp directory; /tmp was hardcoded before
 // the Windows port.
@@ -189,13 +198,17 @@ inline std::string TmpPath(const std::string& name)
 #include "nodes/HandTrackNode.h"
 #include "nodes/FaceTrackNode.h"
 #include "nodes/PoseTrackNode.h"
+#include "nodes/BrainSourceNode.h"
+#include "nodes/BrainSculptNode.h"
 #include "nodes/Geometry3DNodes.h"
 #include "nodes/GeometryOpNodes.h"
 #include "nodes/FieldElementNode.h"
 #include "nodes/FieldPrimitiveNode.h"
 #include "nodes/FieldGraphNode.h"
 #include "nodes/FieldPixelNode.h"
+#include "nodes/ShadeNodes.h"
 #include "nodes/FieldSampleNode.h"
+#include "nodes/SpectralFieldNode.h"
 #include "nodes/FieldSynthNode.h"
 #include "nodes/FieldNotesNode.h"
 #include "nodes/SceneNodes.h"
@@ -234,6 +247,7 @@ inline std::string TmpPath(const std::string& name)
 #include "nodes/Switcher3DNode.h"
 #include "nodes/Group3DNode.h"
 #include "nodes/Scene3DNode.h"
+#include "nodes/Scene2DNode.h"
 #include "nodes/ModulatorNodes.h"
 #include "nodes/PredictionNodes.h"
 #include "nodes/PredictiveNotesNode.h"

@@ -28,6 +28,11 @@ struct Mesh
    // act on it two nodes later, without rewiring anything.
    std::vector<unsigned char> faceMask;
 
+   // Fur's ribbons: indices from ribbonStart on are faces seen from both sides. Raster draws the mesh
+   // unculled, lit from the side seen, and only the faces before them cast into its shadow map.
+   bool twoSided = false;
+   unsigned int ribbonStart = 0;
+
    // Optional grouping of faces into atomic selection units, one entry per
    // triangle, matched by value (not index - just an opaque tag). Empty means
    // every face is its own unit. Mesh to Points sets this so a point's two
@@ -43,6 +48,9 @@ struct Mesh
    // per-instance colour for upload - same shape means the same upload path
    // works.
    std::vector<float> vertexColor;
+   // Row 3.3: one float per vertex, parallel to `vertices` (Sketch 3D mask()); material programs read it as `attr`.
+   // Empty (or size-mismatched) means none: attr reads 0.
+   std::vector<float> vertexMask;
 
    bool Empty() const { return vertices.empty() || indices.empty(); }
    // Unlike Empty(), true for a vertices-only mesh with no faces (Points to
@@ -338,9 +346,11 @@ namespace MeshOps
    // offsets along the path's carried frame (parallel transport, so it does not spin where
    // the path bends), scaled from startScale to endScale and twisted `twistDegrees` in
    // total. A closed profile on an open path is closed with flat end caps when `caps` is
-   // set; on a closed path the result is a watertight ring.
+   // set; on a closed path the result is a watertight ring. `scaleCurve`, when it holds
+   // two or more values, is a taper spread evenly along the path's length (linear between
+   // values) and multiplies the start/end scale - Blender's taper curve.
    Mesh Sweep(const Polyline& profile, const Polyline& path, float startScale, float endScale,
-              float twistDegrees, bool caps);
+              float twistDegrees, bool caps, const std::vector<float>* scaleCurve = nullptr);
 
    // Turns closed 2D contours into an extruded solid. Contours wound
    // anticlockwise are treated as outlines and clockwise ones as holes, so the
@@ -355,7 +365,7 @@ namespace MeshOps
    // closed-form function of position and time, so it costs one evaluation per
    // vertex per frame with no state and no timestep to keep stable.
    Mesh Ocean(int resolution, float size, float amplitude, float wavelength,
-              float steepness, float direction, float choppiness, int octaves, float time);
+              float steepness, float direction, float choppiness, int octaves, float time, float horizon = 1.0f);
 
    // For each vertex, the index of the first vertex sharing its position.
    // Anything reasoning about connectivity needs this: the primitives duplicate
@@ -411,6 +421,26 @@ namespace MeshOps
    enum UVProjectMode { kUVSmart = 0, kUVCube, kUVCylinder, kUVSphere };
    Mesh UVProject(const Mesh& in, int mode, float angleDeg, float margin, float scale,
                   std::vector<unsigned>* from = nullptr);
+
+   // Fur and hair (src/core/MeshFur.cpp, docs/plans/fur): the input mesh plus strands rooted on its (selected)
+   // faces, each a thin ribbon of `segments` quads tapering to 0.2x width at the tip, twisted at random about its
+   // own axis. Strands come in clumps of eight; `clump` pulls each clump's tips together. With a guide curve every
+   // strand takes the guide's shape (relative to its first point, turned onto the root's combed normal, scaled to
+   // the strand's length). normals: 0 = Ribbon (the surface normal with the along-strand part removed, which is how
+   // fur is lit), 1 = Tangent (the strand direction, read by the Hair material model as the fibre axis).
+   struct FurParams
+   {
+      float density = 40.0f;      // strands per cm^2
+      int maxStrands = 150000;
+      float length = 0.012f, lengthJitter = 0.3f;
+      float width = 0.0006f;
+      int segments = 3;
+      float gravity = 0.2f, clump = 0.3f, curl = 0.0f;
+      float comb[3] = { 0.0f, 0.0f, 0.0f };
+      int seed = 0;
+      int normals = 0;
+   };
+   Mesh Fur(const Mesh& in, const FurParams& p, const Polyline* guide = nullptr);
 
    // --- curves ---
    // Samples a polyline by arc length rather than by index, so a point moving

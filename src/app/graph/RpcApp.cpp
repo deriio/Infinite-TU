@@ -6,6 +6,7 @@
 #include <functional>
 #include "app/AppShared.h"
 #include "app/panels/CurveEditorPanel.h"
+#include "app/panels/FieldPatcherPanel.h"
 #include "imgui.h"
 #include "app/graph/LearningLog.h"
 
@@ -32,13 +33,17 @@ namespace app
             { "viewport", &gViewportPanelOpen, &gViewportPanelDock, true },
             { "modmatrix", &gModMatrixOpen, &gModMatrixDock, true },
             { "perf", &gPerfPanelOpen, &gPerfPanelDock, true },
+            { "mixer", &gMixerPanelOpen, &gMixerPanelDock, true },
             { "timeline", &gArrangePanelOpen, nullptr, false },
             { "session", &gSessionPanelOpen, nullptr, false },
             { "samplestudio", &gSampleStudioOpen, &gSampleStudioDock, false },
             { "pianoroll", &gPianoRollOpen, &gPianoRollDock, false },
-            { "view3d", &gView3DOpen, &gView3DDock, false },
+            { "drums", &gDrumPanelOpen, &gDrumPanelDock, false },
+            { "view3d", &gView3DOpen, &gView3DDock, true },
+            { "view2d", &gView2DOpen, &gView2DDock, true },
             { "terminal", &gTerminalOpen, &gTerminalDock, true },
             { "curveeditor", &gCurveEditorOpen, &gCurveEditorDock, false },
+            { "fieldpatcher", &gFieldPatcherOpen, &gFieldPatcherDock, false },
             { "showset", &gShowSetOpen, nullptr, false },
             { "history", &gHistoryOpen, nullptr, false },
             { "settings", &gSettingsOpen, nullptr, false },
@@ -61,10 +66,14 @@ namespace app
          static const std::pair<const char*, const char*> kAlias[] = {
             { "nodes", "library" }, { "nodelibrary", "library" }, { "browser", "library" }, { "addnode", "library" },
             { "piano", "pianoroll" }, { "notes", "pianoroll" }, { "studio", "samplestudio" }, { "sample", "samplestudio" },
-            { "samples", "samplestudio" }, { "matrix", "modmatrix" },
+            { "samples", "samplestudio" }, { "drum", "drums" }, { "drumpanel", "drums" }, { "drumsequencer", "drums" },
+            { "mixerpanel", "mixer" }, { "desk", "mixer" }, { "matrix", "modmatrix" },
             { "modulation", "modmatrix" }, { "modulationmatrix", "modmatrix" }, { "performance", "perf" },
             { "arrange", "timeline" }, { "arrangement", "timeline" }, { "tracks", "timeline" }, { "3d", "view3d" },
-            { "3dview", "view3d" }, { "chat", "terminal" }, { "agent", "terminal" }, { "shell", "terminal" }, { "curve", "curveeditor" }, { "curves", "curveeditor" }, { "mseg", "curveeditor" },
+            { "3dview", "view3d" }, { "2d", "view2d" }, { "2dview", "view2d" }, { "scene2d", "view2d" },
+            { "chat", "terminal" }, { "agent", "terminal" }, { "shell", "terminal" },
+            { "curve", "curveeditor" }, { "curves", "curveeditor" }, { "mseg", "curveeditor" },
+            { "field", "fieldpatcher" }, { "patcher", "fieldpatcher" }, { "fieldpatch", "fieldpatcher" },
             { "preview", "viewport" }, { "output", "viewport" }, { "show", "showset" }, { "undo", "history" },
             { "keys", "shortcuts" }, { "keyboardshortcuts", "shortcuts" },
          };
@@ -238,6 +247,20 @@ namespace app
                     SaveWorkspaceSettings();
                  }),
             Number("oversample", &gAudioOversample, 1.0f, 4.0f, SaveAudioSettings),
+            // Settings > 3D View (gView3DPrefs): the same values and ranges as the window's sliders and switches.
+            Number("view3dMiniAxes", &gView3DPrefs.miniAxes, 0, 2, SaveWorkspaceSettings),
+            Number("view3dMiniAxesSize", &gView3DPrefs.miniSize, 40.0f, 160.0f, SaveWorkspaceSettings),
+            Number("view3dMiniAxesBrightness", &gView3DPrefs.miniBright, 0.0f, 1.0f, SaveWorkspaceSettings),
+            Number("view3dNavGizmoSize", &gView3DPrefs.gizmoNavSize, 40.0f, 160.0f, SaveWorkspaceSettings),
+            Number("view3dGizmoSize", &gView3DPrefs.gizmoSize, 40.0f, 160.0f, SaveWorkspaceSettings),
+            Number("view3dSmoothTime", &gView3DPrefs.smoothTime, 0.0f, 1.0f, SaveWorkspaceSettings),
+            Number("view3dRotationStep", &gView3DPrefs.rotStep, 1.0f, 90.0f, SaveWorkspaceSettings),
+            Number("view3dOrbitSensitivity", &gView3DPrefs.orbitSens, 0.1f, 5.0f, SaveWorkspaceSettings),
+            Toggle("view3dAutoPerspective", &gView3DPrefs.autoPerspective, SaveWorkspaceSettings),
+            Toggle("view3dContinuousGrab", &gView3DPrefs.continuousGrab, SaveWorkspaceSettings),
+            Toggle("view3dZoomToMouse", &gView3DPrefs.zoomToMouse, SaveWorkspaceSettings),
+            Toggle("view3dOrbitAroundSelection", &gView3DPrefs.orbitSelection, SaveWorkspaceSettings),
+            Toggle("view3dInvertZoom", &gView3DPrefs.invertZoom, SaveWorkspaceSettings),
             { "audioThreads", [] { return json(gAudioThreads); },
               [](const json& v)
               {
@@ -404,13 +427,13 @@ namespace app
       }
       // "ui": synthetic ImGui input for scripted documentation shots (tools/manual/ui_shots_offscreen.py), so menus,
       // right-click menus and dropdowns can be opened in an off-screen run. x, y are window points.
-      // actions: move {x,y}; click {x,y,button 0|1|2, double}; down / up {x,y,button} (a drag is down, move, up); key {key: escape|enter|tab|up|down|left|right|a..z|0..9,
+      // actions: move {x,y}; click {x,y,button 0|1|2, double}; wheel {x,y,dx,dy}; text {text} (typed characters); down / up {x,y,button} (a drag is down, move, up); key {key: escape|enter|tab|up|down|left|right|a..z|0..9,
       // shift, ctrl, alt, super}. ImGui trickles the queued events, so a down and up land on separate frames.
       if (method == "ui")
       {
          ImGuiIO& io = ImGui::GetIO();
          const std::string action = params.value("action", std::string());
-         if (action == "move" || action == "click" || action == "down" || action == "up")
+         if (action == "move" || action == "click" || action == "down" || action == "up" || action == "wheel")
             io.AddMousePosEvent(params.value("x", 0.0f), params.value("y", 0.0f));
          if (action == "down" || action == "up")
             io.AddMouseButtonEvent(std::clamp(params.value("button", 0), 0, 2), action == "down");
@@ -455,6 +478,10 @@ namespace app
                if (params.value(name, false))
                   io.AddKeyEvent(m, false);
          }
+         else if (action == "wheel")
+            io.AddMouseWheelEvent(params.value("dx", 0.0f), params.value("dy", 0.0f));
+         else if (action == "text")
+            io.AddInputCharactersUTF8(params.value("text", std::string()).c_str());
          else if (action != "move" && action != "down" && action != "up")
          {
             outError = "unknown ui action '" + action + "'";
@@ -501,15 +528,24 @@ namespace app
                   gArrange.revision++;
                   gPatchDirty = true;
                }
+               else if (params.contains("dock") && panel.dock == &gFieldPatcherDock && params.value("dock", std::string()) == "fill")
+                  gFieldPatcherMaximised = true;   // Fill: the patcher takes the whole window, as its maximise button does
                else if (params.contains("dock"))
                {
-                  const int code = DockCode(params.value("dock", std::string()));
+                  if (panel.dock == &gFieldPatcherDock)
+                     gFieldPatcherMaximised = false;
+                  const bool view = panel.dock == &gView2DDock || panel.dock == &gView3DDock;
+                  const std::string side = params.value("dock", std::string());
+                  const int code = view && side == "fill" ? 4 : DockCode(side);   // Fill: the view takes the canvas's place
                   if (panel.dock == nullptr || code < 0 || (!panel.fourSides && code != 0 && code != 3))
                   {
-                     outError = name + (panel.fourSides ? " docks bottom, right, left or top" : panel.dock ? " docks bottom or top" : " has no dock position");
+                     outError = name + (view ? " docks bottom, right, left, top or fill" : panel.fourSides ? " docks bottom, right, left or top" : panel.dock ? (panel.dock == &gFieldPatcherDock ? " docks bottom, top or fill" : " docks bottom or top") : " has no dock position");
                      return true;
                   }
-                  *panel.dock = code;
+                  if (view)
+                     SetViewDock(panel.dock == &gView2DDock ? 2 : 3, code);
+                  else
+                     *panel.dock = code;
                }
             }
             all[panel.name] = { { "open", *panel.open } };
@@ -559,6 +595,24 @@ namespace app
                View3DAddNode(*gn);
             }
          }
+         else if (action == "view2d-add")
+         {
+            for (const json& index : params.value("nodes", json::array()))
+            {
+               GraphNode* gn = index.is_number_integer() ? FindNodeByIndex(index.get<int>()) : nullptr;
+               if (gn == nullptr)
+               {
+                  outError = "unknown node index";
+                  return true;
+               }
+               if (!View2DCanAdd(*gn))
+               {
+                  outError = "node " + std::to_string(index.get<int>()) + " cannot be added to the 2D View";
+                  return true;
+               }
+               View2DAddNode(*gn);
+            }
+         }
          else if (action == "group")
             gRequestGroup = true;
          else if (action == "ungroup")
@@ -571,6 +625,8 @@ namespace app
          outResult = json::object();
          return true;
       }
+      if (method == "view2d")
+         return View2DRpc(params, outResult, outError);
       if (method == "select")
       {
          ed::EditorContext* previous = ed::GetCurrentEditor();

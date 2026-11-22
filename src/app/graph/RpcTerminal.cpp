@@ -2,8 +2,8 @@
 // pointing at, the transport, modulation by control name, bypass, and the code errors of the
 // open patch. Same rules as Rpc.cpp: main thread, between frames, one undo step per edit.
 #include <algorithm>
-#include <climits> // fork: k17 INT_MIN/INT_MAX, so a wild number is refused instead of cast
-#include <cstdlib> // fork: k17 std::strtol, for a node index written as a string
+#include <climits>
+#include <cstdlib>
 #include "app/AppShared.h"
 #include "core/GestureRecorder.h"
 #include "platform/common/ProcessTree.h"
@@ -21,9 +21,12 @@ namespace app
       int ParamIndexOfKey(const GraphNode& gn, const std::string& key, std::string& outError)
       {
          // Controls a script declares are saved as p.<name>, so both spellings work.
+         // Also accept a typed key ("f rotation") when VisitParams uses the bare name ("rotation").
          int param = ParamIndexOfKeyOnNode(gn, key);
          if (param < 0)
             param = ParamIndexOfKeyOnNode(gn, "p." + key);
+         if (param < 0 && key.size() > 2 && key[1] == ' ')
+            param = ParamIndexOfKeyOnNode(gn, key.substr(2));
          if (param >= 0)
          {
             gParamProbeNode = -1;
@@ -43,12 +46,7 @@ namespace app
          return param;
       }
 
-      // fork: k17 how a node is named in a call. The same argument arrives as a bare integer (5), a numeric
-      // string ("5"), or an object ({"index":5} / {"node":5}) depending on which tool the caller
-      // learned, and under two names - `dst` on bind_mod, `index` everywhere else. Reading one
-      // spelling only is what made bind_mod answer "unknown node index" for a node that exists.
-      // Bounded and total: any JSON value at all is accepted and answered with -1, never an exception
-      // and never a walk into a pathological nesting an agent could send by accident.
+      // Bounded and total: accepts integer, numeric string, or nested {index|node|id|dst} up to depth 8.
       int NodeIndexOfField(const json& field, int depth = 0)
       {
          if (depth > 8)
@@ -140,7 +138,7 @@ namespace app
          Transport& tr = Transport::Instance();
          outResult = { { "window", ProcessTree::Self() }, { "patch", gPatchPath }, { "dirty", gPatchDirty }, { "nodes", gNodes.size() }, { "cables", gLinks.size() },
                        { "playing", tr.IsPlaying() }, { "seconds", tr.Seconds() }, { "beats", tr.Beats() }, { "bpm", tr.Tempo() },
-                       { "showLock", gShowLock } };
+                       { "showLock", gShowLock }, { "fps", ImGui::GetIO().Framerate } };   // ImGui's 60-frame average
          return true;
       }
       if (method == "transport")
@@ -167,19 +165,28 @@ namespace app
          }
          else if (action == "loop")
          {
-            // fork: the arrange loop had no RPC at all, so loopStart/loopEnd could only be set by
-            // dragging in the UI (API-7). Beats, like `timeline loop` and the transport itself.
-            // Goes through ArrangeSetLoop, never tr.SetLoop directly: the model republishes to the
-            // transport every frame (PublishArrangeLoop), so a direct write would be overwritten.
+            // Goes through ArrangeSetLoop, never tr.SetLoop directly, because the arrange model
+            // republishes its loop to the transport every frame (PublishArrangeLoop).
+            if (params.contains("enabled") && !params["enabled"].is_boolean())
+            {
+               outError = "enabled must be a boolean";
+               return true;
+            }
+            if ((params.contains("start") && !params["start"].is_number()) ||
+                (params.contains("end") && !params["end"].is_number()))
+            {
+               outError = "start and end must be numbers (beats)";
+               return true;
+            }
             const Arrange::LoopRange& cur = gArrange.settings.loop;
-            bool enabled = params.value("enabled", true);
+            const bool enabled = params.contains("enabled") ? params["enabled"].get<bool>() : true;
             if (enabled && !params.contains("start") && !params.contains("end") && cur.end <= cur.start)
             {
                outError = "the loop has no range yet: give start and end (beats), e.g. {\"action\":\"loop\",\"enabled\":true,\"start\":0,\"end\":16}";
                return true;
             }
-            Arrange::Tick start = params.contains("start") ? Arrange::BeatsToTicks(params.value("start", 0.0)) : cur.start;
-            Arrange::Tick end = params.contains("end") ? Arrange::BeatsToTicks(params.value("end", 0.0)) : cur.end;
+            const Arrange::Tick start = params.contains("start") ? Arrange::BeatsToTicks(params["start"].get<double>()) : cur.start;
+            const Arrange::Tick end = params.contains("end") ? Arrange::BeatsToTicks(params["end"].get<double>()) : cur.end;
             if (enabled && end <= start)
             {
                outError = "end must be after start: start " + std::to_string(start) + " tick, end " + std::to_string(end) +
@@ -258,10 +265,9 @@ namespace app
             return true;
          }
          // A bare name ("uRotation") works as well as the typed key ("f uRotation").
-         std::string tryKey = key;
-         int param = ParamIndexOfKey(*gn, tryKey, outError);
+         int param = ParamIndexOfKey(*gn, key, outError);
          for (const char* prefix : { "f ", "i ", "b ", "c ", "s " })
-            if (param < 0 && key.find(' ') == std::string::npos && !key.empty())
+            if (param < 0 && key.find(' ') == std::string::npos)
             {
                std::string e2;
                const int p2 = ParamIndexOfKey(*gn, std::string(prefix) + key, e2);
@@ -367,6 +373,42 @@ namespace app
          }
          gPatchDirty = true;
          outResult = { { "index", gn->index }, { "param", param }, { "key", key } };
+         return true;
+      }
+      if (method == "reset_param")
+      {
+         if (!params.is_object())
+         {
+            outError = "params must be a JSON object, e.g. {\"index\":5,\"key\":\"rotation\"}";
+            return true;
+         }
+         json dstField;
+         for (const char* name : { "dst", "index", "node", "target" })
+            if (params.contains(name) && !params[name].is_null())
+            {
+               dstField = params[name];
+               break;
+            }
+         const int dstIndex = NodeIndexOfField(dstField);
+         const std::string key = ControlKeyFrom(params, dstField);
+         GraphNode* gn = FindNodeByIndex(dstIndex);
+         if (gn == nullptr)
+         {
+            outError = "unknown node index " + (dstIndex >= 0 ? std::to_string(dstIndex) : std::string("<missing>")) +
+                       ": pass index as the integer node index from get_graph";
+            return true;
+         }
+         if (key.empty())
+         {
+            outError = "missing control key: pass key, e.g. \"rotation\"; `infinite params " + std::to_string(gn->index) + "` lists them";
+            return true;
+         }
+         if (!ResetParamKeyToDefault(*gn, key, /*pushUndo=*/true))
+         {
+            outError = "'" + key + "' has no resettable default on " + gn->typeName;
+            return true;
+         }
+         outResult = { { "index", gn->index }, { "key", key }, { "reset", true } };
          return true;
       }
       if (method == "code_errors")

@@ -952,7 +952,7 @@ namespace app
          }
       }
 
-      char valBuf[64];
+      char valBuf[96];
       auto FmtFreq = [](float f, char* b, size_t sz, bool withSign) {
          if (std::fabs(f) >= 1000.0f)
             snprintf(b, sz, withSign ? "%+.2f kHz" : "%.2f kHz", f / 1000.0f);
@@ -1353,7 +1353,6 @@ namespace app
       const float rootFreq = n->Param("rootFreq");
       const int structure = std::clamp((int)std::round(n->Param("structure")), 0, 3);
       const int poles = std::clamp((int)std::round(n->Param("poles")), 1, 16);
-      const float decay = n->Param("decay");
       const bool analog = n->Param("analog") != 0.0f;
       const float damp = std::clamp(n->Param("damp"), 0.0f, 1.0f);
 
@@ -1635,7 +1634,6 @@ namespace app
    void DrawSpecBlurBody(GraphNode& gn, AudioEffectNode* n)
    {
       const float blurTime = n->Param("blurTime");
-      const float tilt = n->Param("tilt");
       const float diffusion = n->Param("diffusion");
       const bool freeze = n->Param("freeze") > 0.5f;
       const bool analog = n->Param("analog") > 0.5f;

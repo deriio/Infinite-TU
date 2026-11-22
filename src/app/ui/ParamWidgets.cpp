@@ -219,7 +219,7 @@ namespace app
          StateRing::DrawCircle(kdl, ImVec2((rmin.x + rmax.x) * 0.5f, (rmin.y + rmax.y) * 0.5f), (rmax.x - rmin.x) * 0.5f,
                                StateRing::Kind::Select, IsThemeLight());
       else
-         StateRing::Draw(kdl, rmin, rmax, StateRing::Kind::Select, IsThemeLight(), tok::radius_field);
+         StateRing::Draw(kdl, rmin, rmax, StateRing::Kind::Select, IsThemeLight(), tok::radius_control);
       bool changed = false;
       if (gKbNudge != 0 && !Modulation::Instance().IsModulated(nodeIndex, paramIndex))
       {
@@ -402,7 +402,7 @@ namespace app
          const ImU32 alpha = vividState ? (isLight ? 225 : 205) : (isLight ? 110 : 86);
          const ImU32 soft = (fillColor & 0x00FFFFFF) | (alpha << 24);
          dl->PushClipRect(r0, ImVec2(fillX, r1.y), true);
-         dl->AddRectFilled(r0, r1, soft, tok::radius_tile);
+         dl->AddRectFilled(r0, r1, soft, tok::radius_control);
          dl->PopClipRect();
       }
 
@@ -480,7 +480,7 @@ namespace app
          const ImU32 amber = tok::U32(tok::pin_mod, isLight);
          const ImU32 soft = (amber & 0x00FFFFFF) | ((ImU32)(isLight ? 110 : 86) << 24);
          dl->PushClipRect(r0, ImVec2(r0.x + w * t, r1.y), true);
-         dl->AddRectFilled(r0, r1, soft, tok::radius_tile);
+         dl->AddRectFilled(r0, r1, soft, tok::radius_control);
          dl->PopClipRect();
       }
 
@@ -503,7 +503,10 @@ namespace app
    // the node's bottom row; these are the readout, so the pins carry no bars of their own.
    void DrawOutputMeters(INode* node, float colW, int cols, float gutter)
    {
-      const int count = node->OutputCount();
+      // Meters are for modulator pins only: trailing image/audio pins (Brain Source) are left out.
+      int count = node->OutputCount();
+      while (count > 0 && node->ModulatorOutput(count - 1) == nullptr && count > 1)
+         --count;
       cols = std::max(1, cols);
       const int rows = (count + cols - 1) / cols;
       const ImVec2 origin = ImGui::GetCursorScreenPos();
@@ -592,7 +595,7 @@ namespace app
       EndParamDraw(nodeIndex, paramIndex);
       // A link to this control (a chat chip, "View in Modulation Matrix"): ring it until the flash ends.
       if (nodeIndex == gModMatrixHighlightNode && paramIndex == gModMatrixHighlightParam && ImGui::GetTime() < gModMatrixHighlightUntil)
-         StateRing::Draw(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), StateRing::Kind::Target, IsThemeLight(), tok::radius_field);
+         StateRing::Draw(ImGui::GetWindowDrawList(), ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), StateRing::Kind::Target, IsThemeLight(), tok::radius_control);
       // What the user points at and last touched, for the agents' `infinite context`.
       if (hovered)
       {
@@ -603,6 +606,11 @@ namespace app
             gTouchParamNode = nodeIndex;
             gTouchParamIndex = paramIndex;
          }
+      }
+      if (hovered && ImGui::GetIO().KeyAlt && ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+      {
+         if (ResetParamToDefault(nodeIndex, paramIndex, /*pushUndo=*/true))
+            ImGui::ClearActiveID();
       }
       if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right))
       {
@@ -654,7 +662,7 @@ namespace app
          return 0;
       const ImVec2 rmin = ImGui::GetItemRectMin();
       const ImVec2 rmax = ImGui::GetItemRectMax();
-      StateRing::Draw(ImGui::GetWindowDrawList(), rmin, rmax, StateRing::Kind::Select, IsThemeLight(), tok::radius_field);
+      StateRing::Draw(ImGui::GetWindowDrawList(), rmin, rmax, StateRing::Kind::Select, IsThemeLight(), tok::radius_control);
       const int step = gKbNudge > 0 ? 1 : (gKbNudge < 0 ? -1 : 0);
       gKbNudge = 0;
       return step;
@@ -889,7 +897,7 @@ namespace app
       ImGui::PushStyleColor(ImGuiCol_CheckMark, isLight ? tok::V4(tok::palf::v_200_550_950_1000) : tok::V4(tok::palf::v_550_820_1000_1000));
       ImGui::PushStyleColor(ImGuiCol_Border, isLight ? tok::V4(tok::palf::v_700_740_840_1000) : tok::V4(tok::palf::v_220_235_278_1000));
       ImGui::PushStyleColor(ImGuiCol_Text, isLight ? tok::V4(tok::palf::v_150_180_240_1000) : tok::V4(tok::palf::v_880_920_980_1000));
-      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_control);
       ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
    }
 
@@ -913,7 +921,7 @@ namespace app
       const float onv = UiAnim::Hover(iid ^ 0x5bd1e995u, *value, tok::motion_on, tok::motion_off);
       const ImVec4 amber = IsThemeLight() ? tok::V4(tok::palf::v_840_490_80_1000) : tok::V4(tok::palf::v_1000_750_350_1000);
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      const ImVec2 bp(p.x + (box - CheckBox::kSize) * 0.5f, p.y + (box - CheckBox::kSize) * 0.5f);
+      const ImVec2 bp(p.x + (box - CheckBox::Size()) * 0.5f, p.y + (box - CheckBox::Size()) * 0.5f);
       CheckBox::Draw(dl, bp, onv, hv, modulated ? &amber : nullptr);
       if (textW > 0.0f)
       {
@@ -921,8 +929,8 @@ namespace app
          dl->AddText(ImVec2(p.x + box + st.ItemInnerSpacing.x, p.y + st.FramePadding.y), ImGui::GetColorU32(ImGuiCol_Text), label, end);
       }
       if (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-         dl->AddRect(ImVec2(bp.x - 2, bp.y - 2), ImVec2(bp.x + CheckBox::kSize + 2, bp.y + CheckBox::kSize + 2),
-                     ImGui::GetColorU32(ImGuiCol_NavHighlight), tok::radius_field + 2.0f, 0, 1.5f);
+         dl->AddRect(ImVec2(bp.x - 2, bp.y - 2), ImVec2(bp.x + CheckBox::Size() + 2, bp.y + CheckBox::Size() + 2),
+                     ImGui::GetColorU32(ImGuiCol_NavHighlight), tok::radius_control + 2.0f, 0, 1.5f);
       return clicked;
    }
 
@@ -953,7 +961,7 @@ namespace app
       ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, isLight ? tok::V4(tok::palf::v_140_450_850_1000) : tok::V4(tok::palf::v_700_900_1000_1000));
       ImGui::PushStyleColor(ImGuiCol_Border, isLight ? tok::V4(tok::palf::v_700_740_840_1000) : tok::V4(tok::palf::v_220_235_278_1000));
       ImGui::PushStyleColor(ImGuiCol_Text, isLight ? tok::V4(tok::palf::v_150_180_240_1000) : tok::V4(tok::palf::v_880_920_980_1000));
-      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 4.0f);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_control);
       ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
    }
 

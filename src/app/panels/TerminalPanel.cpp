@@ -42,7 +42,7 @@ namespace
 {
    constexpr float kMinHeight = 160.0f;
    constexpr float kMinWidth = 280.0f;
-   constexpr float kTabRowH = 26.0f;
+   constexpr float kTabRowH = tok::row_h;
    constexpr float kLineHeight = 1.3f;
    constexpr int kWheelLines = 3;
 
@@ -213,8 +213,8 @@ namespace
          return snap->title;
       if (!snap->cwd.empty())
       {
-         const size_t slash = snap->cwd.find_last_of('/');
-         return slash == std::string::npos || slash + 1 == snap->cwd.size() ? snap->cwd : snap->cwd.substr(slash + 1);
+         const std::string base = AppPaths::FsPath(snap->cwd).filename().u8string();
+         return base.empty() ? snap->cwd : base;
       }
       return "shell";
    }
@@ -670,11 +670,20 @@ namespace
    }
 
    // Right-click on the panel. A program that takes the mouse keeps the click over its cells; Shift gets the menu.
-   void DrawDockMenu(bool overCells, const term::Snapshot* snap)
+   // A tab under the mouse this frame: its right-click is the tab's, never the dock menu's.
+   bool sTabHovered = false;
+
+   // chat = the Chat face: the menu opens on free space only (not over a message, thread or field)
+   // and its Close row names Chat.
+   void DrawDockMenu(bool overCells, const term::Snapshot* snap, bool chat = false)
    {
       const bool reported = overCells && snap != nullptr && snap->mouseMode != 0 && !ImGui::GetIO().KeyShift;
-      if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !reported &&
+      const bool overItem = chat ? ImGui::IsAnyItemHovered() : sTabHovered;
+      if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !reported && !overItem &&
+          !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId) &&
           ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows | ImGuiHoveredFlags_AllowWhenBlockedByActiveItem))
+         ImGui::OpenPopup("##terminalDockMenu");
+      if (MenuParts::TestOpen("##terminalDockMenu"))
          ImGui::OpenPopup("##terminalDockMenu");
       if (!MenuParts::BeginPopup("##terminalDockMenu"))
          return;
@@ -688,8 +697,8 @@ namespace
             gTerminalFloating = true;
          ImGui::EndMenu();
       }
-      ImGui::Dummy(ImVec2(0.0f, tok::space_1));
-      if (MenuParts::Item(L("Close Terminal")))
+      MenuParts::Separator();
+      if (MenuParts::Item(chat ? L("Close Chat") : L("Close Terminal")))
          gTerminalOpen = false;
       MenuParts::EndPopup();
    }
@@ -703,6 +712,7 @@ namespace
       const ImU32 dimColor = ImGui::GetColorU32(ImGuiCol_TextDisabled);
       float x = start.x;
       int closeIndex = -1;
+      sTabHovered = false;
       for (int i = 0; i < (int)sTabs.size(); ++i)
       {
          Tab& tab = *sTabs[(size_t)i];
@@ -719,8 +729,9 @@ namespace
          const float width = ImGui::CalcTextSize(title.c_str()).x + 44.0f;
          ImGui::PushID(i);
          ImGui::SetCursorScreenPos(ImVec2(x, start.y));
-         ImGui::InvisibleButton("##tab", ImVec2(width, kTabRowH - 4.0f));
+         ImGui::InvisibleButton("##tab", ImVec2(width, kTabRowH));
          const bool hovered = ImGui::IsItemHovered();
+         sTabHovered = sTabHovered || hovered;
          // The close mark is part of this button: a second button on top of it never gets the hover.
          const ImVec2 closeMin(x + width - 20.0f, start.y + 3.0f), closeMax(closeMin.x + 16.0f, closeMin.y + 16.0f);
          const bool overClose = hovered && ImGui::IsMouseHoveringRect(closeMin, closeMax);
@@ -732,14 +743,14 @@ namespace
             gTerminalFocus = true;
          }
          if (i == sActive || hovered)
-            dl->AddRectFilled(ImVec2(x, start.y), ImVec2(x + width, start.y + kTabRowH - 4.0f),
-                              ImGui::GetColorU32(ImGuiCol_FrameBg), tok::radius_field);
+            dl->AddRectFilled(ImVec2(x, start.y), ImVec2(x + width, start.y + kTabRowH),
+                              ImGui::GetColorU32(ImGuiCol_FrameBg), tok::radius_control);
          // Status dot: running, attention, or a failed last command.
          const bool busy = snap && snap->busy;
          const bool failed = snap && snap->exited && snap->exitCode != 0;
          const ImU32 dot = failed ? Ansi(1) : tab.attention ? Ansi(3) : busy ? Ansi(2) : dimColor;
-         dl->AddCircleFilled(ImVec2(x + 10.0f, start.y + (kTabRowH - 4.0f) * 0.5f), 3.0f, dot);
-         dl->AddText(ImVec2(x + 19.0f, start.y + (kTabRowH - 4.0f - ImGui::GetFontSize()) * 0.5f),
+         dl->AddCircleFilled(ImVec2(x + 10.0f, start.y + (kTabRowH) * 0.5f), 3.0f, dot);
+         dl->AddText(ImVec2(x + 19.0f, start.y + (kTabRowH - ImGui::GetFontSize()) * 0.5f),
                      i == sActive ? textColor : dimColor, title.c_str());
          if (hovered || i == sActive)
          {
@@ -752,9 +763,9 @@ namespace
          x += width + 4.0f;
       }
       ImGui::SetCursorScreenPos(ImVec2(x, start.y));
-      ImGui::InvisibleButton("##newtab", ImVec2(22.0f, kTabRowH - 4.0f));
+      ImGui::InvisibleButton("##newtab", ImVec2(kTabRowH, kTabRowH));
       {
-         const ImVec2 c(x + 11.0f, start.y + (kTabRowH - 4.0f) * 0.5f);
+         const ImVec2 c(x + kTabRowH * 0.5f, start.y + kTabRowH * 0.5f);
          const ImU32 mark = ImGui::IsItemHovered() ? textColor : dimColor;
          dl->AddLine(ImVec2(c.x - 4.5f, c.y), ImVec2(c.x + 4.5f, c.y), mark, 1.25f);
          dl->AddLine(ImVec2(c.x, c.y - 4.5f), ImVec2(c.x, c.y + 4.5f), mark, 1.25f);
@@ -776,7 +787,7 @@ namespace
       }
       if (closeIndex >= 0)
          CloseTab(closeIndex);
-      ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + kTabRowH));
+      ImGui::SetCursorScreenPos(ImVec2(start.x, start.y + kTabRowH + tok::row_gap));
    }
 
    void DrawSearchRow(Tab& tab, const term::Snapshot* snap)
@@ -931,7 +942,7 @@ namespace
          if (!gChatSideTerminal)
          {
             DrawChatPanel();
-            DrawDockMenu(false, nullptr);   // right-click: Dock Position and Close, as on every panel
+            DrawDockMenu(false, nullptr, true);   // right-click: Dock Position and Close, as on every panel
             return;
          }
          // The terminal opens beside the chat, as the side terminal does in Claude: chat left, shell right.
@@ -940,14 +951,14 @@ namespace
          const float left = std::floor((avail.x - gap) * 0.55f);
          ImGui::BeginChild("##chatside", ImVec2(left, avail.y), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
          DrawChatPanel();
-         DrawDockMenu(false, nullptr);
+         DrawDockMenu(false, nullptr, true);
          if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) && ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
             gTerminalFocus = false;
-         ImGui::EndChild();
+         EndChildSafe();
          FormParts::Inline(0.0f, gap);
          ImGui::BeginChild("##shellside", ImVec2(0.0f, avail.y), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
          DrawTerminalBody();
-         ImGui::EndChild();
+         EndChildSafe();
          return;
       }
       DrawTerminalBody();
@@ -1004,7 +1015,7 @@ namespace
       }
 
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), tok::U32(tok::terminal_bg, CategoryColors::IsThemeLight()), tok::radius_field);
+      dl->AddRectFilled(origin, ImVec2(origin.x + avail.x, origin.y + avail.y), tok::U32(tok::terminal_bg, CategoryColors::IsThemeLight()), tok::radius_control);
       ImGui::InvisibleButton("##terminalcells", avail, ImGuiButtonFlags_MouseButtonLeft | ImGuiButtonFlags_MouseButtonRight | ImGuiButtonFlags_MouseButtonMiddle);
       if (ImGui::IsItemClicked(ImGuiMouseButton_Left) || ImGui::IsItemClicked(ImGuiMouseButton_Right))
          gTerminalFocus = true;
@@ -1053,6 +1064,7 @@ namespace
 }
 
 ImFont* TerminalMonoFont() { return sFont; }
+void MergePlatformFallbackFonts(ImGuiIO& io, float bakedPx, bool ja);
 
 void TerminalLoadFonts(float bakedPx)
 {
@@ -1063,7 +1075,8 @@ void TerminalLoadFonts(float bakedPx)
    if (regular.empty())
       return;
    // Dynamic atlas: only glyphs that are drawn get rasterized, so the whole faces and their fallback can be merged.
-   const std::string noto = BundledResourcePath("fonts/NotoSansSC-Subset.otf");
+   const bool ja = I18n::CurrentLanguage() == "ja";
+   const std::string noto = BundledResourcePath(ja ? "fonts/NotoSansJP-Subset.otf" : "fonts/NotoSansSC-Subset.otf");
    const std::string inter = BundledResourcePath("fonts/Inter-Regular.ttf");
    const auto load = [&](const std::string& path)
    {
@@ -1076,6 +1089,7 @@ void TerminalLoadFonts(float bakedPx)
          io.Fonts->AddFontFromFileTTF(inter.c_str(), bakedPx, &merge);
       if (!noto.empty())
          io.Fonts->AddFontFromFileTTF(noto.c_str(), bakedPx, &merge);
+      MergePlatformFallbackFonts(io, bakedPx, ja);
       return font;
    };
    sFont = load(regular);
@@ -1132,7 +1146,9 @@ void DrawTerminalDocked(const char* id, const ImVec2& size)
       case 2: in.r = 0.0f; break;
       default: in.b = 0.0f; break;
    }
+   PushDockedPanelStyle(/*isChild=*/true);
    PanelFrame::BeginCard("##terminalcontent", cardSize, in);
+   PopDockedPanelStyle();
    const auto drawStart = std::chrono::steady_clock::now();
    DrawPanel();
    const double drawn = std::chrono::duration<double>(std::chrono::steady_clock::now() - drawStart).count();
@@ -1148,7 +1164,7 @@ void DrawTerminalDocked(const char* id, const ImVec2& size)
    }
    const ImVec2 savedSpacing = ImGui::GetStyle().ItemSpacing;
    ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, 0.0f);
-   ImGui::EndChild();
+   EndChildSafe();
    ImGui::GetStyle().ItemSpacing = savedSpacing;
 }
 

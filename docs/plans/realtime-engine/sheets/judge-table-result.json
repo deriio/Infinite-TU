@@ -1,0 +1,29 @@
+{
+ "times": {
+  "truth": 193.5258047580719,
+  "pt": 315.07180976867676,
+  "settle": 119.63148331642151,
+  "live": 38.93389916419983
+ },
+ "scores": {
+  "pt": {
+   "flip": 0.0786,
+   "brightness_ratio": 1.025,
+   "luma_err": 0.008
+  },
+  "settle": {
+   "flip": 0.08,
+   "brightness_ratio": 1.03,
+   "luma_err": 0.0079
+  },
+  "live": {
+   "flip": 0.097,
+   "brightness_ratio": 1.004,
+   "luma_err": 0.0106
+  }
+ },
+ "size": [
+  1920,
+  1440
+ ]
+}

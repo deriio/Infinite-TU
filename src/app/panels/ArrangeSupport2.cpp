@@ -47,7 +47,7 @@ namespace app
    {
       long long bar, beat, six;
       ArrangeSplitBBT(t, bar, beat, six);
-      char buf[48];
+      char buf[80];
       snprintf(buf, sizeof(buf), "%lld.%lld.%lld", bar + 1, beat + 1, six + 1);
       return buf;
    }
@@ -56,7 +56,7 @@ namespace app
    {
       long long bar, beat, six;
       ArrangeSplitBBT(t, bar, beat, six);
-      char buf[48];
+      char buf[80];
       snprintf(buf, sizeof(buf), "%lld.%lld.%lld", bar, beat, six);
       return buf;
    }
@@ -685,6 +685,33 @@ namespace app
    int ArrangeRenderEffectiveVideoSource(Arrange::Tick a, Arrange::Tick b)
    {
       return ArrangeRenderVideoClipsInRange(a, b) > 0 ? kArrangeVideoTimeline : kArrangeVideoNone;
+   }
+
+
+   // The job the Timeline's Render dialog builds from the arrangement's render settings. Shared with
+   // headless --render --timeline so the two can never disagree about range, size, fps or sources.
+   ArrangeRenderJob ArrangeRenderJobFromSettings(int markerA, int markerB, const std::string& path)
+   {
+      const Arrange::Settings& rset = gArrange.settings;
+      ArrangeRenderJob job;
+      job.rangeKind = rset.renderRangeKind;
+      Arrange::Tick a = 0, b = 0;
+      ArrangeRenderResolveRange(rset.renderRangeKind, markerA, markerB, rset.renderRangeStart, rset.renderRangeEnd, a, b);
+      job.startTick = a;
+      job.endTick = b;
+      job.audioSource = ArrangeRenderEffectiveAudioSource();
+      job.videoSource = ArrangeRenderEffectiveVideoSource(a, b);
+      // Always 0: the Timeline renders the timeline. The canvas Output take is the Output node's own record button.
+      job.canvasVideoUid = 0;
+      job.width = rset.renderWidth;
+      job.height = rset.renderHeight;
+      job.fps = rset.renderFps;
+      // Follows Settings -> Audio, not rset.renderSampleRate: the graph only generates at the rate its nodes
+      // were prepared at, so a per-arrangement rate would be a choice nothing downstream could honour.
+      job.sampleRate = (int)llround(ArrangeRenderActiveSampleRate());
+      job.format = job.videoSource == kArrangeVideoNone ? 2 : (rset.renderFormat == 1 ? 1 : 0);
+      job.path = path;
+      return job;
    }
 
 

@@ -2,6 +2,11 @@
 #include "DrumPatterns.h"
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
+#include <vector>
+#include <cctype>
+#include "json.hpp"
 #include <atomic>
 #include <cmath>
 #include <cstdio>
@@ -116,6 +121,9 @@ public:
       mLaneBoostDecayCoeff[lane].store(boostDecayCoeff, std::memory_order_relaxed);
    }
 
+   // A pad hit from the Drum panel: fired on frame 0 of the next block, transport or not.
+   void PushAudition(int lane, float vel) { mAudition[lane].store(vel, std::memory_order_relaxed); }
+
    void PushLaneState(int lane, bool mute, bool solo, int choke)
    {
       mLaneMute[lane].store(mute, std::memory_order_relaxed);
@@ -130,6 +138,22 @@ public:
    void PushLaneAccentGain(int lane, float gain) { mLaneAccentGain[lane].store(gain - 1.0f, std::memory_order_relaxed); }
 
    void PushStep(int lane, int step, float vel) { mStepVel[lane][step].store(vel, std::memory_order_relaxed); }
+   void PushTrig(int lane, int step, float prob, int cond, float nudge)
+   {
+      mStepProb[lane][step].store(prob, std::memory_order_relaxed);
+      mStepCond[lane][step].store(cond, std::memory_order_relaxed);
+      mStepNudge[lane][step].store(nudge, std::memory_order_relaxed);
+   }
+   // `cutoffHz` / `q` are final values (the 0..1 -> Hz map happens on the main thread).
+   void PushLaneShape(int lane, int steps, bool reverse, int filter, float cutoffHz, float q)
+   {
+      mLaneSteps[lane].store(steps, std::memory_order_relaxed);
+      mLaneReverse[lane].store(reverse, std::memory_order_relaxed);
+      mLaneFilter[lane].store(filter, std::memory_order_relaxed);
+      mLaneCutoffHz[lane].store(cutoffHz, std::memory_order_relaxed);
+      mLaneQ[lane].store(q, std::memory_order_relaxed);
+   }
+   void PushFill(bool on) { mFill.store(on, std::memory_order_relaxed); }
 
    void SetRateFix(bool on) { mRateFix.store(on, std::memory_order_relaxed); }
 
@@ -199,15 +223,43 @@ public:
       // never from an internal "steps fired so far" counter - see the class
       // comment on DrumSequencerNode. Transport::AdvanceAudioClock() has
       // already run for this block (AudioEngine::Process calls it before any
-      // node's ProcessBlock), so Beats() here is the block's *end* position;
-      // the previous call's end position (mPrevRawPos) is this block's start.
+      // node's ProcessBlock), so Beats() is the block's *end* and
+      // BlockStartBeats() its start (taken after a seek, before a loop wrap).
+      //
+      // Three cases the old "resync to the end on any backwards move" lost:
+      //  - a seek (Return to Start, a ruler click): the block starts at the
+      //    target, so a step sitting exactly there (step 1 at beat 0) fires on
+      //    the block's first frame instead of being skipped, and a forward
+      //    seek never bursts every step it jumped over;
+      //  - a loop lap: the block is split at the wrap frame, so the step at the
+      //    loop start fires there instead of being skipped every pass;
+      //  - a stopped clock: nothing fires, but a playhead parked on a step
+      //    (rewound while stopped) fires that step when Play starts.
+      const Transport& tr = Transport::Instance();
       const int rateDiv = mRate.load(std::memory_order_relaxed);
       const double beatsPerStep = std::max(1e-6, MusicTime::BeatsFor((MusicTime::RateDivision)rateDiv));
       const int numSteps = std::clamp(mNumSteps.load(std::memory_order_relaxed), 1, kMaxSteps);
       const float swing = std::clamp(mSwing.load(std::memory_order_relaxed), 0.0f, 1.0f);
       const bool run = mRun.load(std::memory_order_relaxed);
 
-      const double rawPosNow = Transport::Instance().Beats() / beatsPerStep;
+      const bool fillOn = mFill.load(std::memory_order_relaxed);
+      int laneLen[kNumLanes];
+      for (int lane = 0; lane < kNumLanes; lane++)
+      {
+         const int own = mLaneSteps[lane].load(std::memory_order_relaxed);
+         laneLen[lane] = own > 0 ? std::min(own, kMaxSteps) : numSteps;
+      }
+
+      const double rawStart = tr.BlockStartBeats() / beatsPerStep;
+      const double rawPosNow = tr.Beats() / beatsPerStep;
+      // A start that is not where the last block ended is a jump (Reset()'s
+      // 1e-6 lead is well inside the tolerance, so it still reads as "here").
+      const bool jumped = std::fabs(rawStart - mPrevRawPos) > 1e-4;
+      const double from = jumped ? rawStart - 1e-6 : mPrevRawPos;
+      // Trig conditions count pattern loops from where play started (or last jumped to), like hardware.
+      if (tr.IsPlaying() && (!mWasPlaying || jumped))
+         mStartK = (long long)std::floor(from + 1e-6);
+      mWasPlaying = tr.IsPlaying();
 
       struct FireEvent
       {
@@ -218,37 +270,57 @@ public:
       FireEvent stepEvts[64];
       int numStepEvts = 0;
 
-      if (rawPosNow < mPrevRawPos)
+      // Landmarks in (lo, hi] - or (lo, hi) when the span ends at a loop end,
+      // which belongs to the lap - placed over frames [f0, f1).
+      auto scan = [&](double lo, double hi, bool hiInclusive, int f0, int f1)
       {
-         // Rewind/scrub: don't iterate a negative range, just resync.
-         mPrevRawPos = rawPosNow;
-      }
-      else
-      {
-         const double span = rawPosNow - mPrevRawPos;
-         const int kStart = (int)std::floor(mPrevRawPos - 0.5);
-         const int kEnd = (int)std::ceil(rawPosNow);
+         const double span = hi - lo;
+         // Swing (<= 0.5) plus nudge (+-0.48) can move a hit up to one step either way of its slot.
+         const int kStart = (int)std::floor(lo - 1.0);
+         const int kEnd = (int)std::ceil(hi + 0.5);
          for (int lane = 0; lane < kNumLanes && numStepEvts < 64; lane++)
          {
+            const int len = laneLen[lane];
             for (int k = kStart; k <= kEnd && numStepEvts < 64; k++)
             {
-               const int stepIndex = ((k % numSteps) + numSteps) % numSteps;
-               const bool odd = (stepIndex % 2) == 1;
-               const double landmark = (double)k + (odd ? (double)swing * 0.5 : 0.0);
-               if (landmark > mPrevRawPos && landmark <= rawPosNow)
+               const int stepIndex = ((k % len) + len) % len;
+               const bool odd = (((k % 2) + 2) % 2) == 1; // swing follows the time grid, not the lane's own length
+               const double landmark = (double)k + (odd ? (double)swing * 0.5 : 0.0) +
+                                       (double)mStepNudge[lane][stepIndex].load(std::memory_order_relaxed);
+               if (landmark > lo && (hiInclusive ? landmark <= hi : landmark < hi))
                {
                   const float v = mStepVel[lane][stepIndex].load(std::memory_order_relaxed);
-                  if (v > 0.0f)
+                  if (v > 0.0f && TrigPasses(lane, stepIndex, k, len, fillOn))
                   {
-                     const double frac = span > 1e-9 ? (landmark - mPrevRawPos) / span : 0.0;
+                     const double frac = span > 1e-9 ? (landmark - lo) / span : 0.0;
                      const int frameOffset =
-                        std::clamp((int)(frac * numFrames), 0, std::max(0, numFrames - 1));
+                        std::clamp(f0 + (int)(frac * (f1 - f0)), 0, std::max(0, numFrames - 1));
                      stepEvts[numStepEvts++] = { lane, frameOffset, v };
                   }
                }
             }
          }
+      };
+
+      if (!tr.IsPlaying())
+         mPrevRawPos = from;
+      else if (rawPosNow >= from)
+      {
+         scan(from, rawPosNow, true, 0, numFrames);
          mPrevRawPos = rawPosNow;
+      }
+      else
+      {
+         const double loopStart = tr.LoopStartBeats() / beatsPerStep;
+         const double loopEnd = tr.LoopEndBeats() / beatsPerStep;
+         if (tr.LoopEnabled() && loopEnd > loopStart && from < loopEnd && rawPosNow >= loopStart)
+         {
+            const double before = loopEnd - from, after = rawPosNow - loopStart;
+            const int wrapFrame = std::clamp((int)std::lround(before / std::max(1e-12, before + after) * numFrames), 0, numFrames);
+            scan(from, loopEnd, false, 0, wrapFrame);
+            scan(loopStart - 1e-6, rawPosNow, true, wrapFrame, numFrames);
+         }
+         mPrevRawPos = rawPosNow; // anything else moving backwards: resync
       }
 
       // Keep events time-ordered so the per-sample merge below is a single
@@ -271,6 +343,32 @@ public:
          laneAudible[lane] = anySolo ? solo : !mute;
       }
 
+      // Filter coefficients once per block, only for lanes whose filter is on (state cleared when it turns on).
+      int filterType[kNumLanes];
+      for (int lane = 0; lane < kNumLanes; lane++)
+      {
+         filterType[lane] = mLaneFilter[lane].load(std::memory_order_relaxed);
+         if (filterType[lane] == 0)
+         {
+            mSvfOn[lane] = false;
+            continue;
+         }
+         const float hz = std::min(mLaneCutoffHz[lane].load(std::memory_order_relaxed), (float)mSampleRate * 0.45f);
+         const float q = mLaneQ[lane].load(std::memory_order_relaxed);
+         for (int ch = 0; ch < 2; ch++)
+         {
+            DspMath::TptSvf& f = mLaneSvf[lane][ch];
+            f.SetSampleRate(mSampleRate);
+            if (!mSvfOn[lane])
+               f.Reset();
+            if (!mSvfOn[lane] || hz != mSvfHz[lane] || q != mSvfQ[lane])
+               f.SetCutoff(hz, q);
+         }
+         mSvfOn[lane] = true;
+         mSvfHz[lane] = hz;
+         mSvfQ[lane] = q;
+      }
+
       int stepIdx = 0;
       for (int i = 0; i < numFrames; i++)
       {
@@ -288,6 +386,10 @@ public:
          }
          const float masterVolNow = mMailbox.SmoothedValue(kMasterVolumeParam);
 
+         if (i == 0)
+            for (int lane = 0; lane < kNumLanes; lane++)
+               if (const float av = mAudition[lane].exchange(0.0f, std::memory_order_relaxed); av > 0.0f)
+                  TriggerLane(lane, av, laneVolNow, lanePanNow, lanePitchNow);
          while (run && stepIdx < numStepEvts && stepEvts[stepIdx].frameOffset <= i)
          {
             TriggerLane(stepEvts[stepIdx].lane, stepEvts[stepIdx].vel, laneVolNow, lanePanNow, lanePitchNow);
@@ -336,8 +438,23 @@ public:
             laneR[lane] += vR;
 
             voice.readPos += voice.rate;
-            if (voice.readPos >= voice.endFrame - 1 || (voice.decayCoeff < 1.0f && totalAmp < 1e-4f))
+            const bool ended = voice.rate >= 0.0f ? voice.readPos >= voice.endFrame - 1 : voice.readPos <= voice.startFrame;
+            if (ended || (voice.decayCoeff < 1.0f && totalAmp < 1e-4f))
                voice.active = false;
+         }
+
+         // Per-lane filter on the lane's own bus (TR-8S style instrument FX), then back into the mix.
+         for (int lane = 0; lane < kNumLanes; lane++)
+         {
+            if (filterType[lane] == 0)
+               continue;
+            const float dl = laneL[lane], dr = laneR[lane];
+            const auto oL = mLaneSvf[lane][0].Process(dl);
+            const auto oR = mLaneSvf[lane][1].Process(dr);
+            laneL[lane] = filterType[lane] == 1 ? oL.low : oL.high;
+            laneR[lane] = filterType[lane] == 1 ? oR.low : oR.high;
+            sampleL += laneL[lane] - dl;
+            sampleR += laneR[lane] - dr;
          }
 
          if (outputs[0] != nullptr)
@@ -393,6 +510,7 @@ private:
       const Platform::SampleBuffer* buffer = nullptr;
       double readPos = 0.0;
       double endFrame = 0.0; // voice stops at this frame (laneEnd * buffer->numFrames)
+      double startFrame = 0.0; // a reversed voice stops here instead
       float rate = 1.0f;
       float velocity = 0.0f;
       float panL = 1.0f, panR = 1.0f;
@@ -454,8 +572,10 @@ private:
       const float startFrac = mLaneStart[lane].load(std::memory_order_relaxed);
       const float endFrac = mLaneEnd[lane].load(std::memory_order_relaxed);
       voice.buffer = buf;
-      voice.readPos = (double)startFrac * buf->numFrames;
+      const bool reverse = mLaneReverse[lane].load(std::memory_order_relaxed);
+      voice.startFrame = (double)startFrac * buf->numFrames;
       voice.endFrame = (double)endFrac * buf->numFrames;
+      voice.readPos = reverse ? std::max(voice.startFrame, voice.endFrame - 1.0) : voice.startFrame;
       // Accent: full-velocity steps (X cells / a fully dragged cell) play
       // accent semitones higher. Both terms are clamped to +-24 on the main
       // thread, so the sum stays within +-48 st with no clamp needed here.
@@ -465,7 +585,7 @@ private:
       const double srRatio = (mRateFix.load(std::memory_order_relaxed) && buf->sampleRate > 0.0 && mSampleRate > 0.0)
                                 ? buf->sampleRate / mSampleRate
                                 : 1.0;
-      voice.rate = NoteRateForPitch(lanePitchNow[lane] + accent) * (float)srRatio;
+      voice.rate = NoteRateForPitch(lanePitchNow[lane] + accent) * (float)srRatio * (reverse ? -1.0f : 1.0f);
       const float accentGain = velocity >= 0.99f ? 1.0f + mLaneAccentGain[lane].load(std::memory_order_relaxed) : 1.0f;
       voice.velocity = velocity * laneVolNow[lane] * accentGain;
       DspMath::EqualPowerPan(lanePanNow[lane], voice.panL, voice.panR);
@@ -477,6 +597,44 @@ private:
       voice.decayAmp = 1.0f;
       voice.decayCoeff = mLaneDecayCoeff[lane].load(std::memory_order_relaxed);
       voice.active = true;
+   }
+
+   // Probability and condition for the hit on `step` at absolute step slot `k`. Probability is a
+   // hash of the slot, not a running RNG, so a render of the same bars always plays the same hits.
+   bool TrigPasses(int lane, int step, int k, int len, bool fillOn) const
+   {
+      const int cond = mStepCond[lane][step].load(std::memory_order_relaxed);
+      if (cond != 0)
+      {
+         // Loop number counted in whole lane passes since play started; a pass begins on the lane's step 1,
+         // so starting mid-pattern makes that first partial pass loop 0.
+         auto passOf = [len](long long x) { return x >= 0 ? x / len : -((-x + len - 1) / len); };
+         const long long iter = passOf((long long)k) - passOf(mStartK);
+         switch (cond)
+         {
+         case 1: if (!fillOn) return false; break;
+         case 2: if (fillOn) return false; break;
+         case 3: if (iter != 0) return false; break;
+         case 4: if (iter == 0) return false; break;
+         default:
+         {
+            static constexpr int kAB[9][2] = { { 1, 2 }, { 2, 2 }, { 1, 3 }, { 2, 3 }, { 3, 3 },
+                                               { 1, 4 }, { 2, 4 }, { 3, 4 }, { 4, 4 } };
+            const int ci = std::clamp(cond - 5, 0, 8);
+            const long long b = kAB[ci][1];
+            if ((((iter % b) + b) % b) != kAB[ci][0] - 1)
+               return false;
+         }
+         }
+      }
+      const float prob = mStepProb[lane][step].load(std::memory_order_relaxed);
+      if (prob >= 1.0f)
+         return true;
+      uint32_t h = (uint32_t)k * 2654435761u ^ (uint32_t)(lane * 40503 + step * 9973 + 0x9E3779B9u);
+      h ^= h >> 15;
+      h *= 0x2C1B3C6Du;
+      h ^= h >> 12;
+      return (float)(h & 0xFFFFFF) / 16777216.0f < prob;
    }
 
    // Fast, click-avoiding fade rather than a hard stop: forces the voice
@@ -513,6 +671,22 @@ private:
    std::atomic<float> mLaneAccentPitch[kNumLanes] = {};
    std::atomic<float> mLaneAccentGain[kNumLanes] = {}; // linear gain minus 1, so zero-init = no boost
    std::atomic<float> mStepVel[kNumLanes][kMaxSteps] = {};
+   std::atomic<float> mAudition[kNumLanes] = {};
+   std::atomic<float> mStepProb[kNumLanes][kMaxSteps] = {};
+   std::atomic<int> mStepCond[kNumLanes][kMaxSteps] = {};
+   std::atomic<float> mStepNudge[kNumLanes][kMaxSteps] = {};
+   std::atomic<int> mLaneSteps[kNumLanes] = {};
+   std::atomic<bool> mLaneReverse[kNumLanes] = {};
+   std::atomic<int> mLaneFilter[kNumLanes] = {};
+   std::atomic<float> mLaneCutoffHz[kNumLanes] = {};
+   std::atomic<float> mLaneQ[kNumLanes] = {};
+   std::atomic<bool> mFill { false };
+   DspMath::TptSvf mLaneSvf[kNumLanes][2];
+   bool mSvfOn[kNumLanes] = {};
+   float mSvfHz[kNumLanes] = {};
+   float mSvfQ[kNumLanes] = {};
+   long long mStartK = 0;
+   bool mWasPlaying = false;
    std::atomic<float> mLaneStart[kNumLanes] = {};
    std::atomic<float> mLaneEnd[kNumLanes] = {};
 
@@ -543,6 +717,19 @@ DrumSequencerNode::DrumSequencerNode()
       laneChoke[lane] = 0;
       laneAccentPitch[lane] = 0.0f;
       laneAccentLevel[lane] = 0.0f;
+      laneCutoff[lane] = 1.0f;
+      for (int st = 0; st < kMaxSteps; st++)
+      {
+         stepProb[lane][st] = 1.0f;
+         mLastStepProb[lane][st] = -1.0f;
+         mLastStepCond[lane][st] = -1;
+         mLastStepNudge[lane][st] = -9.0f;
+      }
+      mLastLaneSteps[lane] = -1;
+      mLastLaneReverse[lane] = false;
+      mLastLaneFilter[lane] = -1;
+      mLastLaneCutoff[lane] = -1.0f;
+      mLastLaneReso[lane] = -1.0f;
 
       mLastLaneVolume[lane] = -1.0f;
       mLastLanePan[lane] = -99.0f;
@@ -710,6 +897,29 @@ void DrumSequencerNode::PushDirtyParams()
             mAudioNode->PushStep(lane, step, stepVel[lane][step]);
             mLastStepVel[lane][step] = stepVel[lane][step];
          }
+         if (stepProb[lane][step] != mLastStepProb[lane][step] || stepCond[lane][step] != mLastStepCond[lane][step] ||
+             stepNudge[lane][step] != mLastStepNudge[lane][step])
+         {
+            mAudioNode->PushTrig(lane, step, std::clamp(stepProb[lane][step], 0.0f, 1.0f),
+                                 std::clamp(stepCond[lane][step], 0, kNumConds - 1),
+                                 std::clamp(stepNudge[lane][step], -0.48f, 0.48f));
+            mLastStepProb[lane][step] = stepProb[lane][step];
+            mLastStepCond[lane][step] = stepCond[lane][step];
+            mLastStepNudge[lane][step] = stepNudge[lane][step];
+         }
+      }
+      if (laneSteps[lane] != mLastLaneSteps[lane] || laneReverse[lane] != mLastLaneReverse[lane] ||
+          laneFilter[lane] != mLastLaneFilter[lane] || laneCutoff[lane] != mLastLaneCutoff[lane] ||
+          laneReso[lane] != mLastLaneReso[lane])
+      {
+         const float c = std::clamp(laneCutoff[lane], 0.0f, 1.0f), r = std::clamp(laneReso[lane], 0.0f, 1.0f);
+         mAudioNode->PushLaneShape(lane, std::clamp(laneSteps[lane], 0, kMaxSteps), laneReverse[lane],
+                                   std::clamp(laneFilter[lane], 0, 2), 20.0f * std::pow(1000.0f, c), 0.5f + 9.5f * r * r);
+         mLastLaneSteps[lane] = laneSteps[lane];
+         mLastLaneReverse[lane] = laneReverse[lane];
+         mLastLaneFilter[lane] = laneFilter[lane];
+         mLastLaneCutoff[lane] = laneCutoff[lane];
+         mLastLaneReso[lane] = laneReso[lane];
       }
    }
 
@@ -735,6 +945,11 @@ void DrumSequencerNode::PushDirtyParams()
       mLastRun = run;
    }
 
+   if (fill != mLastFill)
+   {
+      mAudioNode->PushFill(fill);
+      mLastFill = fill;
+   }
    mFirstCook = false;
 }
 
@@ -763,6 +978,8 @@ void DrumSequencerNode::VisitParams(ParamVisitor& v)
       v.Bool(name, laneSolo[lane]);
       snprintf(name, sizeof(name), "lane%d_choke", lane);
       v.Int(name, laneChoke[lane]);
+      snprintf(name, sizeof(name), "lane%d_kit", lane);
+      v.Bool(name, laneKit[lane]);
       snprintf(name, sizeof(name), "lane%d_accentPitch", lane);
       v.Float(name, laneAccentPitch[lane]);
       snprintf(name, sizeof(name), "lane%d_accentLevel", lane);
@@ -777,6 +994,48 @@ void DrumSequencerNode::VisitParams(ParamVisitor& v)
          v.Float(name, stepVel[lane][step]);
          stepVel[lane][step] = std::clamp(stepVel[lane][step], 0.0f, 1.0f); // the grid's range; 1e9 played ~3e8 loud (B-K-036)
       }
+      snprintf(name, sizeof(name), "lane%d_len", lane);
+      v.Int(name, laneSteps[lane]);
+      laneSteps[lane] = std::clamp(laneSteps[lane], 0, kMaxSteps);
+      snprintf(name, sizeof(name), "lane%d_reverse", lane);
+      v.Bool(name, laneReverse[lane]);
+      snprintf(name, sizeof(name), "lane%d_filter", lane);
+      v.Int(name, laneFilter[lane]);
+      laneFilter[lane] = std::clamp(laneFilter[lane], 0, 2);
+      snprintf(name, sizeof(name), "lane%d_cutoff", lane);
+      v.Float(name, laneCutoff[lane]);
+      snprintf(name, sizeof(name), "lane%d_reso", lane);
+      v.Float(name, laneReso[lane]);
+      // Trig data packs into one text per lane ("" when plain): per step PP C NN in hex =
+      // probability 0..100, condition, nudge+50 (hundredths of a step). Keeps a saved patch small.
+      {
+         std::string packed;
+         bool plain = true;
+         for (int st = 0; st < kMaxSteps; st++)
+            if (stepProb[lane][st] < 1.0f || stepCond[lane][st] != 0 || stepNudge[lane][st] != 0.0f)
+               plain = false;
+         if (!plain)
+         {
+            char cell[16];
+            for (int st = 0; st < kMaxSteps; st++)
+            {
+               snprintf(cell, sizeof(cell), "%02x%x%02x", (int)std::lround(std::clamp(stepProb[lane][st], 0.0f, 1.0f) * 100.0f),
+                        std::clamp(stepCond[lane][st], 0, kNumConds - 1),
+                        (int)std::lround(std::clamp(stepNudge[lane][st], -0.48f, 0.48f) * 100.0f) + 50);
+               packed += cell;
+            }
+         }
+         snprintf(name, sizeof(name), "lane%d_trigs", lane);
+         v.Text(name, packed);
+         if (packed.size() == (size_t)kMaxSteps * 5)
+            for (int st = 0; st < kMaxSteps; st++)
+            {
+               const std::string c = packed.substr((size_t)st * 5, 5);
+               stepProb[lane][st] = std::clamp((float)std::strtol(c.substr(0, 2).c_str(), nullptr, 16) / 100.0f, 0.0f, 1.0f);
+               stepCond[lane][st] = std::clamp((int)std::strtol(c.substr(2, 1).c_str(), nullptr, 16), 0, kNumConds - 1);
+               stepNudge[lane][st] = std::clamp((float)(std::strtol(c.substr(3, 2).c_str(), nullptr, 16) - 50) / 100.0f, -0.48f, 0.48f);
+            }
+      }
    }
    v.Int("rate", rate);
    rate = std::clamp(rate, 0, (int)MusicTime::kNumRateDivisions - 1); // loaded unchecked; cast to RateDivision
@@ -787,6 +1046,17 @@ void DrumSequencerNode::VisitParams(ParamVisitor& v)
    volume = std::clamp(volume, 0.0f, 1.0f);
    v.Bool("run", run);
    v.Text("patternName", patternName);
+   {
+      v.Text("pagename", pageName);
+      if (pageName.size() > 48)
+         pageName.resize(48);
+      char hex[16];
+      snprintf(hex, sizeof(hex), "%06X", pageColor & 0xFFFFFFu);
+      std::string col = pageColor ? hex : "";
+      v.Text("pagecolor", col);
+      pageColor = col.empty() ? 0u : (unsigned int)(strtoul(col.c_str(), nullptr, 16) & 0xFFFFFFu);
+      v.Int("pageorder", pageOrder);
+   }
    v.Int("patternPart", patternPart);
    v.Float("globalTransient", globalTransient);
    v.Float("globalDecay", globalDecay);
@@ -801,6 +1071,45 @@ int DrumSequencerNode::CurrentStep() const
    const int steps = std::clamp(numSteps, 1, kMaxSteps);
    const int rawStep = (int)std::floor(rawPos);
    return ((rawStep % steps) + steps) % steps;
+}
+
+int DrumSequencerNode::LaneStepCount(int lane) const
+{
+   const int own = laneSteps[Clamp(lane)];
+   return own > 0 ? std::min(own, kMaxSteps) : std::clamp(numSteps, 1, kMaxSteps);
+}
+
+int DrumSequencerNode::LaneCurrentStep(int lane) const
+{
+   const double beatsPerStep = std::max(1e-6, MusicTime::BeatsFor((MusicTime::RateDivision)rate));
+   const int len = LaneStepCount(lane);
+   const int rawStep = (int)std::floor(Transport::Instance().Beats() / beatsPerStep);
+   return ((rawStep % len) + len) % len;
+}
+
+void DrumSequencerNode::ResetTrigs(int lane)
+{
+   for (int l = 0; l < kNumLanes; l++)
+      if (lane < 0 || l == lane)
+         for (int st = 0; st < kMaxSteps; st++)
+         {
+            stepProb[l][st] = 1.0f;
+            stepCond[l][st] = 0;
+            stepNudge[l][st] = 0.0f;
+         }
+}
+
+const char* DrumSequencerNode::CondName(int cond)
+{
+   static const char* kNames[kNumConds] = { "--",  "Fill", "!Fill", "1st", "!1st", "1:2", "2:2",
+                                            "1:3", "2:3",  "3:3",   "1:4", "2:4",  "3:4", "4:4" };
+   return kNames[std::clamp(cond, 0, kNumConds - 1)];
+}
+
+void DrumSequencerNode::Audition(int lane, float vel)
+{
+   if (mAudioNode)
+      mAudioNode->PushAudition(Clamp(lane), std::clamp(vel, 0.05f, 1.0f));
 }
 
 int DrumSequencerNode::LoadedLaneCount() const
@@ -820,7 +1129,7 @@ namespace
    // Resources/drumkits/infinite-basic folder, which moves when the app is
    // reinstalled elsewhere (or a patch travels to another machine). Returns
    // where the same file would be in the current kit folder, or "" when `path`
-   // is not a bundled-kit path or no kit folder is set. Splits on both / and \
+   // is not a bundled-kit path or no kit folder is set. Splits on both / and backslash
    // because the saved path may come from another OS.
    std::string StaleKitRetryPath(const std::string& path)
    {
@@ -843,6 +1152,55 @@ namespace
 void DrumSequencerNode::SetKitDir(const std::string& dir) { gKitDir = dir; }
 const std::string& DrumSequencerNode::KitDir() { return gKitDir; }
 
+namespace
+{
+   std::string gUserKitRoot;
+
+   struct UserLane { std::string path; float gainDb = 0.0f; float tune = 0.0f; };
+
+   // The first kit (by file name) in <root>/<genre slug>/, or false when there is none.
+   bool FindUserKit(const char* genre, UserLane (&lanes)[8])
+   {
+      if (gUserKitRoot.empty() || genre == nullptr || genre[0] == '\0')
+         return false;
+      std::string slug;
+      for (const char* c = genre; *c; c++)
+      {
+         const char ch = (char)std::tolower((unsigned char)*c);
+         if (std::isalnum((unsigned char)ch)) slug += ch;
+         else if (!slug.empty() && slug.back() != '-') slug += '-';
+      }
+      while (!slug.empty() && slug.back() == '-') slug.pop_back();
+      std::error_code ec;
+      const std::filesystem::path dir = std::filesystem::u8path(gUserKitRoot) / slug;
+      if (!std::filesystem::is_directory(dir, ec))
+         return false;
+      std::vector<std::filesystem::path> files;
+      for (const auto& e : std::filesystem::directory_iterator(dir, ec))
+         if (e.path().extension() == ".json")
+            files.push_back(e.path());
+      if (files.empty())
+         return false;
+      std::sort(files.begin(), files.end());
+      std::ifstream f(files.front());
+      const nlohmann::json j = nlohmann::json::parse(f, nullptr, false);
+      if (j.is_discarded() || !j.contains("lanes") || !j["lanes"].is_array())
+         return false;
+      const auto& arr = j["lanes"];
+      for (size_t i = 0; i < arr.size() && i < 8; i++)
+      {
+         if (!arr[i].is_object()) continue;
+         lanes[i].path = arr[i].value("path", std::string());
+         lanes[i].gainDb = arr[i].value("gain_db", 0.0f);
+         lanes[i].tune = arr[i].value("tune", 0.0f);
+      }
+      return true;
+   }
+}
+
+void DrumSequencerNode::SetUserKitRoot(const std::string& dir) { gUserKitRoot = dir; }
+const std::string& DrumSequencerNode::UserKitRoot() { return gUserKitRoot; }
+
 bool DrumSequencerNode::TryLoadLane(int lane, const std::string& path, std::string& error)
 {
    auto* decoded = new Platform::SampleBuffer();
@@ -861,6 +1219,7 @@ bool DrumSequencerNode::TryLoadLane(int lane, const std::string& path, std::stri
 bool DrumSequencerNode::LoadFileToLane(int lane, const std::string& path)
 {
    lane = Clamp(lane);
+   laneKit[lane] = false;   // the user's own sample from now on (ReloadFromPaths puts the flag back)
    std::string error;
    if (TryLoadLane(lane, path, error))
       return true;
@@ -951,10 +1310,12 @@ void DrumSequencerNode::ReloadFromPaths()
    // the user's trim settings on every reload and undo checkpoint.
    float savedStart[kNumLanes];
    float savedEnd[kNumLanes];
+   bool savedKit[kNumLanes];
    for (int lane = 0; lane < kNumLanes; lane++)
    {
       savedStart[lane] = laneStart[lane];
       savedEnd[lane] = laneEnd[lane];
+      savedKit[lane] = laneKit[lane];
    }
    for (int lane = 0; lane < kNumLanes; lane++)
    {
@@ -963,6 +1324,7 @@ void DrumSequencerNode::ReloadFromPaths()
          LoadFileToLane(lane, laneFilePath[lane]);
          laneStart[lane] = savedStart[lane];
          laneEnd[lane] = savedEnd[lane];
+         laneKit[lane] = savedKit[lane];
       }
       else if (!laneFileName[lane].empty())
       {
@@ -978,6 +1340,7 @@ void DrumSequencerNode::ReloadFromPaths()
 
 void DrumSequencerNode::Randomize()
 {
+   ResetTrigs(-1);
    // Seeds a musical starting pattern rather than white noise: kick on
    // downbeats, hats dense, snare on the backbeat (steps 4/12 of a 16-step
    // grid - "5/13" 1-based, matching a standard 4-on-the-floor feel).
@@ -1013,6 +1376,7 @@ void DrumSequencerNode::Randomize()
 
 void DrumSequencerNode::ClearPattern()
 {
+   ResetTrigs(-1);
    for (int lane = 0; lane < kNumLanes; lane++)
       for (int s = 0; s < kMaxSteps; s++)
          stepVel[lane][s] = 0.0f;
@@ -1021,6 +1385,7 @@ void DrumSequencerNode::ClearPattern()
 void DrumSequencerNode::RandomizeLane(int lane)
 {
    lane = Clamp(lane);
+   ResetTrigs(lane);
    const int steps = std::clamp(numSteps, 1, kMaxSteps);
    auto rnd01 = []() { return (float)rand() / (float)RAND_MAX; };
    // Same density buckets as Randomize()'s per-lane cases, but with no
@@ -1060,6 +1425,7 @@ void DrumSequencerNode::ClearLane(int lane)
    mAudioNode->PushBuffer(lane, new Platform::SampleBuffer());
    laneFilePath[lane].clear();
    laneFileName[lane].clear();
+   laneKit[lane] = false;
    laneStatus[lane] = "--";
    laneWaveCount[lane] = 0;
    lanePeaks[lane].Clear();
@@ -1072,6 +1438,7 @@ void DrumSequencerNode::ClearLane(int lane)
 
 void DrumSequencerNode::ApplyPattern(const DrumPatterns::Groove& g, int part)
 {
+   ResetTrigs(-1);
    part = std::clamp(part, 0, 2);
    const DrumPatterns::Part& p = g.parts[part];
    const int steps = std::clamp(p.steps, 1, kMaxSteps);
@@ -1100,7 +1467,7 @@ void DrumSequencerNode::ApplyPattern(const DrumPatterns::Groove& g, int part)
    patternName = g.name;
    patternPart = part;
 
-   LoadKitIntoEmptyLanes(p);
+   LoadKitIntoEmptyLanes(p, g.category);
 }
 
 namespace
@@ -1127,6 +1494,7 @@ namespace
 
 int DrumSequencerNode::ApplyMidiSong(const MidiFile::Song& song, const std::string& name)
 {
+   ResetTrigs(-1);
    constexpr int kStepsPerBeat = 4; // 1/16
    int laneOf[128];
    // GM drum file: it uses the percussion channel (10), or every hit is a GM drum key.
@@ -1247,12 +1615,14 @@ bool DrumSequencerNode::ApplyMidiFile(const std::string& path, std::string& erro
    return true;
 }
 
-void DrumSequencerNode::LoadKitIntoEmptyLanes(const DrumPatterns::Part& part)
+void DrumSequencerNode::LoadKitIntoEmptyLanes(const DrumPatterns::Part& part, const char* genre)
 {
-   if (gKitDir.empty())
+   UserLane user[8];
+   const bool hasUser = FindUserKit(genre, user);
+   if (gKitDir.empty() && !hasUser)
       return;
    const char sep = gKitDir.find('\\') != std::string::npos ? '\\' : '/';
-   const char tail = gKitDir.back();
+   const char tail = gKitDir.empty() ? '/' : gKitDir.back();
    const std::string base = gKitDir + ((tail == '/' || tail == '\\') ? "" : std::string(1, sep));
 
    bool filled[kNumLanes] = {};
@@ -1261,10 +1631,32 @@ void DrumSequencerNode::LoadKitIntoEmptyLanes(const DrumPatterns::Part& part)
       // Empty = nothing loaded AND no path to a sample that is merely
       // missing: a lane the user loaded (even one whose file has since moved)
       // is theirs and is never replaced.
-      if (part.lanes[lane] == nullptr || !laneFilePath[lane].empty() || !laneFileName[lane].empty())
+      // A lane a kit filled is the groove's to change; a lane the user loaded is never touched.
+      const bool fromKit = laneKit[lane] && !laneFilePath[lane].empty();
+      if (part.lanes[lane] == nullptr || (!fromKit && (!laneFilePath[lane].empty() || !laneFileName[lane].empty())))
          continue;
       std::string error; // a missing kit is silent: lane status stays "--"
-      filled[lane] = TryLoadLane(lane, base + DrumPatterns::KitFile(lane), error);
+      if (hasUser && !user[lane].path.empty() && TryLoadLane(lane, user[lane].path, error))
+      {
+         // The kit's loudness match (gain_db against the lane's 0.8 default; lane volume tops out at 1).
+         laneVolume[lane] = std::clamp(0.8f * std::pow(10.0f, user[lane].gainDb / 20.0f), 0.0f, 1.0f);
+         lanePitch[lane] = std::clamp(user[lane].tune, -24.0f, 24.0f);
+         filled[lane] = laneKit[lane] = true;
+         continue;
+      }
+      if (!gKitDir.empty() && (!fromKit || laneFilePath[lane] != base + DrumPatterns::KitFile(lane)))
+      {
+         filled[lane] = TryLoadLane(lane, base + DrumPatterns::KitFile(lane), error);
+         if (filled[lane])
+         {
+            laneKit[lane] = true;
+            if (fromKit)   // the last kit's level and tuning were for its own sample
+            {
+               laneVolume[lane] = 0.8f;
+               lanePitch[lane] = 0.0f;
+            }
+         }
+      }
    }
    // Closed hat (lane 2) cuts the open hat (lane 3) - only when this call put
    // both there and the user has not set a choke group on either.

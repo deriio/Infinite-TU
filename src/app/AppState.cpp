@@ -325,6 +325,7 @@ bool gHeadlessNeedProbe = false;
    int gRequestFitViewNodeIndex = -1;
    bool gRequestFitViewNodeZoom = false;
    int gRequestSelectNodeIndex = -1;
+   std::vector<uint64_t> gRequestRevealUids;
 
    // Set by the Edit menu, consumed next to the matching keyboard shortcuts.
    // The menu bar draws outside ed::Begin/End, and grouping needs the live
@@ -337,6 +338,7 @@ bool gHeadlessNeedProbe = false;
    bool gRequestBypass = false;
 
    bool gRequestCopy = false;
+   bool gRequestCut = false;   // copy the selection as text, then delete it
 
    bool gRequestPaste = false;
 
@@ -861,6 +863,8 @@ bool gHeadlessNeedProbe = false;
 
    float gMinimapOpacity = 0.85f;
 
+   View3DPrefs gView3DPrefs;
+
    float gZoomSensitivity = 0.5f;
 
    bool gHoveringItem = false;
@@ -979,6 +983,9 @@ bool gHeadlessNeedProbe = false;
    FieldSampleNode* gFieldSampleEditor = nullptr;
 
    bool gFieldSampleEditorOpen = false;
+
+   SpectralFieldNode* gSpectralFieldEditor = nullptr;
+   bool gSpectralFieldEditorOpen = false;
 
    FieldSynthNode* gFieldSynthEditor = nullptr;
    FieldNotesNode* gFieldNotesEditor = nullptr;
@@ -1523,6 +1530,7 @@ bool gHeadlessNeedProbe = false;
 
    bool gArrangeAudioBuiltRouting = false;
    bool gArrangeAudioBuiltStudio = false;
+   bool gArrangeAudioBuiltMixer = false;
 
    // Clip ids whose Retrigger flag was suppressed at the last rebuild because
    // their source node is also used by a clip on another lane - one physical
@@ -1535,6 +1543,7 @@ bool gHeadlessNeedProbe = false;
    // Every RebuildAudioTopology that got past gDeferAudioRebuild. Fixtures
    // read it to prove an edit costs exactly one rebuild and an idle frame none.
    unsigned long long gAudioTopologyRebuildCount = 0;
+   int gAudioTopologyTerminalCount = 0;
 
 
    // The video counterpart of gArrangeRetriggerConflictClipIds, and the reason

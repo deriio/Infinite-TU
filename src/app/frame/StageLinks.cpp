@@ -1,4 +1,5 @@
 // Split out of main(): see docs/plans/main-split/README.md (Block C)
+#include <unordered_map>
 #include "app/frame/FrameCtx.h"
 #include "app/graph/PortProbeCache.h"
 
@@ -26,6 +27,7 @@ namespace
       const bool srcIsAudioNode = srcAudioSource != nullptr && srcAudioSource->IsAudioOutputIndex(out);
       const bool srcIsNoteSource = dynamic_cast<INoteSource*>(n) != nullptr;
       const bool srcIsPredictor = dynamic_cast<IPredictor*>(n) != nullptr;
+      const bool srcIsShade = IsShadeSource(n);
       if (GraphNode::IsParamPin(pin))
       {
          const int param = GraphNode::ParamIndexFromPin(pin);
@@ -37,7 +39,7 @@ namespace
       if (GraphNode::IsInputPin(pin))
          return IsInputSlotCompatible(dst, GraphNode::InputSlotFromPin(pin), srcIsModulator, srcPalette, srcGeometry,
                                        srcCamera, srcLight, srcIsEnvironment, srcIsAudioNode, srcIsNoteSource,
-                                       srcIsPredictor);
+                                       srcIsPredictor, srcIsShade);
       return false;
    }
 
@@ -84,6 +86,13 @@ std::vector<std::pair<std::string, std::string>> RecommendedNodeTypesForPin(int 
          if (fits)
             result.emplace_back(name, category);
       }
+   std::stable_sort(result.begin(), result.end(), [](const auto& a, const auto& b) {
+      const int ca = CategoryColors::SemanticRank(a.second);
+      const int cb = CategoryColors::SemanticRank(b.second);
+      if (ca != cb)
+         return ca < cb;
+      return DisplayName(a.first) < DisplayName(b.first);
+   });
    return result;
 }
 
@@ -121,25 +130,37 @@ void DrawLinks(FrameCtx& fc)
    auto& typing = fc.typing;
    auto& cmdOrCtrl = fc.cmdOrCtrl;
 
+      // Source lookups, built once per frame the first time a link needs one
+      // (they were a full gNodes scan, with dynamic_casts, per cable). Each map
+      // keeps the first node in gNodes order, as the scans did.
+      std::unordered_map<const void*, GraphNode*> geoSources;
+      std::unordered_map<const void*, GraphNode*> paletteSources;
+      std::unordered_map<const void*, std::pair<GraphNode*, int>> modSources;
+      bool geoBuilt = false, paletteBuilt = false, modBuilt = false;
+
       for (GraphNode& gn : gNodes)
       {
          auto linkFromNode = [&](const void* wanted, int slot)
          {
             if (wanted == nullptr)
                return;
-            for (GraphNode& src : gNodes)
+            if (!geoBuilt)
             {
-               // Compared against each interface separately: with multiple
-               // inheritance an IGeometrySource* and an INode* into the same
-               // object are different addresses, so one comparison is not enough.
-               const void* asGeo = dynamic_cast<IGeometrySource*>(src.node.get());
-               if (asGeo == wanted || (const void*)src.node.get() == wanted)
+               geoBuilt = true;
+               for (GraphNode& src : gNodes)
                {
-                  gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
-                                     src.OutputPinId(), gn.InputPinId(slot) });
-                  return;
+                  // Keyed by each interface separately: with multiple
+                  // inheritance an IGeometrySource* and an INode* into the same
+                  // object are different addresses, so one key is not enough.
+                  geoSources.emplace((const void*)src.node.get(), &src);
+                  if (const void* asGeo = dynamic_cast<IGeometrySource*>(src.node.get()))
+                     geoSources.emplace(asGeo, &src);
                }
             }
+            const auto it = geoSources.find(wanted);
+            if (it != geoSources.end())
+               gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
+                                  it->second->OutputPinId(), gn.InputPinId(slot) });
          };
 
          // Render3DNode's geometry slots are found generically below via
@@ -157,13 +178,19 @@ void DrawLinks(FrameCtx& fc)
          if (auto* setColor = dynamic_cast<SetColorNode*>(gn.node.get()))
          {
             if (setColor->paletteInput != nullptr)
-               for (GraphNode& src : gNodes)
-                  if (dynamic_cast<IPaletteSource*>(src.node.get()) == setColor->paletteInput)
-                  {
-                     gLinks.push_back({ kLinkIdBase + gn.InputPinId(2),
-                                         src.OutputPinId(), gn.InputPinId(2) });
-                     break;
-                  }
+            {
+               if (!paletteBuilt)
+               {
+                  paletteBuilt = true;
+                  for (GraphNode& src : gNodes)
+                     if (const void* asPal = dynamic_cast<IPaletteSource*>(src.node.get()))
+                        paletteSources.emplace(asPal, &src);
+               }
+               const auto it = paletteSources.find((const void*)setColor->paletteInput);
+               if (it != paletteSources.end())
+                  gLinks.push_back({ kLinkIdBase + gn.InputPinId(2),
+                                     it->second->OutputPinId(), gn.InputPinId(2) });
+            }
          }
 
          // Audio Analyze's own link used to be drawn by hand here from its
@@ -177,21 +204,18 @@ void DrawLinks(FrameCtx& fc)
             IModulator* wanted = *gn.node->ModulatorInputSlot(slot);
             if (wanted == nullptr)
                continue;
-            bool found = false;
-            for (GraphNode& src : gNodes)
+            if (!modBuilt)
             {
-               for (int o = 0; o < std::max(1, src.node->OutputCount()) && !found; o++)
-               {
-                  if (ModulatorForOutput(src.node.get(), o) == wanted)
-                  {
-                     gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
-                                        src.OutputPinId(o), gn.InputPinId(slot) });
-                     found = true;
-                  }
-               }
-               if (found)
-                  break;
+               modBuilt = true;
+               for (GraphNode& src : gNodes)
+                  for (int o = 0; o < std::max(1, src.node->OutputCount()); o++)
+                     if (const void* mod = ModulatorForOutput(src.node.get(), o))
+                        modSources.emplace(mod, std::make_pair(&src, o));
             }
+            const auto it = modSources.find((const void*)wanted);
+            if (it != modSources.end())
+               gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
+                                  it->second.first->OutputPinId(it->second.second), gn.InputPinId(slot) });
          }
       }
 
@@ -389,6 +413,7 @@ void DrawLinks(FrameCtx& fc)
                                              dynamic_cast<INoteSource*>(srcNode->node.get()) != nullptr;
                 const bool srcIsPredictor = srcNode != nullptr &&
                                             dynamic_cast<IPredictor*>(srcNode->node.get()) != nullptr;
+                const bool srcIsShade = srcNode != nullptr && IsShadeSource(srcNode->node.get());
 
                bool valid = false;
                const char* rejectReason = nullptr;
@@ -424,7 +449,7 @@ void DrawLinks(FrameCtx& fc)
                      valid = IsInputSlotCompatible(dstNode, GraphNode::InputSlotFromPin(b),
                                                     srcIsModulator, srcPalette, srcGeometry, srcCamera,
                                                     srcLight, srcIsEnvironment,
-                                                    srcIsAudioNode, srcIsNoteSource, srcIsPredictor);
+                                                    srcIsAudioNode, srcIsNoteSource, srcIsPredictor, srcIsShade);
                      if (valid && srcIsAudioNode &&
                          WouldCreateAudioCycle(srcNode->node.get(), dstNode->node.get()))
                      {
@@ -679,11 +704,11 @@ void DrawLinks(FrameCtx& fc)
                       (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_Y, false))))
          Redo();
 
-      // Shift+A selects every node on the canvas. !gArrangeFocused: the
-      // timeline has its own Shift+A (select all clips) while it owns the
+      // Cmd+A / Shift+A selects every node on the canvas. !gArrangeFocused: the
+      // timeline has its own Cmd+A / Shift+A (select all clips) while it owns the
       // keyboard, same as its sibling shortcuts below.
       const bool doSelectAll = gRequestSelectAll ||
-         (!typing && !gPerfMatrixFocused && !gArrangeFocused && io.KeyShift && ImGui::IsKeyPressed(ImGuiKey_A, false));
+         (!typing && !gPerfMatrixFocused && !gArrangeFocused && (cmdOrCtrl || io.KeyShift) && ImGui::IsKeyPressed(ImGuiKey_A, false));
       gRequestSelectAll = false;
       if (doSelectAll)
       {

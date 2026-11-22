@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <ctime>
 #include <functional>
 #include <mutex>
 #include <unordered_set>
@@ -93,6 +94,11 @@ namespace Platform
    // exists yet. Always returns 0.0 on Windows (no equivalent gesture).
    double PollTrackpadMagnificationDelta();
 
+   // Trackpad two-finger turn (macOS rotate gesture), drained like the pinch:
+   // degrees since the last call, counter-clockwise positive. 0.0 on Windows
+   // and Linux (GLFW forwards no rotate gesture there).
+   double PollTrackpadRotationDelta();
+
    // Native open panel filtered to image types. Returns "" if cancelled.
    std::string OpenImageDialog();
 
@@ -115,6 +121,8 @@ namespace Platform
    // do not recognise .hdr, so this needs its own panel rather than reusing
    // OpenImageDialog - the same reason OpenModelDialog is separate from it.
    std::string OpenHdrDialog();
+   // Native open panel for an IES photometric profile (.ies), for the Light node.
+   std::string OpenIesDialog();
 
    // Decodes anything ImageIO can open (notably .exr, which macOS has read
    // natively since Ventura) into linear float RGB, via a CGBitmapContext in
@@ -138,6 +146,8 @@ namespace Platform
    // to a report. Call once, early in main(), after argv-only setup. No-op
    // on macOS.
    void InstallCrashHandler();
+   // Called first from the fatal-signal handler when set (headless jobs set it to print what they were doing).
+   inline void (*gCrashHook)(int sig) = nullptr;
 
    // Appends one line (a trailing newline is added) to a rolling
    // AppPaths::AppSupportDir() + "/log.txt", so a user who hits a startup
@@ -159,6 +169,20 @@ namespace Platform
    int GpuPreference();
    void SetGpuPreference(int preference);
 
+   // The pen's full sample (pressure, tilt, rotation, timestamp) on the last press or drag
+   // in `window`; pressure is -1 and active is false when the last pointer was a mouse or Linux stub.
+   struct PenSample
+   {
+      float pressure = -1.0f;   // 0..1, or -1 when mouse
+      float tiltX = 0.0f;       // -1..1
+      float tiltY = 0.0f;       // -1..1
+      float rotation = 0.0f;    // degrees 0..360
+      double timestamp = 0.0;   // seconds
+      bool active = false;
+   };
+   PenSample PenNowSample(GLFWwindow* window);
+   float PenPressure(GLFWwindow* window);
+
    // Reports a fatal startup failure through every channel a user might
    // actually see: stderr (unconditionally, matches prior behavior) and,
    // on Windows only, a MessageBoxW plus AppendLogLine. macOS relies on the
@@ -167,6 +191,11 @@ namespace Platform
    // glfwCreateWindow, GL context/loader setup) - call this instead of a
    // bare fprintf(stderr, ...) at any of those sites.
    void ShowFatalError(const std::string& title, const std::string& message);
+
+   // Thread-safe local time conversion from std::time_t to std::tm.
+   // Wraps localtime_r on POSIX (macOS, Linux) and localtime_s on Windows.
+   // Returns true on success, false if outTm is null or conversion failed.
+   bool LocalTime(std::time_t time, std::tm* outTm);
 
    // ---- 3D model loading --------------------------------------------------
    // Goes through ModelIO for the same reason image decoding goes through
@@ -208,6 +237,9 @@ namespace Platform
    // Where a render goes: .mp4/.mov for video, else .png/.jpg. Returns the chosen path, or "" if cancelled.
    std::string SaveRenderDialog(const std::string& suggestedName, bool video);
 
+   // A layered picture (.psd or .ora, `ext` without the dot). Returns the chosen path with the extension, or "" if cancelled.
+   std::string SaveLayeredDialog(const std::string& suggestedName, const std::string& ext);
+
    // ---- text outlines -----------------------------------------------------
    // Glyph outlines for a laid-out string, flattened to polygons in font units
    // normalised so cap height is roughly 1. Curves are subdivided here because
@@ -220,10 +252,52 @@ namespace Platform
    struct TextContour
    {
       std::vector<float> points; // x,y pairs
+      // The same outline as Bezier anchors when the OS gives the curves (macOS, Linux): per anchor
+      // x y inX inY outX outY, closed, same units as points. Empty: only the flattened points.
+      std::vector<float> curve;
+   };
+
+   // Builds TextContour::curve from path elements (already in output units).
+   struct TextCurveBuilder
+   {
+      std::vector<float>* out = nullptr;
+      void Move(float x, float y) { out->clear(); Line(x, y); }
+      void Line(float x, float y) { out->insert(out->end(), { x, y, x, y, x, y }); }
+      void Cubic(float ax, float ay, float bx, float by, float x, float y)
+      {
+         if (out->size() < 6)
+            return Line(x, y);
+         (*out)[out->size() - 2] = ax;
+         (*out)[out->size() - 1] = ay;
+         out->insert(out->end(), { x, y, bx, by, x, y });
+      }
+      void Quad(float cx, float cy, float x, float y)
+      {
+         if (out->size() < 6)
+            return Line(x, y);
+         const float lx = (*out)[out->size() - 6], ly = (*out)[out->size() - 5];
+         Cubic(lx + (cx - lx) * (2.0f / 3.0f), ly + (cy - ly) * (2.0f / 3.0f), x + (cx - x) * (2.0f / 3.0f), y + (cy - y) * (2.0f / 3.0f), x, y);
+      }
+      // The last anchor back on the first merges into it (its in handle moves over).
+      void Close()
+      {
+         const size_t n = out->size();
+         if (n >= 12 && std::fabs((*out)[n - 6] - (*out)[0]) < 1e-5f && std::fabs((*out)[n - 5] - (*out)[1]) < 1e-5f)
+         {
+            (*out)[2] = (*out)[n - 4];
+            (*out)[3] = (*out)[n - 3];
+            out->resize(n - 6);
+         }
+      }
    };
 
    // Installed font families, sorted, for the Text nodes' font pickers.
    const std::vector<std::string>& AvailableFontFamilies();
+   // The font file an installed family resolves to ("" when unknown).
+   std::string FontFileForFamily(const std::string& family);
+   // A font file (.ttf/.otf/.ttc) for this run only, not installed system-wide: joins AvailableFontFamilies and every
+   // text render by its family name, which comes back in `family`. False when the file is not a font.
+   bool AddFontFile(const std::string& path, std::string& family);
 
    bool GetTextOutlines(const std::string& text, const std::string& fontName,
                         float letterSpacing, std::vector<TextContour>& outContours,
@@ -249,6 +323,20 @@ namespace Platform
       bool outlineOnly = false;
       float scaleX = 1.0f;
       float scaleY = 1.0f;
+      bool bold = false;       // the family's bold face, else a drawn bold
+      bool italic = false;     // the family's italic face, else a slant
+      bool underline = false;
+      bool strike = false;     // a line through the middle of the letters
+      bool kerning = true;     // the font's own pair kerning
+      float baseShift = 0.0f;  // px, letters moved up (highlight and lines stay)
+      bool highlight = false;  // a band of highlightColor behind each line
+      float highlightColor[4] = { 1, 1, 0, 1 };
+      bool underlineOwn = false, strikeOwn = false;   // own line colours, else the text colour
+      float underlineColor[4] = { 0, 0, 0, 1 }, strikeColor[4] = { 0, 0, 0, 1 };
+      std::string language;    // OpenType language tag (BCP 47, e.g. "tr"); empty = none
+      // Paragraphs ('\n' starts one; word-wrapped text only): indents and spacing in px.
+      float indentL = 0.0f, indentR = 0.0f, indentFirst = 0.0f;
+      float spaceBefore = 0.0f, spaceAfter = 0.0f;
    };
 
    void RasterizeText(const TextRasterRequest& req, int width, int height,
@@ -1597,6 +1685,9 @@ namespace Platform
    // else as RGBA8 rows top-down with its size; false when the clipboard holds no picture.
    std::vector<std::string> ClipboardFiles();
    bool ClipboardImage(std::vector<unsigned char>& outPng, std::vector<unsigned char>& outRgba, int& outW, int& outH);
+   // Puts a picture on the system clipboard (PNG bytes; Windows also gets a CF_DIB from the RGBA8 top-down rows), so
+   // other apps paste it. False when the clipboard refused it.
+   bool SetClipboardImage(const std::vector<unsigned char>& png, const std::vector<unsigned char>& rgba, int w, int h);
 
    // Which app double-clicking a patch launches, against this running copy. Several copies of Infinite on one
    // machine (an old download, a build folder) share one identity, and the OS picks among them by version number
@@ -1651,6 +1742,22 @@ namespace Platform
    bool HttpDownload(const std::string& url, const std::string& userAgent,
                      const std::string& destPath, const HttpProgress& progress,
                      std::string& outError, int timeoutSeconds = 600);
+
+   // Blocking/streaming HTTP(S) POST with JSON body and optional Bearer token.
+   // Call from a worker thread. `onChunk(bytes)` runs as response bytes arrive;
+   // returning false cancels the request. Fills `outStatus` on any HTTP response
+   // (even 4xx/5xx) and `outBodyOnError` on non-2xx if small, so callers can
+   // inspect server error payloads without logging secrets.
+   using HttpStreamChunk = std::function<bool(const std::string& chunk)>;
+   bool HttpPostStream(const std::string& url, const std::string& jsonBody,
+                       const std::string& bearerToken, const HttpStreamChunk& onChunk,
+                       int& outStatus, std::string& outErrorBody,
+                       std::string& outError, int timeoutSeconds = 60);
+
+   // OS keychain / credential manager storage for API keys (never stored in config/logs).
+   bool SecretStore(const std::string& account, const std::string& secret);
+   bool SecretLoad(const std::string& account, std::string& outSecret);
+   bool SecretClear(const std::string& account);
 
    // ---- output/projector window (Windows only) ----------------------------
    // Windows has no OS-level "make this app window fullscreen" affordance -

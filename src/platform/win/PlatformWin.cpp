@@ -21,6 +21,7 @@
 #include <shellapi.h>
 #include <shlobj.h>
 #include <winhttp.h>
+#include <wincred.h>
 #include <psapi.h>
 #pragma comment(lib, "psapi.lib")
 #include <shlwapi.h>
@@ -42,6 +43,7 @@
 #include "../common/SubjectMaskOnnx.h"
 
 #include <algorithm>
+#include <cstring>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -387,6 +389,13 @@ namespace Platform
       return 0.0;
    }
 
+
+   double PollTrackpadRotationDelta()
+   {
+      // Windows precision touchpads expose no rotate gesture to GLFW.
+      return 0.0;
+   }
+
    double ProcessRssMb()
    {
       PROCESS_MEMORY_COUNTERS counters = {};
@@ -450,6 +459,12 @@ namespace Platform
                            false, std::string(), err);
    }
 
+   std::string OpenIesDialog()
+   {
+      std::string err;
+      return RunOpenDialog(L"Choose IES profile", { { L"IES profiles", L"*.ies" } }, false, std::string(), err);
+   }
+
    std::string OpenModelDialog()
    {
       std::string err;
@@ -478,7 +493,7 @@ namespace Platform
       std::string err;
       return RunSaveDialog(L"Save Patch",
                            {
-                              { L"Infinite patch", L"*.infinite" },
+                              { L"Infinite patch", L"*.inf" },
                            },
                            suggestedName, err);
    }
@@ -554,6 +569,21 @@ namespace Platform
                            suggestedName, err);
    }
 
+   std::string SaveLayeredDialog(const std::string& suggestedName, const std::string& ext)
+   {
+      std::string err;
+      const bool ora = ext == "ora";
+      std::string path = RunSaveDialog(ora ? L"Export ORA" : L"Export PSD",
+                                       {
+                                          ora ? FilterSpec{ L"OpenRaster (*.ora)", L"*.ora" } : FilterSpec{ L"Photoshop (*.psd)", L"*.psd" },
+                                       },
+                                       suggestedName, err);
+      const std::string dotExt = "." + ext;
+      if (!path.empty() && (path.size() < dotExt.size() || path.compare(path.size() - dotExt.size(), dotExt.size(), dotExt) != 0))
+         path += dotExt;
+      return path;
+   }
+
    std::string SaveDeviceDialog(const std::string& suggestedName)
    {
       std::string err;
@@ -618,6 +648,38 @@ namespace Platform
       return RunOpenDialog(wtitle.c_str(), {}, true, initialDir, err);
    }
 
+   std::string FontFileForFamily(const std::string& family)
+   {
+      // Installed fonts live in the registry by display name ("Arial (TrueType)" -> arial.ttf).
+      std::string out;
+      HKEY key = nullptr;
+      if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Fonts", 0, KEY_READ, &key) != ERROR_SUCCESS)
+         return out;
+      const std::wstring want = WinCommon::Utf8ToWide(family);
+      wchar_t name[512];
+      wchar_t data[MAX_PATH];
+      for (DWORD i = 0;; i++)
+      {
+         DWORD nameLen = 512, dataLen = sizeof(data), type = 0;
+         if (RegEnumValueW(key, i, name, &nameLen, nullptr, &type, (LPBYTE)data, &dataLen) != ERROR_SUCCESS)
+            break;
+         const std::wstring n(name, nameLen);
+         if (type != REG_SZ || n.compare(0, want.size(), want) != 0 || (n.size() > want.size() && n[want.size()] != L' '))
+            continue;
+         std::wstring file(data);
+         if (file.find(L'\\') == std::wstring::npos)
+         {
+            wchar_t dir[MAX_PATH];
+            GetWindowsDirectoryW(dir, MAX_PATH);
+            file = std::wstring(dir) + L"\\Fonts\\" + file;
+         }
+         out = WinCommon::WideToUtf8(file);
+         break;
+      }
+      RegCloseKey(key);
+      return out;
+   }
+
    const std::vector<std::string>& AvailableFontFamilies()
    {
       static std::vector<std::string> sFonts;
@@ -640,6 +702,34 @@ namespace Platform
       if (sFonts.empty())
          sFonts.push_back("Arial");
       return sFonts;
+   }
+
+   bool AddFontFile(const std::string& path, std::string& family)
+   {
+      family.clear();
+      auto& fam = const_cast<std::vector<std::string>&>(AvailableFontFamilies());
+      const std::wstring w = WinCommon::Utf8ToWide(path);
+      if (AddFontResourceExW(w.c_str(), FR_PRIVATE, nullptr) == 0)
+         return false;
+      // A private font is listed to this process only: the family is whatever the list gained.
+      std::vector<std::string> now;
+      HDC hdc = GetDC(nullptr);
+      if (hdc != nullptr)
+      {
+         LOGFONTW lf {};
+         lf.lfCharSet = DEFAULT_CHARSET;
+         EnumFontFamiliesExW(hdc, &lf, FontEnumProc, (LPARAM)&now, 0);
+         ReleaseDC(nullptr, hdc);
+      }
+      for (const std::string& n : now)
+         if (std::find(fam.begin(), fam.end(), n) == fam.end())
+         {
+            fam.push_back(n);
+            if (family.empty())
+               family = n;
+         }
+      std::sort(fam.begin(), fam.end());
+      return !family.empty();
    }
 
    bool GetTextOutlines(const std::string& text, const std::string& fontName,
@@ -1048,6 +1138,51 @@ namespace Platform
       return out;
    }
 
+   bool SetClipboardImage(const std::vector<unsigned char>& png, const std::vector<unsigned char>& rgba, int w, int h)
+   {
+      if (!OpenClipboard(nullptr))
+         return false;
+      EmptyClipboard();
+      bool any = false;
+      // "PNG" keeps alpha for apps that read it; CF_DIB (32-bit, top-down) for the rest.
+      if (!png.empty())
+         if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, png.size()))
+         {
+            std::memcpy(GlobalLock(g), png.data(), png.size());
+            GlobalUnlock(g);
+            if (SetClipboardData(RegisterClipboardFormatW(L"PNG"), g) != nullptr)
+               any = true;
+            else
+               GlobalFree(g);
+         }
+      if (w > 0 && h > 0 && rgba.size() >= (size_t)w * h * 4)
+      {
+         const size_t bytes = sizeof(BITMAPINFOHEADER) + (size_t)w * h * 4;
+         if (HGLOBAL g = GlobalAlloc(GMEM_MOVEABLE, bytes))
+         {
+            unsigned char* p = (unsigned char*)GlobalLock(g);
+            BITMAPINFOHEADER bi = {};
+            bi.biSize = sizeof(bi);
+            bi.biWidth = w;
+            bi.biHeight = -h;
+            bi.biPlanes = 1;
+            bi.biBitCount = 32;
+            bi.biCompression = BI_RGB;
+            std::memcpy(p, &bi, sizeof(bi));
+            unsigned char* d = p + sizeof(bi);
+            for (size_t i = 0; i < (size_t)w * h; i++)
+               d[i * 4] = rgba[i * 4 + 2], d[i * 4 + 1] = rgba[i * 4 + 1], d[i * 4 + 2] = rgba[i * 4], d[i * 4 + 3] = rgba[i * 4 + 3];
+            GlobalUnlock(g);
+            if (SetClipboardData(CF_DIB, g) != nullptr)
+               any = true;
+            else
+               GlobalFree(g);
+         }
+      }
+      CloseClipboard();
+      return any;
+   }
+
    bool ClipboardImage(std::vector<unsigned char>& outPng, std::vector<unsigned char>& outRgba, int& outW, int& outH)
    {
       outPng.clear(), outRgba.clear(), outW = outH = 0;
@@ -1165,7 +1300,7 @@ namespace Platform
       out.selfTemporary = StrStrIW(self.c_str(), L"\\AppData\\Local\\Temp\\") != nullptr;
       wchar_t exe[MAX_PATH * 2] = {};
       DWORD len = (DWORD)(sizeof(exe) / sizeof(exe[0]));
-      if (FAILED(AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, L".infinite", L"open", exe, &len)))
+      if (FAILED(AssocQueryStringW(ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE, L".inf", L"open", exe, &len)))
          return true;   // nothing registered
       const std::wstring opener(exe);
       out.opener = WinCommon::WideToUtf8(opener);
@@ -1197,7 +1332,8 @@ namespace Platform
       }
       // Per user, no admin prompt: HKCU\Software\Classes overrides HKLM for this account only.
       const std::wstring exe = WinCommon::Utf8ToWide(current.self);
-      const bool ok = SetUserKey(L".infinite", L"Infinite.Patch") && SetUserKey(L"Infinite.Patch", L"Infinite patch") &&
+      const bool ok = SetUserKey(L".inf", L"Infinite.Patch") && SetUserKey(L".infinite", L"Infinite.Patch") &&
+                      SetUserKey(L"Infinite.Patch", L"Infinite patch") &&
                       SetUserKey(L"Infinite.Patch\\DefaultIcon", L"\"" + exe + L"\",0") &&
                       SetUserKey(L"Infinite.Patch\\shell\\open\\command", L"\"" + exe + L"\" \"%1\"");
       SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
@@ -1210,7 +1346,7 @@ namespace Platform
       if (!QueryPatchOpener(after) || !after.isSelf)
       {
          // UserChoice (an "Always use this app" pick) is hash-protected and outranks the ProgId on purpose.
-         outError = "Windows keeps your own choice for .infinite files. Right-click a patch > Open with > "
+         outError = "Windows keeps your own choice for .inf files. Right-click a patch > Open with > "
                     "Choose another app > this Infinite.exe > Always.";
          return false;
       }
@@ -1674,6 +1810,53 @@ namespace Platform
       }
    }
 
+   namespace
+   {
+      WNDPROC sPenPrevProc = nullptr;
+      PenSample sPenSample;
+
+      // Pen input reaches the window as WM_POINTER* before Windows turns it
+      // into mouse messages, so read the pen sample here and pass everything on.
+      LRESULT CALLBACK PenProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+      {
+         if (msg == WM_POINTERDOWN || msg == WM_POINTERUPDATE)
+         {
+            const UINT32 id = GET_POINTERID_WPARAM(wp);
+            POINTER_INPUT_TYPE type = PT_POINTER;
+            if (GetPointerType(id, &type) && type == PT_PEN)
+            {
+               POINTER_PEN_INFO info = {};
+               if (GetPointerPenInfo(id, &info))
+               {
+                  sPenSample.active = true;
+                  sPenSample.pressure = (info.penMask & PEN_MASK_PRESSURE) ? (info.pressure / 1024.0f) : 1.0f;
+                  sPenSample.tiltX = (info.penMask & PEN_MASK_TILT_X) ? std::clamp(info.tiltX / 90.0f, -1.0f, 1.0f) : 0.0f;
+                  sPenSample.tiltY = (info.penMask & PEN_MASK_TILT_Y) ? std::clamp(info.tiltY / 90.0f, -1.0f, 1.0f) : 0.0f;
+                  sPenSample.rotation = (info.penMask & PEN_MASK_ROTATION) ? (float)info.rotation : 0.0f;
+                  sPenSample.timestamp = info.pointerInfo.dwTime != 0 ? (double)info.pointerInfo.dwTime * 0.001 : (double)GetTickCount64() * 0.001;
+               }
+            }
+            else
+               sPenSample = PenSample{};
+         }
+         return CallWindowProcW(sPenPrevProc, hwnd, msg, wp, lp);
+      }
+   }
+
+   PenSample PenNowSample(GLFWwindow* window)
+   {
+      static HWND sHooked = nullptr;
+      HWND hwnd = window ? glfwGetWin32Window(window) : nullptr;
+      if (hwnd && hwnd != sHooked && sPenPrevProc == nullptr)
+      {
+         sPenPrevProc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC, (LONG_PTR)PenProc);
+         sHooked = hwnd;
+      }
+      return sPenSample;
+   }
+
+   float PenPressure(GLFWwindow* window) { return PenNowSample(window).pressure; }
+
    bool GpuPreferenceSupported() { return true; }
 
    int GpuPreference()
@@ -1728,5 +1911,164 @@ namespace Platform
    {
       if (wglGetCurrentContext() != (HGLRC)rc_ || wglGetCurrentDC() != (HDC)dc_)
          wglMakeCurrent((HDC)dc_, (HGLRC)rc_);
+   }
+
+   bool HttpPostStream(const std::string& url, const std::string& jsonBody,
+                       const std::string& bearerToken, const HttpStreamChunk& onChunk,
+                       int& outStatus, std::string& outErrorBody,
+                       std::string& outError, int timeoutSeconds)
+   {
+      outStatus = 0;
+      outErrorBody.clear();
+      outError.clear();
+      const bool isHttps = url.rfind("https://", 0) == 0;
+      if (!isHttps && url.rfind("http://", 0) != 0)
+      {
+         outError = "url must be http(s)";
+         return false;
+      }
+
+      URL_COMPONENTS parts;
+      ZeroMemory(&parts, sizeof(parts));
+      parts.dwStructSize = sizeof(parts);
+      wchar_t host[256] = {};
+      wchar_t path[2048] = {};
+      parts.lpszHostName = host;
+      parts.dwHostNameLength = 256;
+      parts.lpszUrlPath = path;
+      parts.dwUrlPathLength = 2048;
+      std::wstring wideUrl = WinCommon::Utf8ToWide(url);
+      if (!WinHttpCrackUrl(wideUrl.c_str(), 0, 0, &parts))
+      {
+         outError = "invalid url";
+         return false;
+      }
+
+      WinHttpHandleGuard session(WinHttpOpen(L"Infinite/1.0", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
+                                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0));
+      if (!session)
+      {
+         outError = "WinHttpOpen failed";
+         return false;
+      }
+      const int timeoutMs = std::max(1, timeoutSeconds) * 1000;
+      WinHttpSetTimeouts(session, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+
+      WinHttpHandleGuard connect(WinHttpConnect(session, parts.lpszHostName, parts.nPort, 0));
+      if (!connect)
+      {
+         outError = "WinHttpConnect failed";
+         return false;
+      }
+
+      const DWORD flags = isHttps ? WINHTTP_FLAG_SECURE : 0;
+      WinHttpHandleGuard request(WinHttpOpenRequest(connect, L"POST", parts.lpszUrlPath,
+                                                    nullptr, WINHTTP_NO_REFERER,
+                                                    WINHTTP_DEFAULT_ACCEPT_TYPES, flags));
+      if (!request)
+      {
+         outError = "WinHttpOpenRequest failed";
+         return false;
+      }
+
+      std::wstring headers = L"Content-Type: application/json\r\nAccept: text/event-stream\r\n";
+      if (!bearerToken.empty())
+         headers += L"Authorization: Bearer " + WinCommon::Utf8ToWide(bearerToken) + L"\r\n";
+
+      if (!WinHttpSendRequest(request, headers.c_str(), (DWORD)headers.size(),
+                              (LPVOID)jsonBody.data(), (DWORD)jsonBody.size(),
+                              (DWORD)jsonBody.size(), 0) ||
+          !WinHttpReceiveResponse(request, nullptr))
+      {
+         outError = "WinHttp request failed";
+         return false;
+      }
+
+      DWORD statusCode = 0;
+      DWORD statusSize = sizeof(statusCode);
+      WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                          WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+      outStatus = (int)statusCode;
+
+      for (;;)
+      {
+         DWORD available = 0;
+         if (!WinHttpQueryDataAvailable(request, &available))
+         {
+            outError = "WinHttpQueryDataAvailable failed";
+            return false;
+         }
+         if (available == 0)
+            break;
+
+         std::string chunk(available, '\0');
+         DWORD read = 0;
+         if (!WinHttpReadData(request, &chunk[0], available, &read))
+         {
+            outError = "WinHttpReadData failed";
+            return false;
+         }
+         chunk.resize(read);
+         if (read == 0)
+            break;
+         if (outStatus >= 200 && outStatus < 300)
+         {
+            if (onChunk && !onChunk(chunk))
+            {
+               outError = "cancelled";
+               return false;
+            }
+         }
+         else if (outErrorBody.size() < 65536)
+         {
+            const size_t take = std::min(chunk.size(), 65536 - outErrorBody.size());
+            outErrorBody.append(chunk.data(), take);
+         }
+      }
+
+      if (outStatus < 200 || outStatus >= 300)
+      {
+         outError = "http status " + std::to_string(outStatus);
+         return false;
+      }
+      return true;
+   }
+
+   bool SecretStore(const std::string& account, const std::string& secret)
+   {
+      if (account.empty())
+         return false;
+      std::wstring target = WinCommon::Utf8ToWide(ForkIdentity::kCredService) + L"/" + WinCommon::Utf8ToWide(account);
+      CREDENTIALW cred = {};
+      cred.Type = CRED_TYPE_GENERIC;
+      cred.TargetName = &target[0];
+      cred.CredentialBlobSize = (DWORD)secret.size();
+      cred.CredentialBlob = (LPBYTE)secret.data();
+      cred.Persist = CRED_PERSIST_LOCAL_MACHINE;
+      return CredWriteW(&cred, 0) != FALSE;
+   }
+
+   bool SecretLoad(const std::string& account, std::string& outSecret)
+   {
+      outSecret.clear();
+      if (account.empty())
+         return false;
+      std::wstring target = WinCommon::Utf8ToWide(ForkIdentity::kCredService) + L"/" + WinCommon::Utf8ToWide(account);
+      PCREDENTIALW pcred = nullptr;
+      if (!CredReadW(target.c_str(), CRED_TYPE_GENERIC, 0, &pcred) || pcred == nullptr)
+         return false;
+      outSecret.assign((const char*)pcred->CredentialBlob, (size_t)pcred->CredentialBlobSize);
+      CredFree(pcred);
+      return true;
+   }
+
+   bool SecretClear(const std::string& account)
+   {
+      if (account.empty())
+         return false;
+      std::wstring target = WinCommon::Utf8ToWide(ForkIdentity::kCredService) + L"/" + WinCommon::Utf8ToWide(account);
+      if (CredDeleteW(target.c_str(), CRED_TYPE_GENERIC, 0))
+         return true;
+      return GetLastError() == ERROR_NOT_FOUND;
    }
 }

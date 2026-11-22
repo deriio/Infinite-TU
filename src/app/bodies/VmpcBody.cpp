@@ -241,7 +241,7 @@ namespace app
                      const ImU32 dim = lit ? tok::U32(tok::pal::c_FFFFFFBE) : (isLight ? tok::U32(tok::pal::c_5F6982FF) : tok::U32(tok::pal::c_969EB4FF));
                      dl->PushClipRect(ImVec2(mn.x + 1.0f, mn.y + 1.0f), ImVec2(mx.x - 1.0f, mx.y - 1.0f), true);
                      const float lh = AudioLabelFontSize();
-                     char num[8];
+                     char num[16];
                      snprintf(num, sizeof(num), "%d", pad + 1);
                      AudioLabelText(dl, ImVec2(mn.x + 5.0f, mn.y + 3.0f), ink, num);
                      if (isLoaded)
@@ -355,8 +355,8 @@ namespace app
                      DrawThumb(dl, tex, i, ImVec2(origin.x + cw * (float)i, origin.y),
                                ImVec2(origin.x + cw * (float)(i + 1), br.y), tok::U32(tok::pal::c_FFFFFFFF));
                else
-                  EmptyState::DrawCaption(origin, br, n->PadLoading(cur) ? "loading preview..."
-                                                      : (n->PadIsHap(cur) ? "HAP clip - no filmstrip" : "no preview"));
+                  EmptyState::DrawCaption(origin, br, n->PadLoading(cur) ? T("Loading preview...")
+                                                      : (n->PadIsHap(cur) ? T("HAP clip - no filmstrip") : T("No preview")));
                // The play window: outside start..end is dimmed, its edges marked.
                float a = std::clamp(n->padStart[cur] / 100.0f, 0.0f, 1.0f);
                float b = std::clamp(n->padEnd[cur] / 100.0f, 0.0f, 1.0f);
@@ -383,8 +383,8 @@ namespace app
                }
             }
             else
-               EmptyState::DrawCaption(origin, br, n->PadHasPath(cur) ? "file missing - drop a clip or Clear"
-                                                                      : "no clip loaded");
+               EmptyState::DrawCaption(origin, br, n->PadHasPath(cur) ? T("File missing - drop a clip or Clear")
+                                                                      : T("No clip loaded"));
             dl->PopClipRect();
             AudioViz::Border(dl, origin, br, (!has && hov) ? (isLight ? tok::U32(tok::pal::c_3264E6FF) : tok::U32(tok::pal::c_6EA0FFFF)) : 0);
             if (!has && hov)
