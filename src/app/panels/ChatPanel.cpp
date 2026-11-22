@@ -4734,7 +4734,7 @@ namespace app
             const auto m = prefs.models.find("custom");
             if (m != prefs.models.end() && !m->second.empty())
                list.push_back({ m->second, m->second, "" });
-            for (const chat::CustomPreset& p : chat::CustomPresets())
+            for (const chat::EnvironmentAgentPreset& p : chat::EnvironmentAgentPresets())
                if (prefs.customPreset == p.id)
                   for (const char* h : p.models)
                      if (m == prefs.models.end() || m->second != h)
