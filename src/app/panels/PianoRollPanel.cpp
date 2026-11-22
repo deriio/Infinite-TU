@@ -2,10 +2,13 @@
 // MIDI lane. A page edits the lane's clips and notes through the Arrange note ops; the linked Piano Roll node plays
 // them. Edits are timeline undo entries; page add and delete touch a node too, so they are patch undo steps.
 #include "app/AppShared.h"
+#include "app/frame/CanvasLink.h"
 #include "app/graph/NoteGen.h"
 #include "app/graph/SampleStyles.h"
+#include "app/ui/design/UiDensity.h"
 #include "app/ui/design/GlyphDraw.h"
 #include "app/ui/design/TokenColors.h"
+#include "app/ui/design/components/PanelKit.h"
 #include "app/ui/design/components/ActionButton.h"
 #include "app/ui/design/components/EmptyState.h"
 #include "app/ui/design/components/ChipButton.h"
@@ -13,6 +16,7 @@
 #include "app/ui/design/components/FieldWell.h"
 #include "app/ui/design/components/FormParts.h"
 #include "app/ui/design/components/MenuParts.h"
+#include "app/ui/design/components/PagePicker.h"
 #include "app/ui/design/components/PanelFrame.h"
 #include "app/ui/design/components/SectionCard.h"
 #include "app/ui/design/components/TimeRuler.h"
@@ -41,12 +45,11 @@ namespace app
 namespace
 {
    constexpr float kMinHeight = 240.0f;
-   constexpr float kIconW = 30.0f, kPageW = 140.0f;
-   constexpr float kKeysW = 44.0f, kRulerH = 16.0f, kStripH = 16.0f;
-   constexpr float kInspectorW = 268.0f;
+   constexpr float kIconW = tok::control_h;
+   constexpr float kKeysW = 44.0f, kRulerH = 16.0f, kStripH = 10.0f;
+   constexpr float kInspectorW = UiDensity::kInspectorW + 2.0f * tok::space_2;   // one compact strip
    constexpr float kMinKeyH = 5.0f, kMaxKeyH = 32.0f;
    constexpr double kMinPxPerTick = 0.002, kMaxPxPerTick = 2.0;
-   constexpr int kPaletteSize = 12;
    using Arrange::Tick;
 
    // One note as it lands on the timeline: looped clips show every pass, the first pass is the note itself.
@@ -170,9 +173,7 @@ namespace
       std::set<uint64_t> clips;  // clips being edited; none = all
       std::set<std::pair<uint64_t, uint32_t>> notes; // selected notes (clip, note)
       uint64_t renameLane = 0;   // a tab being renamed
-      char renameBuf[64] = {};
-      bool renameFocus = false;
-      bool pickOnCanvas = false; // the page settings' "Assign": the next Piano Roll node clicked on the canvas links
+      uint64_t pendingDuplicate = 0; // page duplicate: the Timeline's Duplicate Track, next frame
       bool pendingAdd = false;   // page add and delete move lane pointers: they run at the top of the next frame
       uint64_t pendingDelete = 0;
       uint64_t lastSelectedNode = 0;
@@ -190,6 +191,8 @@ namespace
       for (Arrange::Lane& l : gArrange.lanes)
          if (l.type == Arrange::kLaneMidi)
             out.push_back(&l);
+      // The page strip's own order (Move Left/Right, drag); ties keep Timeline order.
+      std::stable_sort(out.begin(), out.end(), [](const Arrange::Lane* a, const Arrange::Lane* b) { return a->pageOrder < b->pageOrder; });
       return out;
    }
 
@@ -204,7 +207,7 @@ namespace
       return l.noteNodeUid != 0 ? FindNodeByUid(l.noteNodeUid) : nullptr;
    }
 
-   std::string NodeLabel(const GraphNode& gn)
+   [[maybe_unused]] std::string NodeLabel(const GraphNode& gn)
    {
       auto* n = dynamic_cast<PianoRollNode*>(gn.node.get());
       if (n != nullptr && !n->laneName.empty())
@@ -216,7 +219,7 @@ namespace
    void AddPage()
    {
       PushUndoCheckpoint("Add Piano Roll Page");
-      GraphNode* fresh = SpawnNode("Piano Roll", "Notes", gViewCenterCanvas.x, gViewCenterCanvas.y);
+      GraphNode* fresh = CanvasLink::Add("Piano Roll", "Notes");
       if (fresh == nullptr)
          return;
       const uint64_t lane = Arrange::AddLane(gArrange, Arrange::kLaneMidi);
@@ -496,7 +499,7 @@ namespace
       s.clips.swap(clips);
    }
 
-   // Selecting a Piano Roll node jumps to its page, or finishes "Pick on canvas".
+   // Selecting a Piano Roll node jumps to its page.
    void FollowCanvasSelection()
    {
       State& s = S();
@@ -516,16 +519,6 @@ namespace
       s.lastSelectedNode = uid;
       if (uid == 0)
          return;
-      if (s.pickOnCanvas)
-      {
-         s.pickOnCanvas = false;
-         if (Page() != nullptr)
-         {
-            const uint64_t lane = s.lane;
-            ArrangeEdit([&] { Arrange::LinkLane(gArrange, lane, uid); });
-         }
-         return;
-      }
       for (const Arrange::Lane& l : gArrange.lanes)
          if (l.type == Arrange::kLaneMidi && l.noteNodeUid == uid)
             s.lane = l.id;
@@ -533,9 +526,11 @@ namespace
 
    void DrawDockMenu()
    {
-      const ImVec2 mn = ImGui::GetWindowPos(), mx(mn.x + ImGui::GetWindowSize().x, mn.y + tok::tile + tok::space_3);
+      const ImVec2 mn = ImGui::GetWindowPos(), mx(mn.x + ImGui::GetWindowSize().x, mn.y + PanelKit::Chip() + tok::space_3);
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ImGui::IsMouseHoveringRect(mn, mx) && !ImGui::IsAnyItemHovered() &&
           ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
+         ImGui::OpenPopup("##pianoDockMenu");
+      if (MenuParts::TestOpen("##pianoDockMenu"))
          ImGui::OpenPopup("##pianoDockMenu");
       if (MenuParts::BeginPopup("##pianoDockMenu"))
       {
@@ -548,7 +543,7 @@ namespace
                gPianoRollDock = 3;
             ImGui::EndMenu();
          }
-         ImGui::Dummy(ImVec2(0.0f, tok::space_1));
+         MenuParts::Separator();
          if (MenuParts::Item(L("Close Piano Roll")))
             gPianoRollOpen = false;
          MenuParts::EndPopup();
@@ -594,9 +589,9 @@ namespace
             continue;
          const ImVec4 col = ClipColor(c, page);
          const bool on = s.clips.count(c.id) != 0;
-         dl->AddRectFilled(ImVec2(cx0, y0), ImVec2(cx1, y1), WithAlpha(col, c.enabled ? (on ? 0.85f : 0.55f) : 0.2f), tok::radius_tile);
+         dl->AddRectFilled(ImVec2(cx0, y0), ImVec2(cx1, y1), WithAlpha(col, c.enabled ? (on ? 0.85f : 0.55f) : 0.2f), tok::radius_control);
          if (on)
-            dl->AddRect(ImVec2(cx0, y0), ImVec2(cx1, y1), Tint(0.9f), tok::radius_tile);
+            dl->AddRect(ImVec2(cx0, y0), ImVec2(cx1, y1), Tint(0.9f), tok::radius_control);
          if (!c.enabled || LinkedNode(page) == nullptr)
             DrawArrangeHatch(dl, ImVec2(cx0, y0), ImVec2(cx1, y1), Tint(0.25f));
          if (!c.name.empty())
@@ -723,7 +718,7 @@ namespace
             if (!editing || pl.repeat)
                depth *= 0.35f;
             const ImVec2 p0(x0, y + 0.5f), p1(x1, y + s.keyH - 0.5f);
-            const float round = std::min(tok::radius_tile * 0.5f, s.keyH * 0.25f);
+            const float round = std::min(tok::radius_control * 0.5f, s.keyH * 0.25f);
             dl->AddRectFilled(p0, p1, WithAlpha(col, depth), round);
             dl->AddRect(p0, p1, sel ? Tint(1.0f) : WithAlpha(col, editing && !pl.repeat ? 1.0f : 0.45f), round);
             if (pl.note->mute || !c.enabled)
@@ -736,15 +731,7 @@ namespace
 
    bool IconChip(const char* id, const char* glyphStr, bool on, const char* tip, bool green = false)
    {
-      ActionButton::Scoped() = on ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
-      const bool clicked = ActionButton::Draw(id, ImVec2(kIconW, tok::tile), green ? ActionButton::Kind::Go : ActionButton::Kind::Plain);
-      ActionButton::Scoped() = ActionButton::Kind::Plain;
-      if (ImGui::IsItemHovered())
-         HelpTip("%s", tip);
-      const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
-      glyph::Draw(ImGui::GetWindowDrawList(), ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), tok::icon_md,
-                  on ? tok::U32(tok::pal::c_FFFFFFFF) : ImGui::GetColorU32(ImGuiCol_Text), glyphStr);
-      return clicked;
+      return PanelKit::IconChip(id, glyphStr, on, tip, kIconW, PanelKit::Chip(), green ? ActionButton::Kind::Go : ActionButton::Kind::Plain);
    }
 
    float TextW(const char* label) { return ImGui::CalcTextSize(label, ImGui::FindRenderedTextEnd(label)).x + 2.0f * tok::space_3; }
@@ -752,7 +739,7 @@ namespace
    bool TextChip(const char* label, bool on = false, ActionButton::Kind kind = ActionButton::Kind::Plain)
    {
       ActionButton::Scoped() = on ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
-      const bool clicked = ActionButton::Draw(label, ImVec2(TextW(label), tok::tile), kind);
+      const bool clicked = ActionButton::Draw(label, ImVec2(TextW(label), PanelKit::Chip()), kind);
       ActionButton::Scoped() = ActionButton::Kind::Plain;
       return clicked;
    }
@@ -760,7 +747,7 @@ namespace
    // A dropdown face in the Sample Studio's grammar: the value in a field well.
    bool PickerFace(const char* id, const char* value, float w, const char* tip, ImVec2& bmin, ImVec2& bmax)
    {
-      const bool clicked = ActionButton::Draw(id, ImVec2(w, tok::tile));
+      const bool clicked = ActionButton::Draw(id, ImVec2(w, PanelKit::Chip()));
       if (ImGui::IsItemHovered())
          HelpTip("%s", tip);
       bmin = ImGui::GetItemRectMin();
@@ -776,7 +763,7 @@ namespace
    bool BeginPickerMenu(const char* id, ImVec2 bmin, ImVec2 bmax, float w)
    {
       ImGui::SetNextWindowPos(ImVec2(bmin.x, bmax.y + tok::space_1));
-      ImGui::SetNextWindowSizeConstraints(ImVec2(std::max(120.0f, w), 0.0f), ImVec2(280.0f, 10000.0f));
+      ImGui::SetNextWindowSizeConstraints(ImVec2(std::max(120.0f, w), 0.0f), ImVec2(280.0f, MenuParts::ListMaxH()));
       return MenuParts::BeginPopup(id);
    }
 
@@ -819,7 +806,7 @@ namespace
       case Tool::Draw: return T("Tool: Draw (P) - click to choose a tool");
       case Tool::Erase: return T("Tool: Erase (E) - click to choose a tool");
       case Tool::Blade: return T("Tool: Cut (B) - click to choose a tool");
-      case Tool::Mute: return T("Tool: Mute (0) - click to choose a tool");
+      case Tool::Mute: return T("Tool: Mute - click to choose a tool");
       case Tool::Hand: return T("Tool: Hand (H) - click to choose a tool");
       default: return T("Tool: Select (A) - click to choose a tool");
       }
@@ -831,14 +818,14 @@ namespace
       State& s = S();
       const bool nonDefault = s.tool != Tool::Select;
       ActionButton::Scoped() = nonDefault ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
-      const bool clicked = ActionButton::Draw("##pianoToolPicker", ImVec2(kIconW, tok::tile));
+      const bool clicked = ActionButton::Draw("##pianoToolPicker", ImVec2(kIconW, PanelKit::Chip()));
       ActionButton::Scoped() = ActionButton::Kind::Plain;
       if (ImGui::IsItemHovered())
          HelpTip("%s", ToolTip(s.tool));
       const ImVec2 bmin = ImGui::GetItemRectMin(), bmax = ImGui::GetItemRectMax();
       const ImU32 col = nonDefault ? tok::U32(tok::pal::c_FFFFFFFF) : ImGui::GetColorU32(ImGuiCol_Text);
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      glyph::Draw(dl, ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tok::icon_md, col, ToolGlyph(s.tool));
+      glyph::Draw(dl, ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tok::icon_control, col, ToolGlyph(s.tool));
       if (clicked)
          ImGui::OpenPopup("##pianoToolMenu");
       ImGui::SetNextWindowPos(ImVec2(bmin.x, bmax.y + tok::space_1));
@@ -850,9 +837,9 @@ namespace
          s.tool = Tool::Draw;
       if (MenuParts::Item(L("Erase"), "E", s.tool == Tool::Erase))
          s.tool = Tool::Erase;
-      if (MenuParts::Item(L("Cut"), "B", s.tool == Tool::Blade))
+      if (MenuParts::Item(L("Blade"), "B", s.tool == Tool::Blade))
          s.tool = Tool::Blade;
-      if (MenuParts::Item(L("Mute"), "0", s.tool == Tool::Mute))
+      if (MenuParts::Item(L("Mute"), nullptr, s.tool == Tool::Mute))
          s.tool = Tool::Mute;
       if (MenuParts::Item(L("Hand"), "H", s.tool == Tool::Hand))
          s.tool = Tool::Hand;
@@ -866,59 +853,72 @@ namespace
       MenuParts::EndPopup();
    }
 
-   // The page dropdown: switch, add, rename, delete. A rename swaps the face for a text field.
+   // The page strip (PagePicker, shared with the other paged panels): switch, add, rename, colour, delete.
    void DrawPagePicker()
    {
       State& s = S();
       const std::vector<Arrange::Lane*> pages = Pages();
       if (s.lane == 0 && !pages.empty())
          s.lane = pages.front()->id;
-      Arrange::Lane* page = Page();
-      if (page != nullptr && s.renameLane == page->id)
+      std::vector<PagePicker::Entry> entries;
+      int current = -1;
+      for (int i = 0; i < (int)pages.size(); i++)
       {
-         if (s.renameFocus)
-            ImGui::SetKeyboardFocusHere();
-         ImGui::SetNextItemWidth(kPageW);
-         const bool done = FieldWell::InputText("##pageRename", s.renameBuf, sizeof s.renameBuf,
-                                                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
-         const bool lost = !s.renameFocus && !ImGui::IsItemActive();
-         s.renameFocus = false;
-         if (done || lost)
-         {
-            const std::string name = s.renameBuf;
-            s.renameLane = 0;
-            if (!name.empty() && name != page->name)
-               ArrangeEdit([&] {
-                  page->name = name;
-                  gArrange.revision++;
-               });
-         }
-         return;
+         const Arrange::Lane* l = pages[i];
+         const bool coloured = l->colorR + l->colorG + l->colorB > 0.0f;
+         const auto c8 = [](float v) { return (unsigned int)std::clamp((int)std::lround(v * 255.0f), 0, 255); };
+         entries.push_back({ l->name, coloured ? (c8(l->colorR) << 16) | (c8(l->colorG) << 8) | c8(l->colorB) : 0u });
+         if (l->id == s.lane)
+            current = i;
       }
-      ImVec2 bmin, bmax;
-      if (PickerFace("##pianoPage", page != nullptr ? page->name.c_str() : T("No page"), kPageW, T("Pages: switch, add, rename or delete one ([ and ])"),
-                     bmin, bmax))
-         ImGui::OpenPopup("##pianoPageMenu");
-      if (!BeginPickerMenu("##pianoPageMenu", bmin, bmax, kPageW))
-         return;
-      for (const Arrange::Lane* l : pages)
+      if (s.renameLane != 0) // Cmd+R
       {
-         const std::string label = l->name + "##pg" + std::to_string(l->id);
-         if (MenuParts::Choice(label.c_str(), l->id == s.lane))
-            s.lane = l->id;
+         for (int i = 0; i < (int)pages.size(); i++)
+            if (pages[i]->id == s.renameLane)
+               PagePicker::BeginRename("##pianoPage", entries, i);
+         s.renameLane = 0;
       }
-      MenuParts::Separator();
-      if (MenuParts::Item(L("New Page")))
-         s.pendingAdd = true;
-      if (page != nullptr && MenuParts::Item(L("Rename"), "Cmd+R"))
+      PagePicker::Options opt;
+      const PagePicker::Result r = PagePicker::Draw("##pianoPage", entries, current, T("New Piano Roll page"), opt);
+      Arrange::Lane* page = r.index >= 0 && r.index < (int)pages.size() ? pages[r.index] : nullptr;
+      switch (r.act)
       {
-         s.renameLane = page->id;
-         s.renameFocus = true;
-         std::snprintf(s.renameBuf, sizeof s.renameBuf, "%s", page->name.c_str());
+      case PagePicker::Act::Select: s.lane = page->id; break;
+      case PagePicker::Act::Add: s.pendingAdd = true; break;
+      case PagePicker::Act::Rename:
+         ArrangeEdit([&] {
+            page->name = r.name;
+            gArrange.revision++;
+         });
+         break;
+      case PagePicker::Act::Recolor:
+         ArrangeEdit([&] {
+            page->colorR = (float)((r.color >> 16) & 0xFF) / 255.0f;
+            page->colorG = (float)((r.color >> 8) & 0xFF) / 255.0f;
+            page->colorB = (float)(r.color & 0xFF) / 255.0f;
+            gArrange.revision++;
+         });
+         break;
+      case PagePicker::Act::Delete: s.pendingDelete = page->id; break;
+      case PagePicker::Act::Duplicate: s.pendingDuplicate = page->id; break;
+      case PagePicker::Act::Move:
+      {
+         std::vector<uint64_t> ids;
+         for (const Arrange::Lane* l : pages)
+            ids.push_back(l->id);
+         const uint64_t moving = ids[r.index];
+         ids.erase(ids.begin() + r.index);
+         ids.insert(ids.begin() + r.to, moving);
+         ArrangeEdit([&] {
+            for (size_t i = 0; i < ids.size(); i++)
+               if (Arrange::Lane* l = Arrange::FindLane(gArrange, ids[i]))
+                  l->pageOrder = (int)i;
+            gArrange.revision++;
+         });
+         break;
       }
-      if (page != nullptr && MenuParts::Item(L("Delete Page")))
-         s.pendingDelete = page->id;
-      MenuParts::EndPopup();
+      default: break;
+      }
    }
 
    const char* GridLabel()
@@ -1017,7 +1017,7 @@ namespace
       return q.num == 0 ? GridOrBeatSixteenth() : (Tick)((int64_t)Arrange::kTicksPerBar * q.num / q.den);
    }
 
-   const char* QuantLabel()
+   [[maybe_unused]] const char* QuantLabel()
    {
       const QuantChoice& q = kQuant[std::clamp(S().quantIdx, 0, kQuantCount - 1)];
       return q.num == 0 ? T("Grid") : T(q.label);
@@ -1740,7 +1740,10 @@ namespace
          s.gen.type = (NoteGen::Type)type;
 
       // Right-pinned, as in the other two: the settings toggle.
-      FormParts::Inline(std::max(ImGui::GetCursorPosX() + gap, ImGui::GetContentRegionMax().x - kIconW));
+      // After the last item, not GetCursorPosX(): that is already the next line's start, so a narrow panel put the chip
+      // over the Bars pill.
+      FormParts::Inline(std::max(ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX() + gap,
+                                 ImGui::GetContentRegionMax().x - kIconW));
       if (IconChip("##pianoSettings", IconsInfinite::Edit, s.settingsOpen || s.genOpen, T("Settings for the page, clip or note")))
       {
          const bool open = s.settingsOpen || s.genOpen;
@@ -2363,9 +2366,14 @@ namespace
       const Tick tick = (Tick)std::max(0.0, a.XTick(m.x));
       const Arrange::LoopRange& loop = gArrange.settings.loop;
       const ImGuiIO& io = ImGui::GetIO();
-      if (loop.enabled && std::fabs(m.x - a.TickX((double)loop.start)) <= TimeRuler::kEdgeHit)
+      // An edge scrolled out of the view isn't drawn, so it can't be grabbed either.
+      const auto grabs = [&](Tick t) {
+         const float x = a.TickX((double)t);
+         return x >= a.x0 - 0.5f && x <= a.x1 + 0.5f && std::fabs(m.x - x) <= TimeRuler::kEdgeHit;
+      };
+      if (loop.enabled && grabs(loop.start))
          BeginDrag(Drag::LoopStart, page, m, tick, 0, loop.start);
-      else if (loop.enabled && std::fabs(m.x - a.TickX((double)loop.end)) <= TimeRuler::kEdgeHit)
+      else if (loop.enabled && grabs(loop.end))
          BeginDrag(Drag::LoopEnd, page, m, tick, 0, loop.end);
       else
       {
@@ -2496,7 +2504,17 @@ namespace
       if (c0 == nullptr)
          return;
       float v = field(*c0);
-      const bool changed = FormParts::SliderFloat(label, &v, lo, hi, fmt);
+      bool changed;
+      if (s.menuCompact)
+      {
+         ImGui::AlignTextToFramePadding();
+         ImGui::TextUnformatted(label);
+         FormParts::Inline(84.0f);
+         ImGui::SetNextItemWidth(112.0f);
+         changed = FieldWell::Slider((std::string("##m") + label).c_str(), &v, lo, hi, fmt);
+      }
+      else
+         changed = FormParts::SliderFloat(label, &v, lo, hi, fmt);
       if (ImGui::IsItemActivated())
          ArrangeGestureBegin();
       if (changed)
@@ -2699,13 +2717,20 @@ namespace
       const ImVec4 shown = page.colorR + page.colorG + page.colorB > 0.0f ? ImVec4(page.colorR, page.colorG, page.colorB, 1.0f)
                                                                          : ClipColor(Arrange::Clip {}, page);
       float rgb[3] = { shown.x, shown.y, shown.z };
+      // One undo step per colour pick, as the clip colour above.
       if (FormParts::ColorDot("##pageColour", rgb, 15.0f, FormParts::kRowH))
       {
+         if (!gArrangeGestureOpen)
+            ArrangeGestureBegin();
          page.colorR = rgb[0];
          page.colorG = rgb[1];
          page.colorB = rgb[2];
+         gArrange.revision++;
          ArrangeCommitEdit();
       }
+      else if (gArrangeGestureOpen && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && s.drag == Drag::None &&
+               !ImGui::IsAnyItemActive())
+         ArrangeGestureEnd();
       bool snap = page.scaleSnap;
       if (FormParts::Switch(T("Scale snap"), &snap))
       {
@@ -2728,16 +2753,14 @@ namespace
       FormParts::Label(T("Grid"));
       DrawGridChip();
       SectionCard::Begin(T("Piano Roll node"));
-      const bool linked = page.noteNodeUid != 0 && FindNodeByUid(page.noteNodeUid) != nullptr;
-      if (ActionButton::Draw(s.pickOnCanvas ? T("Click a node on the canvas...") : linked ? T("Assign another Piano Roll") : T("Assign Piano Roll"),
-                             ImVec2(-1.0f, 0.0f), s.pickOnCanvas ? ActionButton::Kind::Selected : ActionButton::Kind::Plain))
-         s.pickOnCanvas = !s.pickOnCanvas;
-      if (ImGui::IsItemHovered())
-         HelpTip("%s", T("Then click a Piano Roll node on the canvas: this page plays through it"));
-      if (linked && ActionButton::Draw(T("Unlink"), ImVec2(-1.0f, 0.0f)))
       {
          const uint64_t lane = page.id;
-         ArrangeEdit([&] { Arrange::LinkLane(gArrange, lane, 0); });
+         CanvasLink::Spec spec;
+         spec.owner = "pianoroll.page";
+         spec.kind = T("Piano Roll");
+         spec.accepts = [](const GraphNode& gn) { return dynamic_cast<const PianoRollNode*>(gn.node.get()) != nullptr; };
+         spec.onPicked = [lane](uint64_t uid) { ArrangeEdit([&] { Arrange::LinkLane(gArrange, lane, uid); }); };
+         CanvasLink::Field("##prnode", page.noteNodeUid, spec, true);
       }
       DrawQuantiseCard(page);
       DrawFunctionSliders();
@@ -2812,6 +2835,7 @@ namespace
    {
       State& s = S();
       ImGui::BeginChild("##pianoInspector", size, ImGuiChildFlags_AlwaysUseWindowPadding, 0);
+      UiDensity::Compact compact;
       SectionCard::BeginWindow();
       const FormParts::Narrow narrow;
       if (TextChip(T("Settings"), !s.genOpen))
@@ -2830,7 +2854,8 @@ namespace
          DrawPageInspector(page);
       SectionCard::EndWindow();
       s.inspectorHovered = ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows);
-      ImGui::EndChild();
+      compact.End(); // before the child closes: the pushes were made inside it
+      EndChildSafe();
    }
 
    // The clip a take lands on and whose takes show: the one selected, or the one under the playhead.
@@ -3130,8 +3155,6 @@ namespace
       else if (cmd && !shift && key(ImGuiKey_R))
       {
          s.renameLane = page.id;
-         std::snprintf(s.renameBuf, sizeof s.renameBuf, "%s", page.name.c_str());
-         s.renameFocus = true;
       }
       else if (cmd && shift && key(ImGuiKey_G))
       {
@@ -3196,15 +3219,18 @@ namespace
    {
       State& s = S();
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      const float toolbarH = tok::tile + ImGui::GetStyle().ItemSpacing.y;
+      const float toolbarH = PanelKit::Chip() + ImGui::GetStyle().ItemSpacing.y;
       {
          const ImVec2 room = ImGui::GetContentRegionAvail();
          DrawToolbar(page, room.x - kKeysW, room.y - toolbarH - kRulerH - kStripH);
       }
+      ImGui::Dummy(ImVec2(0.0f, tok::space_1));   // toolbar to ruler = seam to toolbar (grip + space_1)
       const ImVec2 origin = ImGui::GetCursorScreenPos();
       const ImVec2 avail = ImGui::GetContentRegionAvail();
       Areas a;
-      const float inspectorW = s.settingsOpen || s.genOpen ? std::min(kInspectorW, avail.x * 0.4f) : 0.0f;
+      const float inspectorBase = std::min(kInspectorW, avail.x * 0.4f);
+      const float inspectorW = s.settingsOpen || s.genOpen
+         ? inspectorBase : 0.0f;
       a.x0 = origin.x + kKeysW;
       a.x1 = origin.x + avail.x - (inspectorW > 0.0f ? inspectorW + tok::space_2 : 0.0f);
       a.rulerY = origin.y;
@@ -3265,12 +3291,13 @@ namespace
       }
       ClampView(a.rollB - a.rollY);
       HandlePointer(page, a, hovered, mouse);
-      if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && mouse.y >= a.rollY && mouse.x >= a.x0)
+      if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && mouse.y >= a.stripY && mouse.x >= a.x0 &&
+          (mouse.y >= a.rollY || ClipAt(page, (Tick)std::max(0.0, a.XTick(mouse.x))) != nullptr))
       {
          State& ms = S();
-         NoteHit hit; // what is under the pointer decides the menu
+         NoteHit hit; // what is under the pointer decides the menu; the clip header is always the clip
          const Tick at = (Tick)std::max(0.0, a.XTick(mouse.x));
-         if (HitNote(page, a, mouse, hit))
+         if (mouse.y >= a.rollY && HitNote(page, a, mouse, hit))
          {
             if (ms.notes.count({ hit.clip, hit.note.id }) == 0)
                ms.notes = { { hit.clip, hit.note.id } };
@@ -3295,7 +3322,7 @@ namespace
          s.openFunctions = false;
          ImGui::OpenPopup("##pianoFx");
       }
-      ImGui::SetNextWindowSizeConstraints(ImVec2(220.0f, 0.0f), ImVec2(280.0f, 10000.0f));
+      ImGui::SetNextWindowSizeConstraints(ImVec2(220.0f, 0.0f), ImVec2(280.0f, MenuParts::ListMaxH()));
       if (MenuParts::BeginPopup("##pianoFx"))
       {
          DrawContextMenu(page);
@@ -3333,13 +3360,11 @@ namespace
       dl->PopClipRect();
       const Arrange::LoopRange& loop = gArrange.settings.loop;
       if (loop.enabled && loop.end > loop.start)
-         TimeRuler::LoopBand(dl, a.TickX((double)loop.start), a.TickX((double)loop.end), a.rulerY, a.rollB, s.drag == Drag::LoopCarve,
+         TimeRuler::LoopBand(dl, a.TickX((double)loop.start), a.TickX((double)loop.end), a.rulerY, a.rollB, a.x0, a.x1, s.drag == Drag::LoopCarve,
                              s.drag == Drag::LoopStart ? 1 : s.drag == Drag::LoopEnd ? 2 : 0);
-      const float px = a.TickX((double)play);
-      if (px >= a.x0 && px <= a.x1)
-         TimeRuler::Playhead(dl, px, a.rulerY, a.rollB);
+      TimeRuler::Playhead(dl, a.TickX((double)play), a.rulerY, a.rollB, a.x0, a.x1);
       if (gArrangeScrubbing && s.drag == Drag::Scrub)
-         TimeRuler::Playhead(dl, a.TickX((double)gArrangeScrubTick), a.rulerY, a.rollB, true);
+         TimeRuler::Playhead(dl, a.TickX((double)gArrangeScrubTick), a.rulerY, a.rollB, a.x0, a.x1, true);
       if (page.clips.empty())
       {
          const char* text = T("Draw a clip, drop a .mid, or record");
@@ -3382,13 +3407,13 @@ namespace
             ArrangeEdit([&] { NewClipAt(page, s.menuTick); });
          return;
       }
-      if (MenuParts::Item(L("Settings")))
-      {
-         s.settingsOpen = true;
-         s.genOpen = false;
-      }
       if (MenuParts::Item(L("Duplicate"), "Shift+D"))
-         DuplicateSelection();
+      {
+         if (s.menuKind == 1)
+            DuplicateClips();
+         else
+            DuplicateSelection();
+      }
       if (MenuParts::Item(L("Mute"), "0"))
       {
          if (s.menuKind == 2)
@@ -3404,12 +3429,23 @@ namespace
                gArrange.revision++;
             });
       }
-      if (MenuParts::Item(L("Delete"), "Del"))
-         DeleteSelection();
+      if (s.menuKind == 1 && !s.clips.empty())
+      {
+         MenuParts::Separator();
+         using Clip = Arrange::Clip;
+         UiDensity::Compact compact;
+         s.menuCompact = true;
+         ClipField(T("Gain"), -60.0f, 12.0f, "%.1f dB", [](Clip& c) -> float& { return c.gainDb; });
+         ClipField(T("Velocity"), 0.0f, 2.0f, "%.2f", [](Clip& c) -> float& { return c.velScale; });
+         ClipField(T("Swing"), 0.0f, 1.0f, "%.2f", [](Clip& c) -> float& { return c.swing; });
+         ClipField(T("Chance"), 0.0f, 2.0f, "%.2f", [](Clip& c) -> float& { return c.chanceScale; });
+         s.menuCompact = false;
+      }
       if (s.menuKind == 2 && !s.notes.empty())
       {
          MenuParts::Separator();
          using Note = Arrange::Note;
+         UiDensity::Compact compact;
          s.menuCompact = true;
          NoteField(page, T("Velocity"), 1.0f, 127.0f, "%.0f", [](const Note& n) { return (float)n.vel; },
                    [](Note& n, float v) { n.vel = (uint8_t)std::lround(v); });
@@ -3435,6 +3471,24 @@ namespace
          DrawFunctionItems(page);
          ImGui::EndMenu();
       }
+      MenuParts::Separator();
+      if (MenuParts::Item(L("Delete"), "Backspace"))
+      {
+         if (s.menuKind == 1)
+         {
+            const std::vector<uint64_t> doomed(s.clips.begin(), s.clips.end());
+            ArrangeEdit([&] { Arrange::Delete(gArrange, doomed); });
+            s.clips.clear();
+         }
+         else
+            DeleteSelection();
+      }
+      MenuParts::Separator();
+      if (MenuParts::Item(L("Settings")))
+      {
+         s.settingsOpen = true;
+         s.genOpen = false;
+      }
    }
 
    void DrawPanel()
@@ -3443,10 +3497,38 @@ namespace
       FollowCanvasSelection();
       DrawDockMenu();
       State& st = S();
+      // Review shots (INFINITE_CLSHOT=card|pick): a page with its settings open; "pick" also arms the node pick.
+      if (const char* sh = getenv("INFINITE_CLSHOT"); sh != nullptr && ImGui::GetFrameCount() > 6)
+      {
+         static int sShot = 0;
+         if (sShot == 0 && Pages().empty())
+            AddPage();
+         if (sShot++ == 20 && Page() != nullptr)
+         {
+            st.settingsOpen = true;
+            if (std::string(sh) == "pick")
+            {
+               CanvasLink::Spec spec;
+               spec.owner = "pianoroll.page";
+               spec.kind = T("Piano Roll");
+               spec.accepts = [](const GraphNode& gn) { return dynamic_cast<const PianoRollNode*>(gn.node.get()) != nullptr; };
+               CanvasLink::Arm(spec);
+            }
+         }
+      }
       if (st.pendingAdd)
       {
          st.pendingAdd = false;
          AddPage();
+      }
+      if (st.pendingDuplicate != 0)
+      {
+         const uint64_t src = st.pendingDuplicate;
+         st.pendingDuplicate = 0;
+         uint64_t copy = 0;
+         ArrangeEdit([&] { Arrange::DuplicateLane(gArrange, src, &copy); });
+         if (copy != 0)
+            st.lane = copy;
       }
       if (st.pendingDelete != 0)
       {
@@ -3645,20 +3727,24 @@ void DrawPianoRollDocked(const char* id, const ImVec2& size)
    if (gripFirst)
       grip();
    const ImVec2 gap = ImGui::GetStyle().ItemSpacing;
-   const ImVec2 cardSize(std::max(1.0f, inner.x), std::max(1.0f, inner.y - kGrip - gap.y));
+   ImVec2 cardSize(std::max(1.0f, inner.x), std::max(1.0f, inner.y - kGrip - gap.y));
    PanelFrame::Insets in;
    if (gripFirst)
-      in.t = 0.0f;
+   {
+      in.t = 0.0f;   // BeginCard drops the item spacing under the grip
+   }
    else
       in.b = 0.0f;
+   PushDockedPanelStyle(/*isChild=*/true);
    PanelFrame::BeginCard("##pianopanelcontent", cardSize, in);
+   PopDockedPanelStyle();
    DrawPanel();
    PanelFrame::EndCard();
    if (!gripFirst)
       grip();
    const ImVec2 savedSpacing = ImGui::GetStyle().ItemSpacing;
    ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, 0.0f);
-   ImGui::EndChild();
+   EndChildSafe();
    ImGui::GetStyle().ItemSpacing = savedSpacing;
 }
 }

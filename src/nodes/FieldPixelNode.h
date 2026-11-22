@@ -10,6 +10,7 @@
 #include "field/ParamTable.h"
 #include "field/PinTable.h"
 #include "field/FieldDevice.h"
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -148,6 +149,7 @@ public:
       v.Float("height", height);
       v.Bool("animate", animate);
       v.Bool("exposeAuxTexture", exposeAuxTexture);
+      v.Int("domain", domain);
       mParamTable.VisitParams(v);
       // Dynamic pins, Phase 2b (build step 13, §5.1 step 8) - see
       // FieldElementNode::VisitParams's identical block for the rationale.
@@ -161,9 +163,10 @@ public:
 
    // Compilation & UI
    bool Apply();
-   const std::string& LastError() const { return mLastError; }
-   NodeIssue Issue() const override { return NodeIssues::FieldCompile(mLastError); }
-   std::string CodeError() const override { return mLastError; }
+   // The source error, else (Material domain, row 1.5) the error a backend gave the registered program.
+   std::string LastError() const;
+   NodeIssue Issue() const override { return NodeIssues::FieldCompile(LastError()); }
+   std::string CodeError() const override { return LastError(); }
    const std::string& Notice() const { return mNotice; }
    unsigned int Program() const { return mProgram; }
    const Field::GlslEmitResult& EmitResult() const { return mEmitResult; }
@@ -182,8 +185,9 @@ public:
       const char* name;
       const char* code;
    };
-   static const std::vector<Preset>& Presets();
-   static const std::vector<std::string>& PresetNames();
+   static const std::vector<Preset>& Presets();           // Image domain
+   static const std::vector<Preset>& MaterialPresets();   // Material domain recipes (rows 3.5, 4.5), FieldMaterialRecipes.h
+   static const std::vector<std::string>& PresetNames();  // Presets() then MaterialPresets(); LoadPreset sets the domain
    void LoadPreset(int index);
 
    // Field build step 17 (.infdev device files) - see FieldElementNode's
@@ -196,14 +200,32 @@ public:
    float height = 1024.0f;
    bool animate = true;
    int presetIndex = 0;
+   // OPUS_PLAN row 1.3. 0 Image: the kernel draws a picture. 1 Material: the kernel is a surface program for a
+   // Material node's `field` pin; it draws nothing and registers one Field::MaterialProgram per param set.
+   int domain = 0;
+   static const std::vector<std::string>& DomainNames();
+   // The registered program for the current code and param values, 0 when not in Material domain or on error
+   // (a backend that could not compile it included: the material then draws its knobs).
+   int MaterialProgramId() const;
+   // Row 3.4: the program's live knob values (the first Field::kMaterialLiveParams params, declaration order, the rest
+   // 0), read from the param table now, so a modulated knob reaches the shader as data the same frame.
+   void MaterialParams(float out[16]) const;
 
 private:
+   void RefreshMaterialProgram();
    unsigned int mProgram = 0;
+   int mMatId = 0;
+   bool mMatTried = false;
+   bool mMatApplied = false;          // the Material-domain IR in mIR is current for `code`
+   std::vector<float> mMatValues;      // param values mMatId was built with, in mIR.declaredParams order
    std::string mLastError;
    std::string mNotice;
    int mLastCookFrame = -1;
 
    GLUtil::Fbo mOut;
+   // Material domain: a lit sphere wearing the material, so the node shows what it makes.
+   struct MatPreview;
+   std::unique_ptr<MatPreview> mPreview;
    Field::PixelStateBank mState;
    Field::ParamTable mParamTable;
    Field::PixelIRProgram mIR;

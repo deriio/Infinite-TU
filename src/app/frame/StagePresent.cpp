@@ -10,7 +10,6 @@ void DrawPresent(FrameCtx& fc)
 {
    auto& window = fc.window;
    auto& frameId = fc.frameId;
-   auto& now = fc.now;
 
       // The projectors timer above has closed, so this frame's record is complete.
       if (sTailProjIntervalMs > 0.0)
@@ -31,7 +30,13 @@ void DrawPresent(FrameCtx& fc)
       // KeyCtrl, not KeySuper (that's the Windows key there).
       if (!ImGui::GetIO().WantTextInput && (ImGui::GetIO().KeySuper || ImGui::GetIO().KeyCtrl))
       {
-         if (ImGui::IsKeyPressed(ImGuiKey_0, false))
+         // Cmd+0 / Cmd+= / Cmd+- are the views' own Fit and Zoom (Photoshop, Blender): while the pointer is on a 2D
+         // or 3D View it has the keys, and Settings and UI scale stay out of it.
+         const bool viewHasKeys = (gView2DOpen && gView2DClaimedKeys) || (gView3DOpen && gView3DClaimedKeys);
+         if (viewHasKeys && (ImGui::IsKeyPressed(ImGuiKey_0, false) || ImGui::IsKeyPressed(ImGuiKey_Equal, true) ||
+                             ImGui::IsKeyPressed(ImGuiKey_Minus, true)))
+            ;
+         else if (ImGui::IsKeyPressed(ImGuiKey_0, false))
             gSettingsOpen = true;
          else if (ImGui::IsKeyPressed(ImGuiKey_Equal, true) || ImGui::IsKeyPressed(ImGuiKey_Minus, true))
          {

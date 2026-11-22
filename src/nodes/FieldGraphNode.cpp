@@ -32,19 +32,19 @@ const std::vector<FieldGraphNode::Preset>& FieldGraphNode::Presets()
         "synth = emit(\"Wavetable\", 1)\n"
         "flt = emit(\"Audio Filter\", 2)\n"
         "rev = emit(\"Reverb\", 3)\n"
-        "out = emit(\"Audio Out\", 4)\n"
+        "speaker = emit(\"Audio Out\", 4)\n"
         "lfo = emit(\"LFO\", 5)\n"
         "connect(seq, 0, synth, 0)\n"
         "connect(synth, 0, flt, 0)\n"
         "connect(flt, 0, rev, 0)\n"
-        "connect(rev, 0, out, 0)\n"
+        "connect(rev, 0, speaker, 0)\n"
         "connect(lfo, 0, flt, 0)\n"
         "place(seq, -420, 0)\n"
         "place(lfo, -420, 220)\n"
         "place(synth, -200, 0)\n"
         "place(flt, 20, 0)\n"
         "place(rev, 240, 0)\n"
-        "place(out, 460, 0)\n" },
+        "place(speaker, 460, 0)\n" },
       { "3D Scene Pipeline",
         "geo = emit(\"Geometry\", 0)\n"
         "xform = emit(\"Transform\", 1)\n"
@@ -114,7 +114,8 @@ void FieldGraphNode::LoadPreset(int index)
    {
       presetIndex = index;
       code = presets[index].code;
-      Apply();
+      if (Apply())
+         mParamTable.ResetDeclaredToDefaults(); // a preset starts at its own declared values
    }
 }
 
@@ -138,7 +139,8 @@ Field::DeviceFile FieldGraphNode::ToDeviceFile() const
 void FieldGraphNode::LoadDeviceFile(const Field::DeviceFile& device)
 {
    code = device.code;
-   Apply();
+   if (Apply())
+      mParamTable.ResetDeclaredToDefaults(); // params the file omits start at their defaults
    for (const auto& kv : device.params)
    {
       Field::ParamEntry* p = mParamTable.Find(kv.first);

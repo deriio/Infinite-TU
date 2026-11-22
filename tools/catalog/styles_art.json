@@ -1,1011 +1,2033 @@
 {
- "_doc": "Visual style table: internal taxonomy for sample generation. The first 15 ids come from tools/spread/art_taxonomy.py (palette and name are read from there); the rest extend it with digital-culture and electronic-music-adjacent movements. 'sources' / 'fx' / 'comp' are node pools; 'ban' keeps nodes out; motion 0..1 is how much the picture moves; 'pairs' lists music style ids that fit when the sample has sound. Research in docs/plans/patch-corpus/taxonomy/art.md.",
- "styles": [
-  {
-   "id": "y2k_acid",
-   "taxonomy": "spread",
-   "sources": [
-    "Blob",
-    "Superellipse",
-    "Ramp"
-   ],
-   "fx": [
-    "bloom",
-    "liquify",
-    "twirl",
-    "kaleidoscope"
-   ],
-   "comp": [
-    "gradientmap",
-    "Color Ramp"
-   ],
-   "ban": [],
-   "motion": 0.6,
-   "pairs": [
-    "detroit_techno",
-    "classic_trance",
-    "electro",
-    "synthwave"
-   ]
-  },
-  {
-   "id": "glitch_datamosh",
-   "taxonomy": "spread",
-   "sources": [
-    "Noise",
-    "Rectangle",
-    "Image Source"
-   ],
-   "fx": [
-    "glitch",
-    "displace",
-    "pixelate"
-   ],
-   "comp": [
-    "Feedback",
-    "Trails"
-   ],
-   "ban": [],
-   "motion": 0.9,
-   "pairs": [
-    "glitch",
-    "idm",
-    "industrial_techno",
-    "footwork"
-   ]
-  },
-  {
-   "id": "ditherpunk",
-   "taxonomy": "spread",
-   "sources": [
-    "Noise",
-    "Ramp",
-    "Circle"
-   ],
-   "fx": [
-    "pixelate"
-   ],
-   "comp": [
-    "dither",
-    "threshold",
-    "posterize"
-   ],
-   "ban": [
-    "bloom"
-   ],
-   "motion": 0.5,
-   "pairs": [
-    "idm",
-    "minimal_techno",
-    "lofi_beats",
-    "electro"
-   ]
-  },
-  {
-   "id": "neo_brutalist",
-   "taxonomy": "spread",
-   "sources": [
-    "Rectangle",
-    "Text",
-    "Line"
-   ],
-   "fx": [
-    "halftone",
-    "edge outline"
-   ],
-   "comp": [
-    "posterize",
-    "threshold"
-   ],
-   "ban": [
-    "bloom",
-    "glitch"
-   ],
-   "motion": 0.3,
-   "pairs": [
-    "minimal_techno",
-    "industrial_techno",
-    "dubstep"
-   ]
-  },
-  {
-   "id": "technical_blueprint",
-   "taxonomy": "spread",
-   "sources": [
-    "Line",
-    "Polygon",
-    "Ring"
-   ],
-   "fx": [
-    "edge outline",
-    "edge sobel"
-   ],
-   "comp": [
-    "Color Ramp",
-    "invert"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.3,
-   "pairs": [
-    "ambient",
-    "dub_techno",
-    "idm"
-   ]
-  },
-  {
-   "id": "retro_surreal",
-   "taxonomy": "spread",
-   "sources": [
-    "Image Source",
-    "Shape",
-    "Crescent"
-   ],
-   "fx": [
-    "halftone",
-    "addnoise"
-   ],
-   "comp": [
-    "gradientmap",
-    "posterize"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.3,
-   "pairs": [
-    "downtempo",
-    "lofi_beats",
-    "vaporwave"
-   ]
-  },
-  {
-   "id": "op_art",
-   "taxonomy": "spread",
-   "sources": [
-    "Ring",
-    "Line",
-    "Circle"
-   ],
-   "fx": [
-    "ripple",
-    "symmetry",
-    "kaleidoscope"
-   ],
-   "comp": [
-    "threshold",
-    "invert"
-   ],
-   "ban": [
-    "addnoise"
-   ],
-   "motion": 0.7,
-   "pairs": [
-    "psytrance",
-    "classic_trance",
-    "minimal_techno"
-   ]
-  },
-  {
-   "id": "analog_crt",
-   "taxonomy": "spread",
-   "sources": [
-    "Noise",
-    "Rectangle",
-    "Video"
-   ],
-   "fx": [
-    "lensdistortion",
-    "vignette",
-    "radialblur"
-   ],
-   "comp": [
-    "Feedback",
-    "Trails",
-    "gradientmap"
-   ],
-   "ban": [],
-   "motion": 0.5,
-   "pairs": [
-    "vaporwave",
-    "synthwave",
-    "dub_techno"
-   ]
-  },
-  {
-   "id": "thundr_brutalist",
-   "taxonomy": "spread",
-   "sources": [
-    "Rectangle",
-    "Text",
-    "Polygon"
-   ],
-   "fx": [
-    "halftone",
-    "edge sobel"
-   ],
-   "comp": [
-    "posterize",
-    "threshold"
-   ],
-   "ban": [
-    "bloom"
-   ],
-   "motion": 0.4,
-   "pairs": [
-    "industrial_techno",
-    "gabber",
-    "neurofunk"
-   ]
-  },
-  {
-   "id": "chavetta_montage",
-   "taxonomy": "spread",
-   "sources": [
-    "Image Source",
-    "Rectangle",
-    "Shape"
-   ],
-   "fx": [
-    "halftone",
-    "addnoise",
-    "displace"
-   ],
-   "comp": [
-    "Layer Stack",
-    "gradientmap"
-   ],
-   "ban": [],
-   "motion": 0.3,
-   "pairs": [
-    "breakbeat",
-    "jungle",
-    "downtempo"
-   ]
-  },
-  {
-   "id": "lilliputian_surreal",
-   "taxonomy": "spread",
-   "sources": [
-    "Image Source",
-    "Circle",
-    "Shape"
-   ],
-   "fx": [
-    "gaussianblur",
-    "vignette"
-   ],
-   "comp": [
-    "gradientmap",
-    "Blend"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.2,
-   "pairs": [
-    "ambient",
-    "downtempo"
-   ]
-  },
-  {
-   "id": "ukiyoe_cartography",
-   "taxonomy": "spread",
-   "sources": [
-    "Line",
-    "Polygon",
-    "Shape"
-   ],
-   "fx": [
-    "halftone",
-    "emboss"
-   ],
-   "comp": [
-    "posterize",
-    "gradientmap"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.2,
-   "pairs": [
-    "ambient",
-    "lofi_beats",
-    "downtempo"
-   ]
-  },
-  {
-   "id": "indie_psychedelic",
-   "taxonomy": "spread",
-   "sources": [
-    "Blob",
-    "Noise",
-    "Ellipse"
-   ],
-   "fx": [
-    "liquify",
-    "twirl",
-    "bloom"
-   ],
-   "comp": [
-    "Fluid",
-    "Reaction Diffusion",
-    "gradientmap"
-   ],
-   "ban": [],
-   "motion": 0.7,
-   "pairs": [
-    "psytrance",
-    "downtempo",
-    "progressive_house"
-   ]
-  },
-  {
-   "id": "riso_manga_zine",
-   "taxonomy": "spread",
-   "sources": [
-    "Circle",
-    "Rectangle",
-    "Image Source"
-   ],
-   "fx": [
-    "halftone",
-    "pixelate"
-   ],
-   "comp": [
-    "posterize",
-    "Blend",
-    "gradientmap"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.4,
-   "pairs": [
-    "footwork",
-    "breakbeat",
-    "uk_garage"
-   ]
-  },
-  {
-   "id": "liminal_void",
-   "taxonomy": "spread",
-   "sources": [
-    "Rectangle",
-    "Noise",
-    "Ramp"
-   ],
-   "fx": [
-    "gaussianblur",
-    "vignette",
-    "addnoise"
-   ],
-   "comp": [
-    "gradientmap",
-    "exposure"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.1,
-   "pairs": [
-    "dark_ambient",
-    "ambient",
-    "dub_techno"
-   ]
-  },
-  {
-   "id": "vaporwave_collage",
-   "taxonomy": "new",
-   "name": "Vaporwave Collage",
-   "palette": [
-    "#ff71ce",
-    "#01cdfe",
-    "#05ffa1",
-    "#b967ff"
-   ],
-   "sources": [
-    "Ramp",
-    "Superellipse",
-    "Circle",
-    "Noise"
-   ],
-   "fx": [
-    "bloom",
-    "displace",
-    "ripple"
-   ],
-   "comp": [
-    "gradientmap",
-    "Blend"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.3,
-   "pairs": [
-    "vaporwave",
-    "lofi_beats"
-   ],
-   "refs": [
-    "Macintosh Plus, Floral Shoppe cover (2011)",
-    "Vektroid / James Ferraro lineage",
-    "Early 90s CGI and Windows 95 clip art"
-   ]
-  },
-  {
-   "id": "synthwave_grid",
-   "taxonomy": "new",
-   "name": "Synthwave Grid & Sunset",
-   "palette": [
-    "#2b0a5e",
-    "#ff2a6d",
-    "#05d9e8",
-    "#ffd319"
-   ],
-   "sources": [
-    "Ramp",
-    "Line",
-    "Circle"
-   ],
-   "fx": [
-    "bloom",
-    "radialblur",
-    "lensdistortion"
-   ],
-   "comp": [
-    "gradientmap",
-    "Color Ramp"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.4,
-   "pairs": [
-    "synthwave",
-    "electro"
-   ],
-   "refs": [
-    "Tron (1982), Miami Vice, Outrun",
-    "Kavinsky, Perturbator cover art",
-    "Retro-futurism of 80s airbrush"
-   ]
-  },
-  {
-   "id": "cyberpunk_neon",
-   "taxonomy": "new",
-   "name": "Cyberpunk Neon Rain",
-   "palette": [
-    "#0a0014",
-    "#ff0090",
-    "#00f0ff",
-    "#fcee0a"
-   ],
-   "sources": [
-    "Noise",
-    "Rectangle",
-    "Text"
-   ],
-   "fx": [
-    "bloom",
-    "motionblur",
-    "glitch"
-   ],
-   "comp": [
-    "Trails",
-    "gradientmap"
-   ],
-   "ban": [],
-   "motion": 0.7,
-   "pairs": [
-    "industrial_techno",
-    "neurofunk",
-    "dubstep"
-   ],
-   "refs": [
-    "Blade Runner (1982), Neuromancer (Gibson, 1984)",
-    "Akira (1988)",
-    "Cyberpunk 2077 UI language"
-   ]
-  },
-  {
-   "id": "generative_plotter",
-   "taxonomy": "new",
-   "name": "Generative Plotter Line Art",
-   "palette": [
-    "#f5f1e6",
-    "#111111",
-    "#d1301f"
-   ],
-   "sources": [
-    "Line",
-    "Polygon",
-    "Ring"
-   ],
-   "fx": [
-    "edge outline"
-   ],
-   "comp": [
-    "posterize"
-   ],
-   "ban": [
-    "bloom",
-    "glitch",
-    "gaussianblur"
-   ],
-   "motion": 0.4,
-   "pairs": [
-    "minimal_techno",
-    "ambient",
-    "idm"
-   ],
-   "refs": [
-    "Vera Molnar, Manfred Mohr, Frieder Nake (1960s algorithmic art)",
-    "Tyler Hobbs fidenza",
-    "Plotter art community"
-   ]
-  },
-  {
-   "id": "demoscene_plasma",
-   "taxonomy": "new",
-   "name": "Demoscene Plasma & Rotozoom",
-   "palette": [
-    "#000000",
-    "#ff3b00",
-    "#00e0ff",
-    "#ffffff"
-   ],
-   "sources": [
-    "Noise",
-    "Ramp",
-    "Formula"
-   ],
-   "fx": [
-    "ripple",
-    "twirl",
-    "kaleidoscope"
-   ],
-   "comp": [
-    "gradientmap",
-    "Color Ramp"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.9,
-   "pairs": [
-    "acid_house",
-    "classic_trance",
-    "electro",
-    "breakbeat"
-   ],
-   "refs": [
-    "Amiga and C64 demoscene (Future Crew, Farbrausch)",
-    "Second Reality (1993), .kkrieger (2004)",
-    "Pouet, Revision party"
-   ]
-  },
-  {
-   "id": "vector_wireframe",
-   "taxonomy": "new",
-   "name": "Vector Wireframe",
-   "palette": [
-    "#000000",
-    "#00ff6a",
-    "#ffffff"
-   ],
-   "sources": [
-    "Ring",
-    "Line",
-    "Polygon"
-   ],
-   "fx": [
-    "kaleidoscope",
-    "symmetry",
-    "bloom"
-   ],
-   "comp": [
-    "Trails",
-    "gradientmap"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.5,
-   "pairs": [
-    "electro",
-    "synthwave",
-    "detroit_techno"
-   ],
-   "refs": [
-    "Elite (1984), Battlezone, Tempest",
-    "Vectrex, vector CRT arcades",
-    "Vasulka Brothers video art"
-   ]
-  },
-  {
-   "id": "pixel_art_8bit",
-   "taxonomy": "new",
-   "name": "Pixel Art 8-bit",
-   "palette": [
-    "#0f380f",
-    "#306230",
-    "#8bac0f",
-    "#9bbc0f"
-   ],
-   "sources": [
-    "Rectangle",
-    "Noise",
-    "Circle"
-   ],
-   "fx": [
-    "pixelate"
-   ],
-   "comp": [
-    "posterize",
-    "dither",
-    "gradientmap"
-   ],
-   "ban": [
-    "glitch",
-    "gaussianblur"
-   ],
-   "motion": 0.4,
-   "pairs": [
-    "electro",
-    "gabber",
-    "synthwave"
-   ],
-   "refs": [
-    "NES/Game Boy palettes",
-    "Chiptune and tracker culture",
-    "Space Invaders, Pac-Man sprites"
-   ]
-  },
-  {
-   "id": "bauhaus_geometry",
-   "taxonomy": "new",
-   "name": "Bauhaus Geometry",
-   "palette": [
-    "#f2e8cf",
-    "#d62828",
-    "#1d3557",
-    "#fcbf49"
-   ],
-   "sources": [
-    "Circle",
-    "Rectangle",
-    "Triangle"
-   ],
-   "fx": [
-    "halftone"
-   ],
-   "comp": [
-    "posterize",
-    "Blend"
-   ],
-   "ban": [
-    "glitch",
-    "bloom"
-   ],
-   "motion": 0.3,
-   "pairs": [
-    "minimal_techno",
-    "deep_house",
-    "detroit_techno"
-   ],
-   "refs": [
-    "Bauhaus (Gropius, 1919), Kandinsky, Moholy-Nagy",
-    "Josef Albers, Interaction of Color",
-    "Ulm School and Swiss style followers"
-   ]
-  },
-  {
-   "id": "suprematist_blocks",
-   "taxonomy": "new",
-   "name": "Suprematist Forms",
-   "palette": [
-    "#f4efe6",
-    "#111111",
-    "#d9231f"
-   ],
-   "sources": [
-    "Rectangle",
-    "Polygon",
-    "Circle"
-   ],
-   "fx": [
-    "halftone"
-   ],
-   "comp": [
-    "posterize"
-   ],
-   "ban": [
-    "glitch",
-    "bloom"
-   ],
-   "motion": 0.3,
-   "pairs": [
-    "industrial_techno",
-    "gabber",
-    "dark_ambient"
-   ],
-   "refs": [
-    "Malevich, Black Square (1915)",
-    "El Lissitzky, Beat the Whites with the Red Wedge",
-    "Constructivist posters"
-   ]
-  },
-  {
-   "id": "cymatics_sine",
-   "taxonomy": "new",
-   "name": "Cymatics & Chladni",
-   "palette": [
-    "#000000",
-    "#ffffff",
-    "#7df9ff"
-   ],
-   "sources": [
-    "Ring",
-    "Formula",
-    "Noise"
-   ],
-   "fx": [
-    "ripple",
-    "symmetry"
-   ],
-   "comp": [
-    "threshold",
-    "Color Ramp"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.8,
-   "pairs": [
-    "ambient",
-    "dub_techno",
-    "psytrance"
-   ],
-   "refs": [
-    "Ernst Chladni, Entdeckungen (1787)",
-    "Hans Jenny, Cymatics (1967)",
-    "Oscilloscope music: Jerobeam Fenderson"
-   ]
-  },
-  {
-   "id": "brutalist_architecture",
-   "taxonomy": "new",
-   "name": "Brutalist Concrete",
-   "palette": [
-    "#7a7a78",
-    "#d9d6cf",
-    "#222222"
-   ],
-   "sources": [
-    "Rectangle",
-    "Cube",
-    "Polygon"
-   ],
-   "fx": [
-    "emboss",
-    "vignette",
-    "halftone",
-    "edge sobel"
-   ],
-   "comp": [
-    "exposure",
-    "gradientmap"
-   ],
-   "ban": [
-    "glitch",
-    "bloom"
-   ],
-   "motion": 0.2,
-   "pairs": [
-    "dark_ambient",
-    "industrial_techno",
-    "dub_techno"
-   ],
-   "refs": [
-    "Le Corbusier, Brutalist architecture",
-    "Soviet modernism, Spomenik monuments",
-    "Brutalist websites movement"
-   ]
-  },
-  {
-   "id": "holographic_iridescent",
-   "taxonomy": "new",
-   "name": "Holographic Iridescence",
-   "palette": [
-    "#a9f0ff",
-    "#ffb3f5",
-    "#d6ff9e",
-    "#ffffff"
-   ],
-   "sources": [
-    "Blob",
-    "Ramp",
-    "Superellipse"
-   ],
-   "fx": [
-    "bloom",
-    "liquify",
-    "kaleidoscope"
-   ],
-   "comp": [
-    "gradientmap",
-    "Color Ramp"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.6,
-   "pairs": [
-    "progressive_house",
-    "classic_trance",
-    "uk_garage"
-   ],
-   "refs": [
-    "Y2K iridescent chrome and foil",
-    "Holographic print and risograph foil",
-    "Aphex Twin and Chris Cunningham era"
-   ]
-  },
-  {
-   "id": "acid_graphics",
-   "taxonomy": "new",
-   "name": "Acid Graphics Typography",
-   "palette": [
-    "#ccff00",
-    "#000000",
-    "#ff00ff"
-   ],
-   "sources": [
-    "Text",
-    "Ramp",
-    "Noise"
-   ],
-   "fx": [
-    "pixelate",
-    "twirl",
-    "bloom",
-    "kaleidoscope",
-    "ripple"
-   ],
-   "comp": [
-    "gradientmap",
-    "posterize"
-   ],
-   "ban": [],
-   "motion": 0.7,
-   "pairs": [
-    "acid_house",
-    "psytrance",
-    "tech_house"
-   ],
-   "refs": [
-    "Acid graphics (2010s revival)",
-    "Rave flyer 1991-1993",
-    "Designers Republic for Warp"
-   ]
-  },
-  {
-   "id": "minimal_signal",
-   "taxonomy": "new",
-   "name": "Minimal Signal",
-   "palette": [
-    "#101010",
-    "#f0f0f0",
-    "#ff3300"
-   ],
-   "sources": [
-    "Line",
-    "Rectangle",
-    "Circle"
-   ],
-   "fx": [
-    "ripple",
-    "gaussianblur"
-   ],
-   "comp": [
-    "threshold",
-    "Color Ramp"
-   ],
-   "ban": [
-    "glitch",
-    "bloom"
-   ],
-   "motion": 0.2,
-   "pairs": [
-    "minimal_techno",
-    "dub_techno",
-    "ambient"
-   ],
-   "refs": [
-    "Ryoji Ikeda (test pattern, datamatics)",
-    "Carsten Nicolai / Alva Noto",
-    "Monochrome, grid, signal-as-image"
-   ]
-  },
-  {
-   "id": "data_landscape",
-   "taxonomy": "new",
-   "name": "Data Landscape",
-   "palette": [
-    "#0b132b",
-    "#1c2541",
-    "#5bc0be",
-    "#ffffff"
-   ],
-   "sources": [
-    "Noise",
-    "Ramp",
-    "Ring"
-   ],
-   "fx": [
-    "ripple",
-    "displace",
-    "gaussianblur",
-    "vignette"
-   ],
-   "comp": [
-    "gradientmap",
-    "Color Ramp"
-   ],
-   "ban": [
-    "glitch"
-   ],
-   "motion": 0.4,
-   "pairs": [
-    "ambient",
-    "idm",
-    "downtempo"
-   ],
-   "refs": [
-    "Joy Division Unknown Pleasures cover (1979, Peter Saville)",
-    "Refik Anadol data sculptures",
-    "Generative terrain and contour art"
-   ]
-  },
-  {
-   "id": "swiss_typographic",
-   "taxonomy": "new",
-   "name": "Minimal Signal",
-   "palette": [
-    "#F5F5F2",
-    "#111111",
-    "#E4261A"
-   ],
-   "sources": [
-    "Line",
-    "Rectangle",
-    "Circle"
-   ],
-   "fx": [
-    "ripple",
-    "gaussianblur"
-   ],
-   "comp": [
-    "threshold",
-    "Color Ramp"
-   ],
-   "ban": [
-    "glitch",
-    "bloom"
-   ],
-   "motion": 0.2,
-   "pairs": [
-    "minimal_techno",
-    "dub_techno",
-    "ambient"
-   ],
-   "refs": [
-    "Ryoji Ikeda (test pattern, datamatics)",
-    "Carsten Nicolai / Alva Noto",
-    "Monochrome, grid, signal-as-image"
-   ]
-  }
- ]
+  "_doc": "Visual style table: internal taxonomy for sample generation. The first 15 ids come from tools/spread/art_taxonomy.py (palette and name are read from there); the rest extend it with digital-culture and electronic-music-adjacent movements. 'sources' / 'fx' / 'comp' are node pools; 'ban' keeps nodes out; motion 0..1 is how much the picture moves; 'pairs' lists music style ids that fit when the sample has sound. Research in docs/plans/patch-corpus/taxonomy/art.md.",
+  "styles": [
+    {
+      "id": "y2k_acid",
+      "taxonomy": "spread",
+      "sources": [
+        "Blob",
+        "Superellipse",
+        "Ramp"
+      ],
+      "fx": [
+        "bloom",
+        "liquify",
+        "twirl",
+        "kaleidoscope"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [],
+      "motion": 0.6,
+      "pairs": [
+        "detroit_techno",
+        "classic_trance",
+        "electro",
+        "synthwave"
+      ]
+    },
+    {
+      "id": "glitch_datamosh",
+      "taxonomy": "spread",
+      "sources": [
+        "Noise",
+        "Rectangle",
+        "Image Source"
+      ],
+      "fx": [
+        "glitch",
+        "displace",
+        "pixelate"
+      ],
+      "comp": [
+        "Feedback",
+        "Trails"
+      ],
+      "ban": [],
+      "motion": 0.9,
+      "pairs": [
+        "glitch",
+        "idm",
+        "industrial_techno",
+        "footwork"
+      ]
+    },
+    {
+      "id": "ditherpunk",
+      "taxonomy": "spread",
+      "sources": [
+        "Noise",
+        "Ramp",
+        "Circle"
+      ],
+      "fx": [
+        "pixelate"
+      ],
+      "comp": [
+        "dither",
+        "threshold",
+        "posterize"
+      ],
+      "ban": [
+        "bloom"
+      ],
+      "motion": 0.5,
+      "pairs": [
+        "idm",
+        "minimal_techno",
+        "lofi_beats",
+        "electro"
+      ]
+    },
+    {
+      "id": "neo_brutalist",
+      "taxonomy": "spread",
+      "sources": [
+        "Rectangle",
+        "Text",
+        "Line"
+      ],
+      "fx": [
+        "halftone",
+        "edge outline"
+      ],
+      "comp": [
+        "posterize",
+        "threshold"
+      ],
+      "ban": [
+        "bloom",
+        "glitch"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "minimal_techno",
+        "industrial_techno",
+        "dubstep"
+      ]
+    },
+    {
+      "id": "technical_blueprint",
+      "taxonomy": "spread",
+      "sources": [
+        "Line",
+        "Polygon",
+        "Ring"
+      ],
+      "fx": [
+        "edge outline",
+        "edge sobel"
+      ],
+      "comp": [
+        "Color Ramp",
+        "invert"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "ambient",
+        "dub_techno",
+        "idm"
+      ]
+    },
+    {
+      "id": "retro_surreal",
+      "taxonomy": "spread",
+      "sources": [
+        "Image Source",
+        "Shape",
+        "Crescent"
+      ],
+      "fx": [
+        "halftone",
+        "addnoise"
+      ],
+      "comp": [
+        "gradientmap",
+        "posterize"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "downtempo",
+        "lofi_beats",
+        "vaporwave"
+      ]
+    },
+    {
+      "id": "op_art",
+      "taxonomy": "spread",
+      "sources": [
+        "Ring",
+        "Line",
+        "Circle"
+      ],
+      "fx": [
+        "ripple",
+        "symmetry",
+        "kaleidoscope"
+      ],
+      "comp": [
+        "threshold",
+        "invert"
+      ],
+      "ban": [
+        "addnoise"
+      ],
+      "motion": 0.7,
+      "pairs": [
+        "psytrance",
+        "classic_trance",
+        "minimal_techno"
+      ]
+    },
+    {
+      "id": "analog_crt",
+      "taxonomy": "spread",
+      "sources": [
+        "Noise",
+        "Rectangle",
+        "Video"
+      ],
+      "fx": [
+        "lensdistortion",
+        "vignette",
+        "radialblur"
+      ],
+      "comp": [
+        "Feedback",
+        "Trails",
+        "gradientmap"
+      ],
+      "ban": [],
+      "motion": 0.5,
+      "pairs": [
+        "vaporwave",
+        "synthwave",
+        "dub_techno"
+      ]
+    },
+    {
+      "id": "thundr_brutalist",
+      "taxonomy": "spread",
+      "sources": [
+        "Rectangle",
+        "Text",
+        "Polygon"
+      ],
+      "fx": [
+        "halftone",
+        "edge sobel"
+      ],
+      "comp": [
+        "posterize",
+        "threshold"
+      ],
+      "ban": [
+        "bloom"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "industrial_techno",
+        "gabber",
+        "neurofunk"
+      ]
+    },
+    {
+      "id": "chavetta_montage",
+      "taxonomy": "spread",
+      "sources": [
+        "Image Source",
+        "Rectangle",
+        "Shape"
+      ],
+      "fx": [
+        "halftone",
+        "addnoise",
+        "displace"
+      ],
+      "comp": [
+        "Layer Stack",
+        "gradientmap"
+      ],
+      "ban": [],
+      "motion": 0.3,
+      "pairs": [
+        "breakbeat",
+        "jungle",
+        "downtempo"
+      ]
+    },
+    {
+      "id": "lilliputian_surreal",
+      "taxonomy": "spread",
+      "sources": [
+        "Image Source",
+        "Circle",
+        "Shape"
+      ],
+      "fx": [
+        "gaussianblur",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap",
+        "Blend"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.2,
+      "pairs": [
+        "ambient",
+        "downtempo"
+      ]
+    },
+    {
+      "id": "ukiyoe_cartography",
+      "taxonomy": "spread",
+      "sources": [
+        "Line",
+        "Polygon",
+        "Shape"
+      ],
+      "fx": [
+        "halftone",
+        "emboss"
+      ],
+      "comp": [
+        "posterize",
+        "gradientmap"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.2,
+      "pairs": [
+        "ambient",
+        "lofi_beats",
+        "downtempo"
+      ]
+    },
+    {
+      "id": "indie_psychedelic",
+      "taxonomy": "spread",
+      "sources": [
+        "Blob",
+        "Noise",
+        "Ellipse"
+      ],
+      "fx": [
+        "liquify",
+        "twirl",
+        "bloom"
+      ],
+      "comp": [
+        "Fluid",
+        "Reaction Diffusion",
+        "gradientmap"
+      ],
+      "ban": [],
+      "motion": 0.7,
+      "pairs": [
+        "psytrance",
+        "downtempo",
+        "progressive_house"
+      ]
+    },
+    {
+      "id": "riso_manga_zine",
+      "taxonomy": "spread",
+      "sources": [
+        "Circle",
+        "Rectangle",
+        "Image Source"
+      ],
+      "fx": [
+        "halftone",
+        "pixelate"
+      ],
+      "comp": [
+        "posterize",
+        "Blend",
+        "gradientmap"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "footwork",
+        "breakbeat",
+        "uk_garage"
+      ]
+    },
+    {
+      "id": "liminal_void",
+      "taxonomy": "spread",
+      "sources": [
+        "Rectangle",
+        "Noise",
+        "Ramp"
+      ],
+      "fx": [
+        "gaussianblur",
+        "vignette",
+        "addnoise"
+      ],
+      "comp": [
+        "gradientmap",
+        "exposure"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.1,
+      "pairs": [
+        "dark_ambient",
+        "ambient",
+        "dub_techno"
+      ]
+    },
+    {
+      "id": "vaporwave_collage",
+      "taxonomy": "new",
+      "name": "Vaporwave Collage",
+      "palette": [
+        "#ff71ce",
+        "#01cdfe",
+        "#05ffa1",
+        "#b967ff"
+      ],
+      "sources": [
+        "Ramp",
+        "Superellipse",
+        "Circle",
+        "Noise"
+      ],
+      "fx": [
+        "bloom",
+        "displace",
+        "ripple"
+      ],
+      "comp": [
+        "gradientmap",
+        "Blend"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "vaporwave",
+        "lofi_beats"
+      ],
+      "refs": [
+        "Macintosh Plus, Floral Shoppe cover (2011)",
+        "Vektroid / James Ferraro lineage",
+        "Early 90s CGI and Windows 95 clip art"
+      ]
+    },
+    {
+      "id": "synthwave_grid",
+      "taxonomy": "new",
+      "name": "Synthwave Grid & Sunset",
+      "palette": [
+        "#2b0a5e",
+        "#ff2a6d",
+        "#05d9e8",
+        "#ffd319"
+      ],
+      "sources": [
+        "Ramp",
+        "Line",
+        "Circle"
+      ],
+      "fx": [
+        "bloom",
+        "radialblur",
+        "lensdistortion"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "synthwave",
+        "electro"
+      ],
+      "refs": [
+        "Tron (1982), Miami Vice, Outrun",
+        "Kavinsky, Perturbator cover art",
+        "Retro-futurism of 80s airbrush"
+      ]
+    },
+    {
+      "id": "cyberpunk_neon",
+      "taxonomy": "new",
+      "name": "Cyberpunk Neon Rain",
+      "palette": [
+        "#0a0014",
+        "#ff0090",
+        "#00f0ff",
+        "#fcee0a"
+      ],
+      "sources": [
+        "Noise",
+        "Rectangle",
+        "Text"
+      ],
+      "fx": [
+        "bloom",
+        "motionblur",
+        "glitch"
+      ],
+      "comp": [
+        "Trails",
+        "gradientmap"
+      ],
+      "ban": [],
+      "motion": 0.7,
+      "pairs": [
+        "industrial_techno",
+        "neurofunk",
+        "dubstep"
+      ],
+      "refs": [
+        "Blade Runner (1982), Neuromancer (Gibson, 1984)",
+        "Akira (1988)",
+        "Cyberpunk 2077 UI language"
+      ]
+    },
+    {
+      "id": "generative_plotter",
+      "taxonomy": "new",
+      "name": "Generative Plotter Line Art",
+      "palette": [
+        "#f5f1e6",
+        "#111111",
+        "#d1301f"
+      ],
+      "sources": [
+        "Line",
+        "Polygon",
+        "Ring"
+      ],
+      "fx": [
+        "edge outline"
+      ],
+      "comp": [
+        "posterize"
+      ],
+      "ban": [
+        "bloom",
+        "glitch",
+        "gaussianblur"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "minimal_techno",
+        "ambient",
+        "idm"
+      ],
+      "refs": [
+        "Vera Molnar, Manfred Mohr, Frieder Nake (1960s algorithmic art)",
+        "Tyler Hobbs fidenza",
+        "Plotter art community"
+      ]
+    },
+    {
+      "id": "demoscene_plasma",
+      "taxonomy": "new",
+      "name": "Demoscene Plasma & Rotozoom",
+      "palette": [
+        "#000000",
+        "#ff3b00",
+        "#00e0ff",
+        "#ffffff"
+      ],
+      "sources": [
+        "Noise",
+        "Ramp",
+        "Formula"
+      ],
+      "fx": [
+        "ripple",
+        "twirl",
+        "kaleidoscope"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.9,
+      "pairs": [
+        "acid_house",
+        "classic_trance",
+        "electro",
+        "breakbeat"
+      ],
+      "refs": [
+        "Amiga and C64 demoscene (Future Crew, Farbrausch)",
+        "Second Reality (1993), .kkrieger (2004)",
+        "Pouet, Revision party"
+      ]
+    },
+    {
+      "id": "vector_wireframe",
+      "taxonomy": "new",
+      "name": "Vector Wireframe",
+      "palette": [
+        "#000000",
+        "#00ff6a",
+        "#ffffff"
+      ],
+      "sources": [
+        "Ring",
+        "Line",
+        "Polygon"
+      ],
+      "fx": [
+        "kaleidoscope",
+        "symmetry",
+        "bloom"
+      ],
+      "comp": [
+        "Trails",
+        "gradientmap"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.5,
+      "pairs": [
+        "electro",
+        "synthwave",
+        "detroit_techno"
+      ],
+      "refs": [
+        "Elite (1984), Battlezone, Tempest",
+        "Vectrex, vector CRT arcades",
+        "Vasulka Brothers video art"
+      ]
+    },
+    {
+      "id": "pixel_art_8bit",
+      "taxonomy": "new",
+      "name": "Pixel Art 8-bit",
+      "palette": [
+        "#0f380f",
+        "#306230",
+        "#8bac0f",
+        "#9bbc0f"
+      ],
+      "sources": [
+        "Rectangle",
+        "Noise",
+        "Circle"
+      ],
+      "fx": [
+        "pixelate"
+      ],
+      "comp": [
+        "posterize",
+        "dither",
+        "gradientmap"
+      ],
+      "ban": [
+        "glitch",
+        "gaussianblur"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "electro",
+        "gabber",
+        "synthwave"
+      ],
+      "refs": [
+        "NES/Game Boy palettes",
+        "Chiptune and tracker culture",
+        "Space Invaders, Pac-Man sprites"
+      ]
+    },
+    {
+      "id": "bauhaus_geometry",
+      "taxonomy": "new",
+      "name": "Bauhaus Geometry",
+      "palette": [
+        "#f2e8cf",
+        "#d62828",
+        "#1d3557",
+        "#fcbf49"
+      ],
+      "sources": [
+        "Circle",
+        "Rectangle",
+        "Triangle"
+      ],
+      "fx": [
+        "halftone"
+      ],
+      "comp": [
+        "posterize",
+        "Blend"
+      ],
+      "ban": [
+        "glitch",
+        "bloom"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "minimal_techno",
+        "deep_house",
+        "detroit_techno"
+      ],
+      "refs": [
+        "Bauhaus (Gropius, 1919), Kandinsky, Moholy-Nagy",
+        "Josef Albers, Interaction of Color",
+        "Ulm School and Swiss style followers"
+      ]
+    },
+    {
+      "id": "suprematist_blocks",
+      "taxonomy": "new",
+      "name": "Suprematist Forms",
+      "palette": [
+        "#f4efe6",
+        "#111111",
+        "#d9231f"
+      ],
+      "sources": [
+        "Rectangle",
+        "Polygon",
+        "Circle"
+      ],
+      "fx": [
+        "halftone"
+      ],
+      "comp": [
+        "posterize"
+      ],
+      "ban": [
+        "glitch",
+        "bloom"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "industrial_techno",
+        "gabber",
+        "dark_ambient"
+      ],
+      "refs": [
+        "Malevich, Black Square (1915)",
+        "El Lissitzky, Beat the Whites with the Red Wedge",
+        "Constructivist posters"
+      ]
+    },
+    {
+      "id": "cymatics_sine",
+      "taxonomy": "new",
+      "name": "Cymatics & Chladni",
+      "palette": [
+        "#000000",
+        "#ffffff",
+        "#7df9ff"
+      ],
+      "sources": [
+        "Ring",
+        "Formula",
+        "Noise"
+      ],
+      "fx": [
+        "ripple",
+        "symmetry"
+      ],
+      "comp": [
+        "threshold",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.8,
+      "pairs": [
+        "ambient",
+        "dub_techno",
+        "psytrance"
+      ],
+      "refs": [
+        "Ernst Chladni, Entdeckungen (1787)",
+        "Hans Jenny, Cymatics (1967)",
+        "Oscilloscope music: Jerobeam Fenderson"
+      ]
+    },
+    {
+      "id": "brutalist_architecture",
+      "taxonomy": "new",
+      "name": "Brutalist Concrete",
+      "palette": [
+        "#7a7a78",
+        "#d9d6cf",
+        "#222222"
+      ],
+      "sources": [
+        "Rectangle",
+        "Cube",
+        "Polygon"
+      ],
+      "fx": [
+        "emboss",
+        "vignette",
+        "halftone",
+        "edge sobel"
+      ],
+      "comp": [
+        "exposure",
+        "gradientmap"
+      ],
+      "ban": [
+        "glitch",
+        "bloom"
+      ],
+      "motion": 0.2,
+      "pairs": [
+        "dark_ambient",
+        "industrial_techno",
+        "dub_techno"
+      ],
+      "refs": [
+        "Le Corbusier, Brutalist architecture",
+        "Soviet modernism, Spomenik monuments",
+        "Brutalist websites movement"
+      ]
+    },
+    {
+      "id": "holographic_iridescent",
+      "taxonomy": "new",
+      "name": "Holographic Iridescence",
+      "palette": [
+        "#a9f0ff",
+        "#ffb3f5",
+        "#d6ff9e",
+        "#ffffff"
+      ],
+      "sources": [
+        "Blob",
+        "Ramp",
+        "Superellipse"
+      ],
+      "fx": [
+        "bloom",
+        "liquify",
+        "kaleidoscope"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.6,
+      "pairs": [
+        "progressive_house",
+        "classic_trance",
+        "uk_garage"
+      ],
+      "refs": [
+        "Y2K iridescent chrome and foil",
+        "Holographic print and risograph foil",
+        "Aphex Twin and Chris Cunningham era"
+      ]
+    },
+    {
+      "id": "acid_graphics",
+      "taxonomy": "new",
+      "name": "Acid Graphics Typography",
+      "palette": [
+        "#ccff00",
+        "#000000",
+        "#ff00ff"
+      ],
+      "sources": [
+        "Text",
+        "Ramp",
+        "Noise"
+      ],
+      "fx": [
+        "pixelate",
+        "twirl",
+        "bloom",
+        "kaleidoscope",
+        "ripple"
+      ],
+      "comp": [
+        "gradientmap",
+        "posterize"
+      ],
+      "ban": [],
+      "motion": 0.7,
+      "pairs": [
+        "acid_house",
+        "psytrance",
+        "tech_house"
+      ],
+      "refs": [
+        "Acid graphics (2010s revival)",
+        "Rave flyer 1991-1993",
+        "Designers Republic for Warp"
+      ]
+    },
+    {
+      "id": "minimal_signal",
+      "taxonomy": "new",
+      "name": "Minimal Signal",
+      "palette": [
+        "#101010",
+        "#f0f0f0",
+        "#ff3300"
+      ],
+      "sources": [
+        "Line",
+        "Rectangle",
+        "Circle"
+      ],
+      "fx": [
+        "ripple",
+        "gaussianblur"
+      ],
+      "comp": [
+        "threshold",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch",
+        "bloom"
+      ],
+      "motion": 0.2,
+      "pairs": [
+        "minimal_techno",
+        "dub_techno",
+        "ambient"
+      ],
+      "refs": [
+        "Ryoji Ikeda (test pattern, datamatics)",
+        "Carsten Nicolai / Alva Noto",
+        "Monochrome, grid, signal-as-image"
+      ]
+    },
+    {
+      "id": "data_landscape",
+      "taxonomy": "new",
+      "name": "Data Landscape",
+      "palette": [
+        "#0b132b",
+        "#1c2541",
+        "#5bc0be",
+        "#ffffff"
+      ],
+      "sources": [
+        "Noise",
+        "Ramp",
+        "Ring"
+      ],
+      "fx": [
+        "ripple",
+        "displace",
+        "gaussianblur",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "ambient",
+        "idm",
+        "downtempo"
+      ],
+      "refs": [
+        "Joy Division Unknown Pleasures cover (1979, Peter Saville)",
+        "Refik Anadol data sculptures",
+        "Generative terrain and contour art"
+      ]
+    },
+    {
+      "id": "swiss_typographic",
+      "taxonomy": "new",
+      "name": "Minimal Signal",
+      "palette": [
+        "#F5F5F2",
+        "#111111",
+        "#E4261A"
+      ],
+      "sources": [
+        "Line",
+        "Rectangle",
+        "Circle"
+      ],
+      "fx": [
+        "ripple",
+        "gaussianblur"
+      ],
+      "comp": [
+        "threshold",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch",
+        "bloom"
+      ],
+      "motion": 0.2,
+      "pairs": [
+        "minimal_techno",
+        "dub_techno",
+        "ambient"
+      ],
+      "refs": [
+        "Ryoji Ikeda (test pattern, datamatics)",
+        "Carsten Nicolai / Alva Noto",
+        "Monochrome, grid, signal-as-image"
+      ]
+    },
+    {
+      "id": "jacquard_loom",
+      "taxonomy": "new",
+      "name": "Jacquard Punchcard",
+      "palette": [
+        "#F3EFE6",
+        "#1B2028",
+        "#B84A32",
+        "#2E5A68"
+      ],
+      "sources": [
+        "Rectangle",
+        "Line",
+        "Circle"
+      ],
+      "fx": [
+        "displace",
+        "grain"
+      ],
+      "comp": [
+        "threshold",
+        "Color Ramp"
+      ],
+      "ban": [
+        "bloom",
+        "glitch"
+      ],
+      "motion": 0.35,
+      "pairs": [
+        "idm",
+        "minimal_techno",
+        "tape_loop_polyphony"
+      ],
+      "refs": [
+        "Joseph Marie Jacquard (1804 loom punchcards)",
+        "Anni Albers (Bauhaus weaving drafts)",
+        "Binary warp/weft interlacing & textile notation"
+      ]
+    },
+    {
+      "id": "sashimono_joinery",
+      "taxonomy": "new",
+      "name": "Sashimono Joinery",
+      "palette": [
+        "#EAE3D5",
+        "#8C5A32",
+        "#2B2118",
+        "#C89D66"
+      ],
+      "sources": [
+        "Cube",
+        "Array",
+        "Cylinder"
+      ],
+      "fx": [
+        "edge outline",
+        "bevel"
+      ],
+      "comp": [
+        "Color Ramp"
+      ],
+      "ban": [
+        "bloom",
+        "glitch"
+      ],
+      "motion": 0.25,
+      "pairs": [
+        "ambient",
+        "solo_piano",
+        "tape_loop_polyphony"
+      ],
+      "refs": [
+        "Kanawa-tsugi & Koshikake timber scarf joints",
+        "Kumiko cypress latticework",
+        "Kengo Kuma architectural timber joinery"
+      ]
+    },
+    {
+      "id": "reaction_diffusion_belousov",
+      "taxonomy": "new",
+      "name": "Belousov-Zhabotinsky Reaction",
+      "palette": [
+        "#0E1A1E",
+        "#2A7B7B",
+        "#E8C589",
+        "#D9594C"
+      ],
+      "sources": [
+        "Noise",
+        "FieldPixel",
+        "Ramp"
+      ],
+      "fx": [
+        "displace",
+        "edge outline"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch"
+      ],
+      "motion": 0.65,
+      "pairs": [
+        "west_coast_buchla",
+        "drone_kosmische",
+        "idm"
+      ],
+      "refs": [
+        "Belousov-Zhabotinsky oscillating chemical waves",
+        "Alan Turing (1952 morphogenesis reaction-diffusion)",
+        "Celadon, verdigris & cinnabar mineral glazes"
+      ]
+    },
+    {
+      "id": "guilloche_intaglio",
+      "taxonomy": "new",
+      "name": "Guilloche Intaglio Engraving",
+      "palette": [
+        "#F4F0E6",
+        "#1A1D22",
+        "#D4AF37",
+        "#8E2438"
+      ],
+      "sources": [
+        "Line",
+        "Ring",
+        "Polygon"
+      ],
+      "fx": [
+        "edge outline"
+      ],
+      "comp": [
+        "Color Ramp"
+      ],
+      "ban": [
+        "bloom",
+        "glitch",
+        "pixelate"
+      ],
+      "motion": 0.25,
+      "pairs": [
+        "neo_classical",
+        "karplus_sympathetic",
+        "ambient_piano"
+      ],
+      "refs": [
+        "Rose-engine lathe guilloche & banknote intaglio",
+        "Abraham-Louis Breguet engine-turned watch dials",
+        "Engravers Gothic & fine-line security moire"
+      ]
+    },
+    {
+      "id": "tensegrity_pavilion",
+      "taxonomy": "new",
+      "name": "Tensegrity Space-Frame Pavilion",
+      "palette": [
+        "#DCE4EC",
+        "#6E7885",
+        "#B8C0C8",
+        "#222830"
+      ],
+      "sources": [
+        "Cylinder",
+        "Array",
+        "Line 3D"
+      ],
+      "fx": [
+        "bevel",
+        "edge outline"
+      ],
+      "comp": [
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch",
+        "pixelate"
+      ],
+      "motion": 0.35,
+      "pairs": [
+        "ambient",
+        "drone_kosmische",
+        "spring_plate_dispersion"
+      ],
+      "refs": [
+        "Kenneth Snelson Needle Tower (1968)",
+        "R. Buckminster Fuller tensional integrity & geodesic domes",
+        "VTF Grotesk & architectural structural engineering"
+      ]
+    },
+    {
+      "id": "ferrofluid_thinfilm",
+      "taxonomy": "new",
+      "name": "Ferrofluid & Thin-Film Iridescence",
+      "palette": [
+        "#080A0F",
+        "#F5F8FA",
+        "#183088",
+        "#2ED8DF"
+      ],
+      "sources": [
+        "FieldPixel",
+        "Sphere",
+        "Noise"
+      ],
+      "fx": [
+        "displace",
+        "bloom"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "pixelate",
+        "dither"
+      ],
+      "motion": 0.75,
+      "pairs": [
+        "electro",
+        "idm",
+        "karplus_sympathetic"
+      ],
+      "refs": [
+        "Sachiko Kodama ferrofluid normal-field instability",
+        "Bismuth & soap-film thin-film optical interference",
+        "Terminal Grotesque & specular studio rim lighting"
+      ]
+    },
+    {
+      "id": "cyanotype_photogram",
+      "taxonomy": "new",
+      "name": "Cyanotype Botanical Photogram",
+      "palette": [
+        "#103A7A",
+        "#071A3C",
+        "#D8E4F0",
+        "#F2F6FA"
+      ],
+      "sources": [
+        "Sketch",
+        "Shape",
+        "Noise"
+      ],
+      "fx": [
+        "grain",
+        "vignette"
+      ],
+      "comp": [
+        "Color Ramp",
+        "Blend"
+      ],
+      "ban": [
+        "glitch",
+        "pixelate",
+        "neon"
+      ],
+      "motion": 0.25,
+      "pairs": [
+        "ambient",
+        "gamelan_polyrhythm",
+        "solo_piano"
+      ],
+      "refs": [
+        "Anna Atkins Photographs of British Algae (1843)",
+        "Sir John Herschel ferric-oxalate Prussian blue blueprint",
+        "Space Grotesk & botanical specimen contact printing"
+      ]
+    },
+    {
+      "id": "origami_folded_vault",
+      "taxonomy": "new",
+      "name": "Architectural Origami Folded Vault",
+      "palette": [
+        "#1B1D20",
+        "#EAE6DE",
+        "#6D6A64",
+        "#C7A254"
+      ],
+      "sources": [
+        "Sketch 3D",
+        "Array",
+        "Plane"
+      ],
+      "fx": [
+        "bevel",
+        "edge outline"
+      ],
+      "comp": [
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch",
+        "pixelate"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "minimal_techno",
+        "broken_beat_rhodes",
+        "chamber_winds"
+      ],
+      "refs": [
+        "Koryo Miura Miura-ori rigid-foldable tessellation",
+        "Felix Candela & folded-plate concrete shells",
+        "Uncut Sans & matte architectural studio lighting"
+      ]
+    },
+    {
+      "id": "schlieren_caustics",
+      "taxonomy": "new",
+      "name": "Schlieren Optical Caustics",
+      "palette": [
+        "#090B10",
+        "#1C4E8E",
+        "#E89B3C",
+        "#F4F7FC"
+      ],
+      "sources": [
+        "FieldPixel",
+        "Noise"
+      ],
+      "fx": [
+        "bloom",
+        "displace"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "pixelate",
+        "dither"
+      ],
+      "motion": 0.7,
+      "pairs": [
+        "idm",
+        "electro",
+        "broken_beat_rhodes"
+      ],
+      "refs": [
+        "August Toepler knife-edge schlieren interferometry",
+        "Nephroid & cardioid optical caustic envelopes",
+        "Terminal Grotesque & high-contrast optical refraction"
+      ]
+    },
+    {
+      "id": "kinetic_moire_plotter",
+      "taxonomy": "new",
+      "name": "Kinetic Moire & Algorithmic Plotter",
+      "palette": [
+        "#F4F1EA",
+        "#111318",
+        "#D9381E",
+        "#1B498A"
+      ],
+      "sources": [
+        "Sketch",
+        "Line",
+        "Grid"
+      ],
+      "fx": [
+        "edge outline"
+      ],
+      "comp": [
+        "Blend"
+      ],
+      "ban": [
+        "bloom",
+        "glitch",
+        "pixelate"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "berlin_school_sequencer",
+        "idm",
+        "minimal_techno"
+      ],
+      "refs": [
+        "Vera Molnar machine imaginaire & 1% disorder plotter drawings",
+        "Bridget Riley optical moire gratings",
+        "Steps Mono & archival pen-plotter ink registration"
+      ]
+    },
+    {
+      "id": "qrd_basalt_acoustics",
+      "taxonomy": "new",
+      "name": "QRD Skyline & Columnar Basalt Acoustics",
+      "palette": [
+        "#14110F",
+        "#2C2621",
+        "#8A745B",
+        "#EAE5DC"
+      ],
+      "sources": [
+        "Sketch 3D",
+        "Array",
+        "Box"
+      ],
+      "fx": [
+        "bevel",
+        "edge outline"
+      ],
+      "comp": [
+        "Color Ramp"
+      ],
+      "ban": [
+        "glitch",
+        "neon"
+      ],
+      "motion": 0.25,
+      "pairs": [
+        "spectral_dub_chamber",
+        "dub_techno",
+        "dark_ambient"
+      ],
+      "refs": [
+        "Schroeder Quadratic Residue acoustic skyline diffuser",
+        "Giants Causeway hexagonal columnar basalt prisms",
+        "Terminal Grotesque & raking architectural shadow relief"
+      ]
+    },
+    {
+      "id": "soap_film_interference",
+      "taxonomy": "new",
+      "name": "Thin-Film Soap Interference",
+      "palette": [
+        "#12100E",
+        "#E69C2C",
+        "#4CB8D4",
+        "#4F2B6B"
+      ],
+      "sources": [
+        "FieldPixel",
+        "Noise"
+      ],
+      "fx": [
+        "bloom",
+        "displace"
+      ],
+      "comp": [
+        "gradientmap",
+        "Color Ramp"
+      ],
+      "ban": [
+        "pixelate",
+        "dither"
+      ],
+      "motion": 0.75,
+      "pairs": [
+        "ambient",
+        "idm",
+        "berlin_school_sequencer"
+      ],
+      "refs": [
+        "Marangoni convection & thin-film optical phase interference",
+        "Newton black film drainage fringes",
+        "VG5000 & iridescent spectral dispersion"
+      ]
+    },
+    {
+      "id": "harmonograph_pendulum",
+      "taxonomy": "new",
+      "name": "Harmonograph Pendulum Ink Drawing",
+      "palette": [
+        "#F5F1E8",
+        "#191C3A",
+        "#B63B28",
+        "#8D7B5A"
+      ],
+      "sources": [
+        "Sketch",
+        "Noise"
+      ],
+      "fx": [
+        "vignette",
+        "grain"
+      ],
+      "comp": [
+        "Color Ramp"
+      ],
+      "ban": [
+        "pixelate",
+        "glitch"
+      ],
+      "motion": 0.35,
+      "pairs": [
+        "ambient_piano",
+        "neo_classical",
+        "trautonium_subharmonic"
+      ],
+      "refs": [
+        "19th-century Victorian four-pendulum mechanical harmonograph ink tracings",
+        "Damped Lissajous phase envelopes on cotton rag paper",
+        "Sentient & Fragment Mono mathematical plotting typography"
+      ]
+    },
+    {
+      "id": "nervi_ferrocement_vault",
+      "taxonomy": "new",
+      "name": "Nervi Ferrocement Rib Vault",
+      "palette": [
+        "#D8D2C7",
+        "#4B4842",
+        "#1F2124",
+        "#C49A5B"
+      ],
+      "sources": [
+        "Sketch 3D",
+        "Shape"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "levels"
+      ],
+      "ban": [
+        "pixelate",
+        "rgbshift"
+      ],
+      "motion": 0.25,
+      "pairs": [
+        "brutalist_architecture",
+        "minimal_techno",
+        "drone_kosmische"
+      ],
+      "refs": [
+        "Pier Luigi Nervi Palazzetto dello Sport diagrid ferrocement dome",
+        "Hyperbolic-paraboloid precast concrete coffered rib shells",
+        "Millimetre & Eurostile Italian structural rationalist typography"
+      ]
+    },
+    {
+      "id": "dichroic_fresnel_optics",
+      "taxonomy": "new",
+      "name": "Dichroic Fresnel Optical Caustics",
+      "palette": [
+        "#0B0D14",
+        "#FF7A2F",
+        "#2BC4F3",
+        "#8B4DFF"
+      ],
+      "sources": [
+        "FieldPixel",
+        "Noise"
+      ],
+      "fx": [
+        "bloom",
+        "chromatic"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "dither",
+        "pixelate"
+      ],
+      "motion": 0.65,
+      "pairs": [
+        "idm",
+        "berlin_school_sequencer",
+        "barberpole_wire_dispersion"
+      ],
+      "refs": [
+        "Stepped concentric Fresnel lighthouse lens echelon rings",
+        "Dichroic beam-splitter prism spectral refraction beams",
+        "Technor & Terminal Grotesque optical instrument typography"
+      ]
+    },
+    {
+      "id": "astrolabe_planisphere",
+      "taxonomy": "new",
+      "name": "Stereographic Astrolabe & Brass Planisphere",
+      "palette": [
+        "#141926",
+        "#C7AD5F",
+        "#E6D7B2",
+        "#3B665A"
+      ],
+      "sources": [
+        "Sketch",
+        "FieldPixel"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "blend"
+      ],
+      "ban": [
+        "glitch",
+        "pixelate"
+      ],
+      "motion": 0.25,
+      "pairs": [
+        "minimal_ambient",
+        "neo_classical",
+        "koto_glass_minimalism"
+      ],
+      "refs": [
+        "Safavid hammered brass planispheric astrolabe stereographic almucantars",
+        "Pierced ecliptic rete star pointers & radial 1-degree vernier ticks",
+        "Instrument Serif & Micro Grotesk astronomical plate typography"
+      ]
+    },
+    {
+      "id": "metabolist_capsule",
+      "taxonomy": "new",
+      "name": "Metabolist Modular Concrete Capsules",
+      "palette": [
+        "#1E2124",
+        "#D2D3D0",
+        "#5B6066",
+        "#E89A3C"
+      ],
+      "sources": [
+        "Sketch 3D"
+      ],
+      "fx": [
+        "vignette",
+        "grain"
+      ],
+      "comp": [
+        "tonemap"
+      ],
+      "ban": [
+        "neon",
+        "pixelate"
+      ],
+      "motion": 0.35,
+      "pairs": [
+        "minimal_techno",
+        "drone_kosmische",
+        "ambient"
+      ],
+      "refs": [
+        "Kisho Kurokawa Nakagin Capsule Tower cantilevered concrete pods",
+        "Circular porthole apertures and dual structural service cores",
+        "Mourier & Manifont Grotesk Japanese architectural signage"
+      ]
+    },
+    {
+      "id": "raku_craquelure",
+      "taxonomy": "new",
+      "name": "Raku Ceramic Crackle Glaze & Gold-Vein Fracture",
+      "palette": [
+        "#171C19",
+        "#7F9986",
+        "#C8D5C4",
+        "#D49B42"
+      ],
+      "sources": [
+        "FieldPixel"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "dither",
+        "pixelate"
+      ],
+      "motion": 0.45,
+      "pairs": [
+        "koto_glass_minimalism",
+        "microtonal_ambient",
+        "ambient"
+      ],
+      "refs": [
+        "Goryeo celadon & raku thermal-shock craze-line Voronoi fracture network",
+        "Kiln-fired copper-green glaze gradients with molten gold-vein seams",
+        "Instrument Serif & Hedvig Letters Serif museum ceramic catalog typography"
+      ]
+    },
+    {
+      "id": "zellij_girih_tessellation",
+      "taxonomy": "new",
+      "name": "Moroccan Zellij & Girih Star Tessellation",
+      "palette": [
+        "#1A3478",
+        "#D9A426",
+        "#2A6B4A",
+        "#EFEBE0"
+      ],
+      "sources": [
+        "Sketch"
+      ],
+      "fx": [
+        "vignette"
+      ],
+      "comp": [],
+      "ban": [
+        "glitch",
+        "datamosh",
+        "pixelate"
+      ],
+      "motion": 0.35,
+      "pairs": [
+        "gnawa_desert_trance",
+        "tuareg_pentatonic_guitar"
+      ],
+      "refs": [
+        "Fez zellij glazed terracotta 8/12/16-fold star rosettes and interlaced strapwork",
+        "Cobalt indigo, saffron ochre, emerald glaze, and bone-ivory mortar joints",
+        "Steps Mono & Mourier geometric modular grid typography"
+      ]
+    },
+    {
+      "id": "hilma_diagrammatic",
+      "taxonomy": "new",
+      "name": "Hilma af Klint Spiritualist Geometric Diagram",
+      "palette": [
+        "#C83E2B",
+        "#141518",
+        "#F2EFE9",
+        "#E5BC38"
+      ],
+      "sources": [
+        "Sketch"
+      ],
+      "fx": [
+        "vignette"
+      ],
+      "comp": [],
+      "ban": [
+        "glitch",
+        "dither",
+        "pixelate"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "chamber_winds",
+        "prepared_piano"
+      ],
+      "refs": [
+        "Hilma af Klint Svanen No. 17 split-hemisphere colour wheels and concentric orbital rings",
+        "Vermilion terracotta ground, obsidian, chalk white, dusty rose, cadmium yellow, cerulean",
+        "Fragment Mono & Steps Mono diagrammatic plate typography"
+      ]
+    },
+    {
+      "id": "gaudi_catenary_vault",
+      "taxonomy": "new",
+      "name": "Gaudi Hanging-Chain Catenary & Hyperbolic Vault",
+      "palette": [
+        "#1B1410",
+        "#9C4422",
+        "#D8C29D",
+        "#E09020"
+      ],
+      "sources": [
+        "Sketch3D"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "pixelate",
+        "dither"
+      ],
+      "motion": 0.4,
+      "pairs": [
+        "chamber_winds",
+        "microtonal_ambient"
+      ],
+      "refs": [
+        "Antoni Gaudi hanging-chain catenary arch models and Sagrada Familia branching hyperboloid columns",
+        "Warm limestone, brick terracotta, and amber stained-glass chiaroscuro",
+        "Azeret Mono & Fragment Mono architectural structural plate typography"
+      ]
+    },
+    {
+      "id": "mineral_birefringence",
+      "taxonomy": "new",
+      "name": "Cross-Polarized Mineral Thin-Section Birefringence",
+      "palette": [
+        "#141822",
+        "#D82B6B",
+        "#9EDB32",
+        "#F2A824"
+      ],
+      "sources": [
+        "FieldPixel"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "dither",
+        "pixelate"
+      ],
+      "motion": 0.55,
+      "pairs": [
+        "microtonal_ambient",
+        "spectral_dub_chamber"
+      ],
+      "refs": [
+        "Cross-polarized petrographic thin section with Voronoi crystal domains and Michel-Levy interference bands",
+        "Birefringent magenta, chartreuse, amber-gold, and slate-blue crystalline extinction",
+        "Fragment Mono & Azeret Mono petrographic atlas typography"
+      ]
+    },
+    {
+      "id": "jacquard_bauhaus_weave",
+      "taxonomy": "new",
+      "name": "Jacquard Loom & Bauhaus Warp-Weft Weaving",
+      "palette": [
+        "#DFD3BA",
+        "#1E1D1B",
+        "#CE3B2A",
+        "#D7AE86"
+      ],
+      "sources": [
+        "Sketch2D"
+      ],
+      "fx": [
+        "grain"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "bloom",
+        "pixelate"
+      ],
+      "motion": 0.35,
+      "pairs": [
+        "minimal_techno",
+        "ethio_jazz_organ"
+      ],
+      "refs": [
+        "Anni Albers 1926 Design for a Jacquard Weaving and 1939 Chemnitz punchcard chains",
+        "Unbleached linen parchment, charcoal ink, vermilion terracotta, raw ochre",
+        "Compagnon & Space Mono architectural textile grid typography"
+      ]
+    },
+    {
+      "id": "sashimono_kumiko_joinery",
+      "taxonomy": "new",
+      "name": "Sashimono & Kumiko Timber Lattice Joinery",
+      "palette": [
+        "#1D1712",
+        "#C79E74",
+        "#F5F2EB",
+        "#8B5A2B"
+      ],
+      "sources": [
+        "Sketch3D"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "pixelate",
+        "dither"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "koto_glass_minimalism",
+        "microtonal_ambient"
+      ],
+      "refs": [
+        "1921 Kumiko-Zaiku backlit hinoki cypress latticework and nail-free Kigumi joinery",
+        "Warm hinoki wood, shoji ivory backlight, deep cedar shadow",
+        "Shin Go & Sohne Mono architectural woodwork typography"
+      ]
+    },
+    {
+      "id": "haeckel_radiolaria_silica",
+      "taxonomy": "new",
+      "name": "Ernst Haeckel Radiolaria & Silica Skeletons",
+      "palette": [
+        "#F8F5EC",
+        "#B82925",
+        "#D9B643",
+        "#231A16"
+      ],
+      "sources": [
+        "FieldPixel"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "dither",
+        "pixelate"
+      ],
+      "motion": 0.5,
+      "pairs": [
+        "microtonal_ambient",
+        "spectral_dub_chamber"
+      ],
+      "refs": [
+        "Ernst Haeckel Kunstformen der Natur Radiolaria Discoidea lithographs",
+        "Ivory plate, carmine vermilion, sulfur ochre, sepia ink",
+        "Basteleur & EB Garamond natural-history plate typography"
+      ]
+    },
+    {
+      "id": "lichtenberg_dielectric",
+      "taxonomy": "new",
+      "name": "Lichtenberg Dielectric Breakdown & Corona",
+      "palette": [
+        "#0A0B0D",
+        "#EAECEF",
+        "#9BA4B0",
+        "#5C7699"
+      ],
+      "sources": [
+        "FieldPixel"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [
+        "gradientmap"
+      ],
+      "ban": [
+        "dither",
+        "pixelate"
+      ],
+      "motion": 0.65,
+      "pairs": [
+        "spectral_dub_chamber",
+        "glitch"
+      ],
+      "refs": [
+        "High-voltage dielectric breakdown dendritic fractals in cast acrylic",
+        "Obsidian acrylic, high-voltage silver-white, cold quartz",
+        "Karrik & JetBrains Mono high-voltage lab typography"
+      ]
+    },
+    {
+      "id": "penrose_aperiodic_tiling",
+      "taxonomy": "new",
+      "name": "Penrose Aperiodic Rhombus Tiling & Quasicrystal",
+      "palette": [
+        "#1A1D20",
+        "#E2E4E1",
+        "#B5B93A",
+        "#6E7378"
+      ],
+      "sources": [
+        "Sketch"
+      ],
+      "fx": [
+        "vignette",
+        "grain"
+      ],
+      "comp": [],
+      "ban": [
+        "glitch",
+        "pixelate"
+      ],
+      "motion": 0.35,
+      "pairs": [
+        "kora_polyrhythm",
+        "marimba_phase_minimalism"
+      ],
+      "refs": [
+        "Queen Mary University Mathematical Sciences Penrose P3 facade",
+        "DASA Penrose kite-dart quasicrystal subdivision",
+        "Steps-Mono & Geist Mono architectural diagram typography"
+      ]
+    },
+    {
+      "id": "dieste_gaussian_brick_vault",
+      "taxonomy": "new",
+      "name": "Eladio Dieste Ruled-Surface & Gaussian Brick Vault",
+      "palette": [
+        "#1F1612",
+        "#A84B2A",
+        "#D9CBB8",
+        "#78331B"
+      ],
+      "sources": [
+        "Sketch 3D"
+      ],
+      "fx": [
+        "bloom",
+        "vignette"
+      ],
+      "comp": [],
+      "ban": [
+        "glitch",
+        "dither",
+        "pixelate"
+      ],
+      "motion": 0.3,
+      "pairs": [
+        "microtonal_ambient",
+        "chamber_winds"
+      ],
+      "refs": [
+        "Eladio Dieste Iglesia Cristo Obrero Atlantida ruled brick shell",
+        "Reinforced ceramic Gaussian vaulting & rhythmic clerestory slits",
+        "Sporting Grotesque & VTF Grotesk structural monograph typography"
+      ]
+    }
+  ]
 }

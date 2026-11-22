@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -98,6 +99,49 @@ namespace
             return path;
       }
       return path + dotExt;
+   }
+
+   // Last folder a file dialog used. Dialogs start here (or in $HOME) so the
+   // helper never receives an empty or bare-name default, which zenity/kdialog
+   // turn into a bogus folder (issue #78).
+   std::string& LastDialogDir()
+   {
+      static std::string dir;
+      return dir;
+   }
+
+   std::string DialogStartDir()
+   {
+      namespace fs = std::filesystem;
+      std::error_code ec;
+      const std::string& last = LastDialogDir();
+      if (!last.empty() && fs::is_directory(last, ec))
+         return last;
+      const char* home = std::getenv("HOME");
+      if (home && home[0] != '\0' && fs::is_directory(home, ec))
+         return home;
+      return "/";
+   }
+
+   void RememberDialogDir(const std::string& chosen)
+   {
+      if (chosen.empty()) return;
+      namespace fs = std::filesystem;
+      std::error_code ec;
+      fs::path p(chosen);
+      fs::path dir = fs::is_directory(p, ec) ? p : p.parent_path();
+      if (!dir.empty() && fs::is_directory(dir, ec))
+         LastDialogDir() = dir.string();
+   }
+
+   // Open dialogs: trailing slash marks a folder, not a file name.
+   std::string OpenStart() { return DialogStartDir() + "/"; }
+
+   // Save dialogs: absolute path = start folder + suggested file name.
+   std::string SaveStart(const std::string& name)
+   {
+      if (!name.empty() && name[0] == '/') return name;
+      return DialogStartDir() + "/" + name;
    }
 }
 
@@ -202,6 +246,13 @@ namespace Platform
       return 0.0;
    }
 
+
+   double PollTrackpadRotationDelta()
+   {
+      // GLFW does not expose trackpad rotate gestures on X11/Wayland.
+      return 0.0;
+   }
+
    double ProcessRssMb()
    {
       // /proc/self/status's VmRSS line is already in kB and needs no root
@@ -285,6 +336,8 @@ namespace Platform
    bool GpuPreferenceSupported() { return false; }
    int GpuPreference() { return 0; }
    void SetGpuPreference(int) {}
+   PenSample PenNowSample(GLFWwindow*) { return {}; }
+   float PenPressure(GLFWwindow*) { return -1.0f; }
 
    void ShowFatalError(const std::string& title, const std::string& message)
    {
@@ -298,6 +351,13 @@ namespace Platform
       }
    }
 
+   bool LocalTime(std::time_t time, std::tm* outTm)
+   {
+      if (outTm == nullptr)
+         return false;
+      return localtime_r(&time, outTm) != nullptr;
+   }
+
    std::string OpenImageDialog()
    {
       if (IsHeadlessOrExitAfter()) return "";
@@ -309,12 +369,13 @@ namespace Platform
       };
       const char* res = tinyfd_openFileDialog(
          "Choose Image",
-         "",
+         OpenStart().c_str(),
          (int)(sizeof(filterPatterns) / sizeof(filterPatterns[0])),
          filterPatterns,
          "Image files",
          0
       );
+      if (res) RememberDialogDir(res);
       return res ? std::string(res) : std::string();
    }
 
@@ -328,12 +389,23 @@ namespace Platform
       };
       const char* res = tinyfd_openFileDialog(
          "Choose HDR Environment",
-         "",
+         OpenStart().c_str(),
          (int)(sizeof(filterPatterns) / sizeof(filterPatterns[0])),
          filterPatterns,
          "HDR images (*.hdr, *.exr)",
          0
       );
+      if (res) RememberDialogDir(res);
+      return res ? std::string(res) : std::string();
+   }
+
+   std::string OpenIesDialog()
+   {
+      if (IsHeadlessOrExitAfter()) return "";
+      ScopedHostEnvironment hostEnv;
+      EnsureDialogBackendChecked();
+      const char* const filterPatterns[] = { "*.ies" };
+      const char* res = tinyfd_openFileDialog("Choose IES profile", OpenStart().c_str(), 1, filterPatterns, "IES profiles (*.ies)", 0);
       return res ? std::string(res) : std::string();
    }
 
@@ -347,12 +419,13 @@ namespace Platform
       };
       const char* res = tinyfd_openFileDialog(
          "Choose Model",
-         "",
+         OpenStart().c_str(),
          (int)(sizeof(filterPatterns) / sizeof(filterPatterns[0])),
          filterPatterns,
          "3D models (*.obj, *.ply, *.stl)",
          0
       );
+      if (res) RememberDialogDir(res);
       return res ? std::string(res) : std::string();
    }
 
@@ -362,16 +435,17 @@ namespace Platform
       ScopedHostEnvironment hostEnv;
       EnsureDialogBackendChecked();
       const char* const filterPatterns[] = {
-         "*.infinite", "*.inf"
+         "*.inf", "*.infinite"
       };
       const char* res = tinyfd_openFileDialog(
          "Open Patch",
-         "",
+         OpenStart().c_str(),
          (int)(sizeof(filterPatterns) / sizeof(filterPatterns[0])),
          filterPatterns,
-         "Infinite patches (*.infinite, *.inf)",
+         "Infinite patches (*.inf, *.infinite)",
          0
       );
+      if (res) RememberDialogDir(res);
       return res ? std::string(res) : std::string();
    }
 
@@ -381,20 +455,21 @@ namespace Platform
       ScopedHostEnvironment hostEnv;
       EnsureDialogBackendChecked();
       const char* const filterPatterns[] = {
-         "*.infinite"
+         "*.inf"
       };
-      std::string defaultPath = suggestedName.empty() ? "Untitled.infinite" : suggestedName;
-      defaultPath = AppendExtensionIfMissing(defaultPath, ".infinite");
+      std::string defaultPath = suggestedName.empty() ? "Untitled.inf" : suggestedName;
+      defaultPath = AppendExtensionIfMissing(defaultPath, ".inf");
 
       const char* res = tinyfd_saveFileDialog(
          "Save Patch",
-         defaultPath.c_str(),
+         SaveStart(defaultPath).c_str(),
          1,
          filterPatterns,
-         "Infinite patch (*.infinite)"
+         "Infinite patch (*.inf)"
       );
       if (!res) return "";
-      return AppendExtensionIfMissing(std::string(res), ".infinite");
+      RememberDialogDir(res);
+      return AppendExtensionIfMissing(std::string(res), ".inf");
    }
 
    std::string OpenDeviceDialog()
@@ -407,12 +482,13 @@ namespace Platform
       };
       const char* res = tinyfd_openFileDialog(
          "Open Device",
-         "",
+         OpenStart().c_str(),
          (int)(sizeof(filterPatterns) / sizeof(filterPatterns[0])),
          filterPatterns,
          "Field device (*.field, *.infdev)",
          0
       );
+      if (res) RememberDialogDir(res);
       return res ? std::string(res) : std::string();
    }
 
@@ -424,12 +500,13 @@ namespace Platform
       const char* const filterPatterns[] = { "*.infpack", "*.zip" };
       const char* res = tinyfd_openFileDialog(
          "Install Extension Pack",
-         "",
+         OpenStart().c_str(),
          (int)(sizeof(filterPatterns) / sizeof(filterPatterns[0])),
          filterPatterns,
          "Extension pack (*.infpack, *.zip)",
          0
       );
+      if (res) RememberDialogDir(res);
       return res ? std::string(res) : std::string();
    }
 
@@ -439,7 +516,8 @@ namespace Platform
       ScopedHostEnvironment hostEnv;
       EnsureDialogBackendChecked();
       const char* const filterPatterns[] = { "*.infshow" };
-      const char* res = tinyfd_openFileDialog("Open Show Set", "", 1, filterPatterns, "Show set (*.infshow)", 0);
+      const char* res = tinyfd_openFileDialog("Open Show Set", OpenStart().c_str(), 1, filterPatterns, "Show set (*.infshow)", 0);
+      if (res) RememberDialogDir(res);
       return res ? std::string(res) : std::string();
    }
 
@@ -451,8 +529,9 @@ namespace Platform
       const char* const filterPatterns[] = { "*.infshow" };
       std::string defaultPath = suggestedName.empty() ? "Untitled.infshow" : suggestedName;
       defaultPath = AppendExtensionIfMissing(defaultPath, ".infshow");
-      const char* res = tinyfd_saveFileDialog("Save Show Set", defaultPath.c_str(), 1, filterPatterns, "Show set (*.infshow)");
+      const char* res = tinyfd_saveFileDialog("Save Show Set", SaveStart(defaultPath).c_str(), 1, filterPatterns, "Show set (*.infshow)");
       if (!res) return "";
+      RememberDialogDir(res);
       return AppendExtensionIfMissing(std::string(res), ".infshow");
    }
 
@@ -463,9 +542,26 @@ namespace Platform
       EnsureDialogBackendChecked();
       const char* const filterPatterns[] = { "*.wav" };
       std::string defaultPath = AppendExtensionIfMissing(suggestedName.empty() ? "sample.wav" : suggestedName, ".wav");
-      const char* res = tinyfd_saveFileDialog("Export wav", defaultPath.c_str(), 1, filterPatterns, "Wave file (*.wav)");
+      const char* res = tinyfd_saveFileDialog("Export wav", SaveStart(defaultPath).c_str(), 1, filterPatterns, "Wave file (*.wav)");
       if (!res) return "";
+      RememberDialogDir(res);
       return AppendExtensionIfMissing(std::string(res), ".wav");
+   }
+
+   std::string SaveLayeredDialog(const std::string& suggestedName, const std::string& ext)
+   {
+      if (IsHeadlessOrExitAfter()) return "";
+      ScopedHostEnvironment hostEnv;
+      EnsureDialogBackendChecked();
+      const bool ora = ext == "ora";
+      const char* const patterns[] = { ora ? "*.ora" : "*.psd" };
+      const std::string dotExt = "." + ext;
+      const std::string defaultPath = AppendExtensionIfMissing(suggestedName, dotExt.c_str());
+      const char* res = tinyfd_saveFileDialog(ora ? "Export ORA" : "Export PSD", SaveStart(defaultPath).c_str(), 1, patterns,
+                                              ora ? "OpenRaster (*.ora)" : "Photoshop (*.psd)");
+      if (!res) return "";
+      RememberDialogDir(res);
+      return AppendExtensionIfMissing(std::string(res), dotExt.c_str());
    }
 
    std::string SaveRenderDialog(const std::string& suggestedName, bool video)
@@ -475,10 +571,11 @@ namespace Platform
       EnsureDialogBackendChecked();
       const char* const videoPatterns[] = { "*.mp4", "*.mov" };
       const char* const imagePatterns[] = { "*.png", "*.jpg" };
-      const char* res = tinyfd_saveFileDialog(video ? "Render Animation" : "Render Image", suggestedName.c_str(), 2,
+      const char* res = tinyfd_saveFileDialog(video ? "Render Animation" : "Render Image", SaveStart(suggestedName).c_str(), 2,
                                               video ? videoPatterns : imagePatterns,
                                               video ? "Video (*.mp4, *.mov)" : "Image (*.png, *.jpg)");
       if (!res) return "";
+      RememberDialogDir(res);
       std::string path(res);
       const size_t dot = path.rfind('.');
       const std::string ext = dot == std::string::npos ? std::string() : path.substr(dot);
@@ -499,12 +596,13 @@ namespace Platform
 
       const char* res = tinyfd_saveFileDialog(
          "Save Device",
-         defaultPath.c_str(),
+         SaveStart(defaultPath).c_str(),
          1,
          filterPatterns,
          "Field device (*.field)"
       );
       if (!res) return "";
+      RememberDialogDir(res);
       return AppendExtensionIfMissing(std::string(res), ".field");
    }
 
@@ -517,6 +615,7 @@ namespace Platform
          title ? title : "Select Folder",
          initialDir.empty() ? nullptr : initialDir.c_str()
       );
+      if (res) RememberDialogDir(res);
       return res ? std::string(res) : std::string();
    }
 
@@ -629,6 +728,24 @@ namespace Platform
       return !outPng.empty();
    }
 
+   bool SetClipboardImage(const std::vector<unsigned char>& png, const std::vector<unsigned char>& rgba, int w, int h)
+   {
+      (void)rgba, (void)w, (void)h;
+      if (png.empty())
+         return false;
+      ScopedHostEnvironment hostEnv;
+      const bool onWayland = std::getenv("WAYLAND_DISPLAY") != nullptr && CheckExecutableOnPath("wl-copy");
+      const char* cmd = onWayland ? "wl-copy --type image/png 2>/dev/null"
+                                  : (CheckExecutableOnPath("xclip") ? "xclip -selection clipboard -t image/png -i 2>/dev/null" : nullptr);
+      if (cmd == nullptr)
+         return false;
+      FILE* f = popen(cmd, "w");
+      if (f == nullptr)
+         return false;
+      const bool wrote = fwrite(png.data(), 1, png.size(), f) == png.size();
+      return pclose(f) == 0 && wrote;
+   }
+
    void RevealInFileManager(const std::string& path)
    {
       if (path.empty())
@@ -680,8 +797,8 @@ namespace Platform
       // helper OpenExternalUrl uses - no selection, but the file is at
       // least visible rather than never opened at all. Never hand the file
       // itself to xdg-open here: a reveal must not open or execute it.
-      const size_t slash = path.find_last_of('/');
-      const std::string parentDir = (slash == std::string::npos) ? "." : path.substr(0, slash);
+      const std::string parent = AppPaths::FsPath(path).parent_path().u8string();
+      const std::string parentDir = parent.empty() ? "." : parent;
       pid_t pid;
       char* argv[] = {
          const_cast<char*>("xdg-open"),
@@ -801,7 +918,7 @@ namespace Platform
       out.opener = DesktopExec(id);
       if (out.opener.empty())
          out.opener = id;
-      const std::string name = out.opener.substr(out.opener.find_last_of('/') + 1);
+      const std::string name = AppPaths::FsPath(out.opener).filename().u8string();
       std::string lower = name + " " + id;
       std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
       out.isSelf = out.opener == out.self;
@@ -889,7 +1006,7 @@ namespace Platform
       const std::string self = SelfAppImage();
       if (self.empty())
          whyNot = "Only the AppImage updates itself.";
-      else if (access(self.substr(0, self.find_last_of('/')).c_str(), W_OK) != 0 || access(self.c_str(), W_OK) != 0)
+      else if (access(AppPaths::FsPath(self).parent_path().u8string().c_str(), W_OK) != 0 || access(self.c_str(), W_OK) != 0)
          whyNot = "This account can't write to the folder Infinite is in.";
       return whyNot.empty();
    }
@@ -913,7 +1030,7 @@ namespace Platform
          }
       }
       const std::string self = SelfAppImage();
-      const std::string staged = self.substr(0, self.find_last_of('/')) + "/.Infinite-update.AppImage";
+      const std::string staged = (AppPaths::FsPath(self).parent_path() / ".Infinite-update.AppImage").u8string();
       std::error_code ec;
       std::filesystem::remove(staged, ec);
       // Copied (not moved) so it lands on this copy's own filesystem and the final swap is one rename.
@@ -978,6 +1095,10 @@ namespace Platform
    constexpr CURLoption CURLOPT_FOLLOWLOCATION = 52;
    constexpr CURLoption CURLOPT_FAILONERROR = 45;
    constexpr CURLoption CURLOPT_NOSIGNAL = 99;
+   constexpr CURLoption CURLOPT_POST = 47;
+   constexpr CURLoption CURLOPT_POSTFIELDS = 10015;
+   constexpr CURLoption CURLOPT_POSTFIELDSIZE = 60;
+   constexpr CURLoption CURLOPT_HTTPHEADER = 10023;
    constexpr CURLINFO CURLINFO_RESPONSE_CODE = 0x200000 + 2;
 
    struct CurlApi
@@ -989,6 +1110,8 @@ namespace Platform
       void (*easy_cleanup)(CURL*) = nullptr;
       CURLcode (*easy_getinfo)(CURL*, CURLINFO, ...) = nullptr;
       const char* (*easy_strerror)(CURLcode) = nullptr;
+      struct curl_slist* (*slist_append)(struct curl_slist*, const char*) = nullptr;
+      void (*slist_free_all)(struct curl_slist*) = nullptr;
 
       bool Load()
       {
@@ -1007,6 +1130,8 @@ namespace Platform
          easy_cleanup = (void (*)(CURL*))dlsym(handle, "curl_easy_cleanup");
          easy_getinfo = (CURLcode (*)(CURL*, CURLINFO, ...))dlsym(handle, "curl_easy_getinfo");
          easy_strerror = (const char* (*)(CURLcode))dlsym(handle, "curl_easy_strerror");
+         slist_append = (struct curl_slist* (*)(struct curl_slist*, const char*))dlsym(handle, "curl_slist_append");
+         slist_free_all = (void (*)(struct curl_slist*))dlsym(handle, "curl_slist_free_all");
 
          if (!easy_init || !easy_setopt || !easy_perform || !easy_cleanup || !easy_getinfo)
          {
@@ -1238,10 +1363,9 @@ namespace Platform
 
    std::string ScannerExecutablePath()
    {
-      std::string exe = ExecutablePath();
-      size_t slash = exe.find_last_of('/');
-      std::string dir = (slash != std::string::npos) ? exe.substr(0, slash) : ".";
-      return dir + "/infinite-vst3-scanner";
+      const std::string exe = ExecutablePath();
+      const std::string dir = AppPaths::FsPath(exe).parent_path().u8string();
+      return (dir.empty() ? std::string(".") : dir) + "/infinite-vst3-scanner";
    }
 
    void SuppressAppUIForHeadlessProcess()
@@ -1259,11 +1383,11 @@ namespace Platform
 
    std::string MattingModelPath()
    {
-      std::string exe = ExecutablePath();
-      size_t slash = exe.find_last_of('/');
-      if (slash == std::string::npos)
+      const std::string exe = ExecutablePath();
+      const std::filesystem::path dir = AppPaths::FsPath(exe).parent_path();
+      if (dir.empty())
          return {};
-      return exe.substr(0, slash + 1) + "assets/models/u2netp.onnx";
+      return (dir / "assets/models/u2netp.onnx").u8string();
    }
 
    bool SubjectMask(const std::vector<unsigned char>& inputRgba, int width, int height,
@@ -1281,5 +1405,180 @@ namespace Platform
    const std::vector<std::string>& MattingModeNames()
    {
       return OrtMatting::MattingModeNames();
+   }
+
+   namespace
+   {
+      struct CurlStreamCtx
+      {
+         CURL* ch = nullptr;
+         CurlApi* curl = nullptr;
+         const HttpStreamChunk* onChunk = nullptr;
+         std::string* errorBody = nullptr;
+         int status = 0;
+         bool aborted = false;
+      };
+
+      size_t CurlStreamWrite(char* ptr, size_t size, size_t nmemb, void* userdata)
+      {
+         auto* ctx = static_cast<CurlStreamCtx*>(userdata);
+         const size_t total = size * nmemb;
+         if (ctx->status == 0 && ctx->curl && ctx->curl->easy_getinfo)
+         {
+            long code = 0;
+            ctx->curl->easy_getinfo(ctx->ch, CURLINFO_RESPONSE_CODE, &code);
+            ctx->status = (int)code;
+         }
+         if (ctx->status >= 200 && ctx->status < 300)
+         {
+            if (ctx->onChunk && *ctx->onChunk)
+            {
+               if (!(*ctx->onChunk)(std::string(ptr, total)))
+               {
+                  ctx->aborted = true;
+                  return 0;
+               }
+            }
+         }
+         else if (ctx->errorBody && ctx->errorBody->size() < 65536)
+         {
+            const size_t take = std::min(total, 65536 - ctx->errorBody->size());
+            ctx->errorBody->append(ptr, take);
+         }
+         return total;
+      }
+
+      std::string SecretFallbackPath(const std::string& account)
+      {
+         const std::string base = AppPaths::AppSupportDir(); // fork: separate credentials
+         const std::string dir = base.empty() ? "/tmp/infinitetu-secrets" : base + "/secrets";
+         std::string safe = account;
+         for (char& c : safe)
+            if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+               c = '_';
+         return dir + "/" + safe;
+      }
+   }
+
+   bool HttpPostStream(const std::string& url, const std::string& jsonBody,
+                       const std::string& bearerToken, const HttpStreamChunk& onChunk,
+                       int& outStatus, std::string& outErrorBody,
+                       std::string& outError, int timeoutSeconds)
+   {
+      outStatus = 0;
+      outErrorBody.clear();
+      outError.clear();
+      if (url.rfind("https://", 0) != 0 && url.rfind("http://", 0) != 0)
+      {
+         outError = "url must be http(s)";
+         return false;
+      }
+
+      static CurlApi curl;
+      if (!curl.Load())
+      {
+         outError = "libcurl could not be loaded via dlopen";
+         return false;
+      }
+      CURL* ch = curl.easy_init();
+      if (!ch)
+      {
+         outError = "curl_easy_init failed";
+         return false;
+      }
+
+      struct curl_slist* headers = nullptr;
+      if (curl.slist_append)
+      {
+         headers = curl.slist_append(headers, "Content-Type: application/json");
+         headers = curl.slist_append(headers, "Accept: text/event-stream");
+         if (!bearerToken.empty())
+            headers = curl.slist_append(headers, ("Authorization: Bearer " + bearerToken).c_str());
+      }
+
+      CurlStreamCtx ctx;
+      ctx.ch = ch;
+      ctx.curl = &curl;
+      ctx.onChunk = &onChunk;
+      ctx.errorBody = &outErrorBody;
+
+      curl.easy_setopt(ch, CURLOPT_URL, url.c_str());
+      curl.easy_setopt(ch, CURLOPT_POST, 1L);
+      curl.easy_setopt(ch, CURLOPT_POSTFIELDS, jsonBody.c_str());
+      curl.easy_setopt(ch, CURLOPT_POSTFIELDSIZE, (long)jsonBody.size());
+      if (headers)
+         curl.easy_setopt(ch, CURLOPT_HTTPHEADER, headers);
+      curl.easy_setopt(ch, CURLOPT_WRITEFUNCTION, CurlStreamWrite);
+      curl.easy_setopt(ch, CURLOPT_WRITEDATA, &ctx);
+      curl.easy_setopt(ch, CURLOPT_TIMEOUT, (long)timeoutSeconds);
+      curl.easy_setopt(ch, CURLOPT_NOSIGNAL, 1L);
+
+      CURLcode res = curl.easy_perform(ch);
+      long code = 0;
+      curl.easy_getinfo(ch, CURLINFO_RESPONSE_CODE, &code);
+      outStatus = (int)code;
+      if (headers && curl.slist_free_all)
+         curl.slist_free_all(headers);
+      curl.easy_cleanup(ch);
+
+      if (ctx.aborted)
+      {
+         outError = "cancelled";
+         return false;
+      }
+      if (res != CURLE_OK)
+      {
+         const char* errStr = curl.easy_strerror ? curl.easy_strerror(res) : nullptr;
+         outError = errStr ? errStr : ("curl error " + std::to_string(res));
+         return false;
+      }
+      if (outStatus < 200 || outStatus >= 300)
+      {
+         outError = "http status " + std::to_string(outStatus);
+         return false;
+      }
+      return true;
+   }
+
+   bool SecretStore(const std::string& account, const std::string& secret)
+   {
+      if (account.empty())
+         return false;
+      const std::string path = SecretFallbackPath(account);
+      std::error_code ec;
+      std::filesystem::create_directories(std::filesystem::path(path).parent_path(), ec);
+      FILE* f = fopen(path.c_str(), "wb");
+      if (!f)
+         return false;
+      fwrite(secret.data(), 1, secret.size(), f);
+      fclose(f);
+      chmod(path.c_str(), 0600);
+      return true;
+   }
+
+   bool SecretLoad(const std::string& account, std::string& outSecret)
+   {
+      outSecret.clear();
+      if (account.empty())
+         return false;
+      const std::string path = SecretFallbackPath(account);
+      FILE* f = fopen(path.c_str(), "rb");
+      if (!f)
+         return false;
+      char buf[4096];
+      size_t n = 0;
+      while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
+         outSecret.append(buf, n);
+      fclose(f);
+      return true;
+   }
+
+   bool SecretClear(const std::string& account)
+   {
+      if (account.empty())
+         return false;
+      std::error_code ec;
+      std::filesystem::remove(SecretFallbackPath(account), ec);
+      return true;
    }
 }

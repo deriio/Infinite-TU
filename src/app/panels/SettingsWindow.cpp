@@ -43,7 +43,7 @@ namespace app
          { "autosave", 3, "Autosave" }, { "performance", 3, "Performance & Rendering" }, { "movement-log", 3, "Movement Log" },
          { "learning", 3, "Learning" }, { "diagnostics", 3, "Diagnostics" }, { "updates", 3, "Application & Updates" }, { "daw-plugin", 9, nullptr }, { "daw-sync", 9, nullptr },
          { "field", 4, nullptr }, { "globals", 5, nullptr }, { "extensions", 6, nullptr }, { "plugins", 7, nullptr },
-         { "agents", 8, nullptr }, { "terminal", 8, nullptr },
+         { "agents", 8, nullptr }, { "terminal", 8, nullptr }, { "3d-view", 10, nullptr },
          { "custom-agent", 8, "Custom agent (OpenAI-compatible)" }, { "connect-agent", 8, "Connect Infinite to an outside agent" },  // fork
       };
    }
@@ -99,7 +99,8 @@ namespace app
       static const char* const kTabs[] = { I18N_KEY("Appearance"), I18N_KEY("Canvas & Workspace"), I18N_KEY("Audio"),
                                            I18N_KEY("General & Performance"), I18N_KEY("Field Language"),
                                            I18N_KEY("Expression Globals"), I18N_KEY("Extensions"), I18N_KEY("Plugins"),
-                                           I18N_KEY("Agents & Terminal"), I18N_KEY("Infinite as VST3/AU") };
+                                           I18N_KEY("Agents & Terminal"), I18N_KEY("Infinite as VST3/AU"),
+                                           I18N_KEY("3D View"), I18N_KEY("Keys") };
       constexpr int kTabCount = (int)(sizeof(kTabs) / sizeof(kTabs[0]));
       // Review hook: INFINITE_OPENPANELS=...settingsgeneral opens General & Performance first (design review shots).
       static bool sTabPicked = false;
@@ -142,7 +143,7 @@ namespace app
       const float wellTop = ImGui::GetStyle().ItemSpacing.y * 2.0f;
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + wellTop + SectionCard::kPad);
       const ImVec2 oldItemSpacing = ImGui::GetStyle().ItemSpacing;
-      ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, tok::space_2);
+      ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, tok::row_gap);  // tabs on the same 24 + 3 pitch as the setting rows
       // Inside a DAW: the host owns audio and MIDI devices, there is no plugin hosting and no shell, so the Audio,
       // Plugins and Agents & Terminal tabs go.
       auto hiddenInDaw = [](int tab) { return Platform::PluginModeActive() && (tab == 2 || tab == 7 || tab == 8); };
@@ -165,14 +166,14 @@ namespace app
          ImDrawList* dl = ImGui::GetWindowDrawList();
          if (sel || hov)
             dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, sel ? 0.14f : 0.08f)),
-                              tok::radius_tile);
+                              tok::radius_control);
          const char* label = T(kTabs[i]); // drawn text, not a widget label: L() would add the "###id" part
          const ImVec2 ts = ImGui::CalcTextSize(label);
          dl->AddText(ImVec2(p.x + kNavInset, p.y + (h - ts.y) * 0.5f),
                      ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, sel ? 1.0f : 0.75f)), label);
       }
       ImGui::GetStyle().ItemSpacing = oldItemSpacing;
-      ImGui::EndChild();
+      EndChildSafe();
       {
          // The section list sits in its own well, the same one the cards use, kPad outside the tiles all round.
          const ImVec2 navMin = ImGui::GetItemRectMin(), navMax = ImGui::GetItemRectMax();
@@ -340,7 +341,7 @@ namespace app
                   {
                      CategoryColors::SaveAppearanceOverrides();
                   }
-                  ImGui::SameLine(0.0f, 6.0f);
+                  FormParts::Inline(0.0f, 6.0f);
                   ImGui::TextUnformatted(cat.c_str());
                }
                ImGui::EndTable();
@@ -370,7 +371,7 @@ namespace app
                   {
                      CategoryColors::SaveAppearanceOverrides();
                   }
-                  ImGui::SameLine(0.0f, 6.0f);
+                  FormParts::Inline(0.0f, 6.0f);
                   ImGui::TextUnformatted(cableNames[i].c_str());
                }
                ImGui::EndTable();
@@ -582,7 +583,7 @@ namespace app
                gCableVisibilityMask = 0x7;
                SaveWorkspaceSettings();
             }
-            ImGui::SameLine();
+            FormParts::Inline();
             if (FormParts::Button(L("Hide all cables")))
             {
                gCableVisibilityMask = 0x0;
@@ -632,6 +633,7 @@ namespace app
                ImGui::BeginDisabled();
 #else
             const bool asioMode = false;
+            (void)asioMode;
 #endif
             if (FormParts::BeginCombo(L("Input device"), inputLabel.c_str()))
             {
@@ -1020,7 +1022,7 @@ namespace app
                if (!dir.empty())
                   Platform::RevealInFileManager(dir);
             }
-            ImGui::SameLine();
+            FormParts::Inline();
             const uint64_t folderBytes = MovementLog::GetLogFolderSizeBytes();
             const float folderMB = (float)folderBytes / (1024.0f * 1024.0f);
             ImGui::Text(T("(%.1f MB used)"), folderMB);
@@ -1065,7 +1067,7 @@ namespace app
                   if (!dir.empty())
                      Platform::RevealInFileManager(dir);
                }
-               ImGui::SameLine();
+               FormParts::Inline();
                static double sLearnSizedAt = -10.0; // walking the folder every frame would cost; once a second
                static float sLearnMB = 0.0f;
                if (ImGui::GetTime() - sLearnSizedAt > 1.0)
@@ -1147,11 +1149,11 @@ namespace app
             ImGui::Spacing();
             ImGui::SetNextItemWidth(220.0f);
             FormParts::BareCombo("##fieldtopic", &sSelectedSection, kSections, IM_ARRAYSIZE(kSections), 220.0f);
-            ImGui::SameLine(0.0f, 8.0f);
+            FormParts::Inline(0.0f, 8.0f);
             FormParts::SearchInput("##fieldsearch", "Search functions / syntax...", sFilterBuf, sizeof(sFilterBuf), 220.0f);
             if (sFilterBuf[0] != '\0')
             {
-               ImGui::SameLine(0.0f, 6.0f);
+               FormParts::Inline(0.0f, 6.0f);
                const float btnW = ImGui::GetFrameHeight();
                if (ActionButton::Draw("##clearfieldsearch", ImVec2(btnW, 0)))
                   sFilterBuf[0] = '\0';
@@ -1175,7 +1177,7 @@ namespace app
                HelpTip("%s", T("Save a Field-language reference file you can hand to any AI assistant\n(or drop into ~/.claude/skills/) so it can write Field kernels for you."));
             if (!sFieldSkillStatus.empty())
             {
-               ImGui::SameLine();
+               FormParts::Inline();
                ImGui::TextDisabled("%s", sFieldSkillStatus.c_str());
             }
 
@@ -1509,7 +1511,7 @@ namespace app
                HelpTip("%s", T("Save a reference file you can hand to any AI assistant\n(or drop into ~/.claude/skills/) so it can write '=' expressions and Globals for you."));
             if (!sExprSkillStatus.empty())
             {
-               ImGui::SameLine();
+               FormParts::Inline();
                ImGui::TextDisabled("%s", sExprSkillStatus.c_str());
             }
             SectionCard::End();
@@ -1536,9 +1538,9 @@ namespace app
                   SaveDefaultExprGlobals();
                }
 
-               ImGui::SameLine();
+               FormParts::Inline();
                ImGui::TextUnformatted("=");
-               ImGui::SameLine();
+               FormParts::Inline();
 
                char exprBuf[512];
                snprintf(exprBuf, sizeof(exprBuf), "%s", g.expr.c_str());
@@ -1568,10 +1570,10 @@ namespace app
 
                char valueText[32];
                snprintf(valueText, sizeof(valueText), "%.4f", g.value);
-               ImGui::SameLine();
+               FormParts::Inline();
                ImGui::SetCursorPosX(valueRightX - ImGui::CalcTextSize(valueText).x);
                ImGui::TextDisabled("%s", valueText);
-               ImGui::SameLine();
+               FormParts::Inline();
                ImGui::SetCursorPosX(btnX);
                {
                   if (ActionButton::Draw("##removeexprglobal", ImVec2(btnW, 0)))
@@ -1609,7 +1611,7 @@ namespace app
                gPatchDirty = true;
                SaveDefaultExprGlobals();
             }
-            ImGui::SameLine();
+            FormParts::Inline();
             if (FormParts::Button(L("Presets..."), ImVec2(110, 0)))
             {
                ImGui::OpenPopup("ExprPresetsMenuSettings");
@@ -1934,6 +1936,48 @@ namespace app
             SectionCard::End();
          }
 
+         // 11. "3D View" Tab: the user's viewport habits, the same in every patch (gView3DPrefs).
+         if (sTab == 10)
+         {
+            View3DPrefs& v = gView3DPrefs;
+            auto saved = [] { if (ImGui::IsItemDeactivatedAfterEdit()) SaveWorkspaceSettings(); };
+            ImGui::Spacing();
+            FormParts::Section(T("Viewport"));
+            {
+               const std::string items = std::string(T("Off")) + '\0' + T("Simple axes") + '\0' + T("Navigation") + '\0';
+               if (FormParts::Combo(L("Mini axes"), &v.miniAxes, items.c_str()))
+                  SaveWorkspaceSettings();
+            }
+            FormParts::SliderFloat(L("Mini axes size"), &v.miniSize, 40.0f, 160.0f, "%.0f");
+            saved();
+            FormParts::SliderFloat(L("Mini axes brightness"), &v.miniBright, 0.0f, 1.0f, "%.2f");
+            saved();
+            FormParts::SliderFloat(L("Navigation gizmo size"), &v.gizmoNavSize, 40.0f, 160.0f, "%.0f");
+            saved();
+            FormParts::SliderFloat(L("Transform gizmo size"), &v.gizmoSize, 40.0f, 160.0f, "%.0f");
+            saved();
+            SectionCard::End();
+            ImGui::Spacing();
+            FormParts::Section(T("Navigation"));
+            FormParts::SliderFloat(L("Smooth view"), &v.smoothTime, 0.0f, 1.0f, "%.2f s");
+            saved();
+            FormParts::SliderFloat(L("Rotation step"), &v.rotStep, 1.0f, 90.0f, "%.0f");
+            saved();
+            FormParts::SliderFloat(L("Orbit sensitivity"), &v.orbitSens, 0.1f, 5.0f, "%.2f");
+            saved();
+            if (FormParts::Switch(L("Auto perspective"), &v.autoPerspective))
+               SaveWorkspaceSettings();
+            if (FormParts::Switch(L("Continuous grab"), &v.continuousGrab))
+               SaveWorkspaceSettings();
+            if (FormParts::Switch(L("Zoom to mouse"), &v.zoomToMouse))
+               SaveWorkspaceSettings();
+            if (FormParts::Switch(L("Orbit around selection"), &v.orbitSelection))
+               SaveWorkspaceSettings();
+            if (FormParts::Switch(L("Invert zoom direction"), &v.invertZoom))
+               SaveWorkspaceSettings();
+            SectionCard::End();
+         }
+
          // 10. "Infinite as VST3/AU" Tab: in the app, install the VST3/AU plugins; inside a DAW, who owns time.
          if (sTab == 9)
          {
@@ -1967,10 +2011,16 @@ namespace app
             SectionCard::End();
          }
 
+         // 12. "Keys" Tab: every row of kShortcuts, searchable.
+         if (sTab == 11)
+         {
+            DrawShortcutsTableBody("settings_");
+         }
+
       }
 
       SectionCard::EndWindow();
-      ImGui::EndChild();
+      EndChildSafe();
       FormParts::WindowEdge();
       ImGui::End();
       PopElevatedPanelStyle();

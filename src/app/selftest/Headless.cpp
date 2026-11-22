@@ -1,9 +1,20 @@
 // Headless jobs: ExplainLive, ParamKeyJoiner, HeadlessTick (moved verbatim from main.cpp).
+#include "engine/rhi/Rhi.h"
 #include "app/AppShared.h"
+#include "core/SpawnSeed.h"
+#include "core/MovementStats.h"
 #include "core/CoverageFlush.h"
 #include <atomic>
+#ifndef _WIN32
+#include <csignal>
+#include <cxxabi.h>
+#include <execinfo.h>
+#include <unistd.h>
+#endif
 #include <chrono>
 #include <functional>
+#include <fstream>
+#include <sstream>
 #include <thread>
 
 namespace
@@ -212,6 +223,31 @@ std::string ExplainLive(bool json, bool all)
 // (what a patch's map<N>_min/max/value must use - not the display units).
 static void ReportPlugins(Headless::Status& st, bool withParams, bool withState = false)
 {
+   // A live input that does not refuse (Keyboard, OSC Receive) renders silent or still headless; say why,
+   // so an empty render is not read as a broken patch. Hardware-driven sources already refuse.
+   for (const GraphNode& gn : gNodes)
+      if (gn.node && gn.node->IsLiveInput() && !gn.node->IsHardwareDriven())
+         st.warnings.push_back({ "W_LIVE_INPUT", gn.typeName + " is played live (a person or the network); headless it adds nothing",
+                                 0, gn.index, "drive the synth from a Piano Roll, Note Sequencer or MIDI File instead" });
+   // Per-note gain and pan (`g=`, `pan=` on a note line) are saved but no voice reads them yet (ArrangeModel.h).
+   int gainPanNotes = 0;
+   auto countClip = [&](const Arrange::Clip& c)
+   {
+      for (const Arrange::Note& n : c.notes)
+         if (n.gainDb != 0.0f || n.pan != 0.0f)
+            gainPanNotes++;
+   };
+   for (const Arrange::Lane& lane : gArrange.lanes)
+   {
+      for (const Arrange::Clip& c : lane.clips)
+         countClip(c);
+      for (const Arrange::SessionSlot& s : lane.slots)
+         countClip(s.clip);
+   }
+   if (gainPanNotes > 0)
+      st.warnings.push_back({ "W_NOTE_GAIN_PAN_IGNORED", std::to_string(gainPanNotes) +
+                                 " note(s) set per-note gain or pan, which no voice applies yet", 0, -1,
+                              "use velocity for level, and the lane or clip pan" });
    std::string json;
    for (int i = 0; i < (int)gNodes.size(); i++)
    {
@@ -805,9 +841,80 @@ static void ParamNamesOfNode(int nodeIndex, std::map<std::string, float>& names)
          names[r.name] = 0.0f;
 }
 
+// A job after the first in one process starts where the first one did: clock held offline at 0 and
+// spawn counters at 1. Without it, a seedless or beat-synced patch renders from wherever the previous
+// job left the transport, and the same file differs by its place in a batch.
+// The learned movement statistics (Drift, Moves and the other green nodes read them) as they were before the
+// first job: each job learns into them while it plays, so later jobs start from this copy, not from what the
+// jobs before them taught.
+static MovementStats::Engine& StatsAtStart()
+{
+   static MovementStats::Engine sCopy = MovementStats::Live();
+   return sCopy;
+}
+
+static void ResetForNextJob()
+{
+   SpawnSeed::ResetAll();
+   gNextNodeUid = 1; // a uid-less patch's nodes get the same uids in every job (Drift seeds its walk from them)
+   MovementStats::Live() = StatsAtStart();
+   Transport::Instance().SetOfflineMode(true, gHeadlessAudioRate);
+   Transport::Instance().Seek(0.0);
+   Transport::Instance().SetOfflineVideoTime(0.0);
+}
+
+// What the headless job was doing, for the crash hook: a fatal signal prints one status line (E_CRASH) and a
+// demangled backtrace instead of dying silently, so an agent sees which stage and which code fell over.
+static char sCrashPatch[512] = "";
+static char sCrashStage[160] = "starting";
+static void NoteCrashPatch(const std::string& patch)
+{
+   std::snprintf(sCrashPatch, sizeof(sCrashPatch), "%s", patch.c_str());
+}
+#ifndef _WIN32
+static void HeadlessCrashHook(int sig)
+{
+   char line[1024];
+   const int n = std::snprintf(line, sizeof(line),
+                               "\n{\"ok\":false,\"mode\":\"crash\",\"patch\":\"%s\",\"errors\":[{\"code\":\"E_CRASH\",\"message\":\"signal %d while %s\","
+                               "\"hint\":\"the backtrace is on stderr; the innermost Infinite frame names the node or renderer\"}]}\n",
+                               sCrashPatch, sig, sCrashStage);
+   if (n > 0)
+      (void)!write(STDOUT_FILENO, line, std::min<size_t>((size_t)n, sizeof(line) - 1));
+   // The process is dying anyway; demangling is worth its small risk here.
+   void* frames[48];
+   const int count = backtrace(frames, 48);
+   char** syms = backtrace_symbols(frames, count);
+   (void)!write(STDERR_FILENO, "Infinite headless crash backtrace:\n", 35);
+   for (int i = 1; syms != nullptr && i < count; i++)
+   {
+      // macOS: "3   Infinite   0x0000 _ZN3Foo3barEv + 12"; Linux: "path(_ZN3Foo3barEv+0x12) [0x...]".
+      std::string s = syms[i], name;
+      size_t b = s.find(" _Z"), e = std::string::npos;
+      if (b != std::string::npos) { b++; e = s.find(' ', b); }
+      else if ((b = s.find("(_Z")) != std::string::npos) { b++; e = s.find('+', b); }
+      if (b != std::string::npos)
+      {
+         int status = 0;
+         char* d = abi::__cxa_demangle(s.substr(b, e == std::string::npos ? std::string::npos : e - b).c_str(), nullptr, nullptr, &status);
+         if (status == 0 && d != nullptr)
+            s = s.substr(0, b) + d + (e == std::string::npos ? "" : s.substr(e));
+         std::free(d);
+      }
+      s += "\n";
+      (void)!write(STDERR_FILENO, s.c_str(), s.size());
+   }
+   // A headless run must end here: returning from the handler would let a sent or async
+   // signal resume a half-dead render that never exits. Default action = die with the signal.
+   std::signal(sig, SIG_DFL);
+   raise(sig);
+}
+#endif
+
 void HeadlessTick(int& frameId, GLFWwindow* window)
 {
-   enum class Phase { Warm, Running, Frames, NodeRender, Audio, Done };
+   enum class Phase { Warm, Running, Frames, NodeRender, Audio, TimelineRender, Done };
+   static uint64_t sTimelineJobId = 0; // --render --timeline: the export-queue job this run waits on
    static Platform::RecorderHandle* sNodeRec = nullptr; // --render --node: the encoder, opened on the first frame
    static int sNodeRecW = 0, sNodeRecH = 0;
    static int sNodeStartFrame = 0, sNodeEndFrame = 0;
@@ -864,13 +971,63 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
    static std::vector<BatchJob> sBatch; // --batch: the jobs after the first, read when the first one is done
    static size_t sBatchNext = 0;
    static bool sBatchRead = false;
+   static std::streamoff sBatchOffset = 0; // --serve: where the last read of the list stopped (whole lines only)
+   static bool sServeQuit = false;         // --serve: a "quit" line was read
+   static double sServeIdleSince = -1.0;   // --serve: when the list last ran dry
+   static bool sSidecarWritten = false;    // --frame --batch: this job's <out>.json is out (the finish tick can repeat)
+   // --batch: one job per line, "patch<TAB>out[<TAB>out.wav]"; false when the list cannot be opened.
+   // Reads from where the last call stopped; a last line without its newline is left for the next read
+   // (a writer may be half way through it).
+   auto readBatch = [&]() -> bool
+   {
+      std::ifstream in(gHeadlessJob.batch, std::ios::binary);
+      if (!in)
+         return false;
+      in.seekg(0, std::ios::end);
+      const std::streamoff size = in.tellg();
+      if (size < sBatchOffset)
+         sBatchOffset = 0; // the list was rewritten from scratch
+      in.seekg(sBatchOffset);
+      std::string chunk((size_t)(size - sBatchOffset), '\0');
+      in.read(chunk.data(), (std::streamsize)chunk.size());
+      const size_t lastNl = chunk.rfind('\n');
+      if (lastNl == std::string::npos)
+         return true;
+      sBatchOffset += (std::streamoff)(lastNl + 1);
+      std::istringstream lines(chunk.substr(0, lastNl + 1));
+      for (std::string line; std::getline(lines, line);)
+      {
+         if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+         std::vector<std::string> col;
+         for (size_t a = 0, b; a <= line.size(); a = b + 1)
+         {
+            b = std::min(line.find('\t', a), line.size());
+            col.push_back(line.substr(a, b - a));
+         }
+         if (col.size() == 1 && col[0] == "quit")
+            sServeQuit = true;
+         else if (col.size() >= 2 && !col[0].empty() && !col[1].empty())
+            sBatch.push_back({ col[0], col[1], col.size() > 2 ? col[2] : std::string() });
+      }
+      return true;
+   };
 
    const Headless::Job& job = gHeadlessJob;
    if (sPhase == Phase::Done || !HeadlessJobActive() || job.mode == Headless::Mode::Version ||
        glfwWindowShouldClose(window))
       return;
+   {
+      static const char* kPhaseNames[] = { "warming up", "running", "rendering frames", "rendering the node", "measuring audio",
+                                           "rendering the timeline", "finishing" };
+      std::snprintf(sCrashStage, sizeof(sCrashStage), "%s", kPhaseNames[(int)sPhase]);
+   }
    if (sWall < 0.0)
    {
+      NoteCrashPatch(job.patch);
+#ifndef _WIN32
+      Platform::gCrashHook = HeadlessCrashHook;
+#endif
       sWall = glfwGetTime();
       sStatus.mode = job.mode == Headless::Mode::Render     ? "render"
                      : job.mode == Headless::Mode::Describe ? "describe"
@@ -884,7 +1041,8 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
       sStatus.patch = job.patch;
       sStatus.out = job.out;
       sStatus.fps = job.fps;
-      StartHeadlessWatchdog(job, sStatus);
+      if (!job.serve) // a warm session lives until "quit" or idle; --timeout is checked per job below
+         StartHeadlessWatchdog(job, sStatus);
    }
    auto fail = [&](const char* code, const std::string& msg, int node = -1)
    {
@@ -893,10 +1051,15 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
       HeadlessFinish(window, sStatus, sWall);
    };
 
-   if (glfwGetTime() - sWall > job.timeoutSec)
+   static double sJobWall = -1.0; // --serve: when the current job started (the session's own start is sWall)
+   if (sJobWall < 0.0)
+      sJobWall = sWall;
+   if (glfwGetTime() - sJobWall > job.timeoutSec && sServeIdleSince < 0.0)
    {
       if (gOfflineRender.active && gOfflineRender.node != nullptr)
          gOfflineRender.node->RequestFinishOfflineRender(true);
+      if (sTimelineJobId != 0)
+         ArrangeRenderCancelActive();
       fail("E_TIMEOUT", "job exceeded --timeout " + std::to_string((int)job.timeoutSec) + " s");
       return;
    }
@@ -907,6 +1070,7 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
 
    // Frame jobs hold the clock at zero from the first tick: the probe/load ticks and the warm-up cook the
    // graph too, and a wall-clock frame in a history node (Time Machine ring, Trails) makes two renders differ.
+   StatsAtStart(); // copy taken on the first tick, before any job has played
    const bool videoJob = job.mode == Headless::Mode::Frame || job.mode == Headless::Mode::Frames;
    static bool sClockHeld = false;
    if (videoJob && !sClockHeld)
@@ -985,6 +1149,8 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
          HeadlessFinish(window, sStatus, sWall);
          return;
       }
+      SpawnSeed::ResetAll(); // seedless nodes number from 1 in every job
+      gNextNodeUid = 1;
       LoadPatchFrom(job.patch); // starts from an empty canvas, so the probes are gone
       return;
    }
@@ -1334,15 +1500,25 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
          return;
       }
 
-      // An offline render outruns real time, so an effect still building in
-      // the background (Shape Resonator's mode solve) would miss the start.
+      // An offline render outruns real time, so a node still building what it
+      // plays from in the background (Shape Resonator's mode solve, a sample's
+      // analysis in Partials / Slicer / Molder) would miss the start.
       // Wait for it, bounded so a patch that keeps re-solving still renders.
       if (job.mode == Headless::Mode::AudioSummary || job.mode == Headless::Mode::Render)
       {
          bool preparing = false;
          for (GraphNode& g : gNodes)
-            if (auto* fx = dynamic_cast<AudioEffectNode*>(g.node.get()))
+         {
+            INode* n = g.node.get();
+            if (auto* fx = dynamic_cast<AudioEffectNode*>(n))
                preparing = preparing || fx->KernelPreparing();
+            else if (auto* pa = dynamic_cast<PartialsNode*>(n))
+               preparing = preparing || pa->IsAnalyzing();
+            else if (auto* sl = dynamic_cast<SlicerNode*>(n))
+               preparing = preparing || sl->IsAnalyzing();
+            else if (auto* mo = dynamic_cast<MolderNode*>(n))
+               preparing = preparing || mo->IsRendering();
+         }
          if (preparing && ++sPrepTicks < 4 * kHeadlessProbeCapTicks)
          {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -1557,6 +1733,63 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
             sSinkRing->enabled.store(true, std::memory_order_relaxed);
          }
          sPhase = Phase::Audio;
+         return;
+      }
+
+      // --render --timeline: the Timeline's own Render, queued exactly as its dialog queues it, so a headless
+      // take of an arrangement is the in-app export. No canvas Output is needed.
+      if (job.mode == Headless::Mode::Render && job.timeline)
+      {
+         std::string ext = std::filesystem::path(job.out).extension().string();
+         for (char& c : ext)
+            c = (char)tolower((unsigned char)c);
+         if (ext != ".mp4" && ext != ".mov" && ext != ".wav")
+            return fail("E_UNSUPPORTED_CONTAINER", "--render --timeline writes .mp4, .mov or .wav, got '" + ext + "'");
+         if (!job.codec.empty() && job.codec != "h264")
+            return fail("E_UNSUPPORTED_CODEC", "--timeline renders through the Timeline's encoder; --codec " + job.codec + " is for canvas renders");
+         std::error_code ec;
+         const std::filesystem::path outAbs = std::filesystem::absolute(job.out, ec);
+         ArrangeRenderJob aj = ArrangeRenderJobFromSettings(0, 1, outAbs.u8string());
+         const double bpm = std::max(1.0, (double)Transport::Instance().Tempo());
+         if (job.start > 0.0)
+            aj.startTick = Arrange::SecondsToTicks(job.start, bpm);
+         if (job.duration > 0.0)
+            aj.endTick = Arrange::SecondsToTicks(ArrangeRenderTickSeconds(aj.startTick) + job.duration, bpm);
+         aj.videoSource = ArrangeRenderEffectiveVideoSource(aj.startTick, aj.endTick);
+         if (ext == ".wav")
+         {
+            aj.videoSource = kArrangeVideoNone;
+            aj.format = 2;
+         }
+         else
+         {
+            if (aj.videoSource == kArrangeVideoNone)
+               return fail("E_NO_OUTPUT", "--timeline: no clip on a video lane in the range; render to .wav for the audio lanes");
+            aj.format = ext == ".mov" ? 1 : 0;
+         }
+         if (job.sizeW > 0 && job.sizeH > 0)
+         {
+            aj.width = job.sizeW;
+            aj.height = job.sizeH;
+         }
+         if (job.fpsGiven)
+            aj.fps = job.fps;
+         if (job.noAudio)
+            aj.audioSource = kArrangeAudioNone;
+         std::filesystem::remove(outAbs, ec);
+         aj.id = gArrangeRenderNextJobId++;
+         aj.status = kArrangeJobQueued;
+         sTimelineJobId = aj.id;
+         const double durSec = ArrangeRenderTickSeconds(aj.endTick) - ArrangeRenderTickSeconds(aj.startTick);
+         sStatus.width = aj.videoSource == kArrangeVideoNone ? 0 : aj.width;
+         sStatus.height = aj.videoSource == kArrangeVideoNone ? 0 : aj.height;
+         sStatus.frames = aj.videoSource == kArrangeVideoNone ? 0 : ArrangeRenderFrameBudget(durSec, aj.fps);
+         sStatus.fps = aj.fps;
+         sStatus.audioSampleRate = aj.audioSource == kArrangeAudioNone ? 0.0 : gHeadlessAudioRate;
+         sStatus.audioFrames = aj.audioSource == kArrangeAudioNone ? 0 : ArrangeRenderSampleBudget(durSec, gHeadlessAudioRate);
+         gArrangeRenderQueue.insert(gArrangeRenderQueue.begin(), aj);
+         gArrangeRenderQueueRunning = true;
+         sPhase = Phase::TimelineRender;
          return;
       }
 
@@ -1777,6 +2010,26 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
       return;
    }
 
+   if (sPhase == Phase::TimelineRender)
+   {
+      ArrangeRenderJob* aj = ArrangeRenderFindJob(sTimelineJobId);
+      if (aj == nullptr)
+         return fail("E_RENDER", "the timeline render job vanished");
+      if (aj->status == kArrangeJobQueued || aj->status == kArrangeJobRendering || aj->status == kArrangeJobFinalizing)
+         return;
+      if (aj->status != kArrangeJobDone)
+         return fail("E_RENDER", aj->message.empty() ? "the timeline render did not finish" : aj->message);
+      if (aj->format != 2 && !Headless::MovieHasIndex(aj->path))
+         return fail("E_RENDER", "the file was written but has no index (moov), so it cannot be played");
+      if (!aj->message.empty())
+         sStatus.warnings.push_back({ "W_CLIPPING", aj->message, 0, -1 });
+      sStatus.files.push_back(aj->path);
+      ReportPlugins(sStatus, job.pluginParams, job.pluginState);
+      sPhase = Phase::Done;
+      HeadlessFinish(window, sStatus, sWall);
+      return;
+   }
+
    if (sPhase == Phase::NodeRender)
    {
       const double budgetStart = glfwGetTime();
@@ -1920,7 +2173,10 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
                }
                int rw = 0, rh = 0;
                std::vector<unsigned char> rgba;
-               if (!ReadNodeImageRgba8(sTap, sTapOutput, !job.alpha, rw, rh, rgba))
+               // --frame keeps alpha with or without --size (its full-size path writes straight alpha too);
+               // only --frames-dir defaults to opaque.
+               const bool opaque = sequence && !job.alpha;
+               if (!ReadNodeImageRgba8(sTap, sTapOutput, opaque, rw, rh, rgba))
                   return fail("E_RENDER", "could not read " + path);
                std::vector<uint16_t> deep;
                if (sequence && job.depth == 16)
@@ -1930,7 +2186,7 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
                                  "--depth 16 needs a float source: this image is 8 bits per channel, so a 16-bit PNG would only pad it; drop --depth or tap a node with a 16-bit float output",
                                  sOut != nullptr ? sOutIndex : -1);
                   int dw = 0, dh = 0;
-                  if (!ReadNodeImageRgba16(sTap, sTapOutput, !job.alpha, dw, dh, deep))
+                  if (!ReadNodeImageRgba16(sTap, sTapOutput, opaque, dw, dh, deep))
                      return fail("E_RENDER", "could not read " + path);
                   if (job.sizeW > 0 && (dw != job.sizeW || dh != job.sizeH))
                      return fail("E_UNSUPPORTED_DEPTH", "--size with --depth 16 is not supported: render at the native size, or use --depth 8",
@@ -1980,6 +2236,15 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
                               ColorStats::FrameSummaryJsonFields(fs) + "}";
                char when[32];
                std::snprintf(when, sizeof(when), "%.6g", sTimes[sNextTime]);
+               // A failed GPU command (timeout under memory pressure, lost device) leaves a black or half-drawn
+               // frame that looks like a scene problem; report it as the render failure it is.
+               static int sGpuErrorsSeen = 0;
+               if (rhi::gGpuErrors.load() != sGpuErrorsSeen)
+               {
+                  sGpuErrorsSeen = rhi::gGpuErrors.load();
+                  sStatus.errors.push_back({ "E_GPU", std::string("the GPU failed while drawing the frame at ") + when + " s (" + rhi::gGpuLastError + ")",
+                                             0, sOutIndex, "close other GPU-heavy apps or lower the size / samples, then render again" });
+               }
                if (fs.blackPercent >= 100.0)
                   sStatus.warnings.push_back({ "W_BLACK_FRAME", std::string("the frame at ") + when + " s is entirely black",
                                                0, sOutIndex, "check that something visible reaches the Output at that time" });
@@ -2010,8 +2275,94 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
          sNextTime = 0;
          sNextFrame = 0;
          sPhase = Phase::Warm;
+         ResetForNextJob();
          LoadPatchFrom(job.patch);
          return;
+      }
+      if (job.mode == Headless::Mode::Frame && !job.batch.empty())
+      {
+         // --frame --batch: every job leaves <out>.json with its frame_stats, then the next line loads in this
+         // same process. A line whose patch does not load leaves its error there and is skipped, not fatal.
+         auto sidecar = [](const std::string& out, const std::string& body)
+         {
+            std::string p = out;
+            while (p.size() > 1 && p.back() == '/')
+               p.pop_back();
+            if (FILE* f = std::fopen((p + ".json").c_str(), "wb"))
+            {
+               std::fwrite(body.data(), 1, body.size(), f);
+               std::fclose(f);
+            }
+         };
+         if (!sSidecarWritten)
+         {
+            sSidecarWritten = true;
+            std::string errs;
+            if (job.serve)
+            {
+               // A served job reports its own errors (E_GPU, W_BLACK_FRAME, ...) here: there is no status line per job.
+               for (const Headless::Issue& e : sStatus.errors)
+                  errs += std::string(errs.empty() ? "" : ",") + "{\"code\":\"" + e.code + "\",\"message\":\"" + Headless::JsonEscape(e.message) + "\"}";
+               char ms[48];
+               std::snprintf(ms, sizeof(ms), ",\"elapsed_ms\":%lld", (long long)((glfwGetTime() - sJobWall) * 1000.0));
+               errs = std::string(ms) + ",\"errors\":[" + errs + "]";
+               sStatus.errors.clear();
+            }
+            sidecar(job.out, "{\"ok\":true,\"patch\":\"" + Headless::JsonEscape(job.patch) + "\",\"frame_stats\":[" + sFrameStats + "]" + errs + "}\n");
+         }
+         if (!sBatchRead || (job.serve && sBatchNext >= sBatch.size() && !sServeQuit))
+         {
+            const bool first = !sBatchRead;
+            sBatchRead = true;
+            if (!readBatch() && first)
+               return fail("E_USAGE", "--batch: could not read " + job.batch);
+         }
+         while (sBatchNext < sBatch.size())
+         {
+            const BatchJob& b = sBatch[sBatchNext++];
+            Patch::Data data;
+            std::string err;
+            if (!Patch::Read(b.patch, data, err))
+            {
+               sidecar(b.out, "{\"ok\":false,\"patch\":\"" + Headless::JsonEscape(b.patch) + "\",\"errors\":[{\"code\":\"E_LOAD\",\"message\":\"" +
+                                 Headless::JsonEscape(err) + "\"}]}\n");
+               continue;
+            }
+            std::vector<Headless::Issue> ignored;
+            PatchSchema::Resolve(data, MakeSchemaEnv(false), ignored);
+            gHeadlessPatch = data;
+            gHeadlessJob.patch = b.patch;
+            gHeadlessJob.out = b.out;
+            sStatus.patch = b.patch;
+            sStatus.out = b.out;
+            sFrameStats.clear();
+            sStatus.files.clear();
+            sTicks = 0;
+            sPrepTicks = 0;
+            sNextTime = 0;
+            sNextFrame = 0;
+            sPhase = Phase::Warm;
+            sSidecarWritten = false;
+            sServeIdleSince = -1.0;
+            sJobWall = glfwGetTime();
+            ResetForNextJob();
+            NoteCrashPatch(b.patch);
+            LoadPatchFrom(b.patch);
+            return;
+         }
+         if (job.serve && !sServeQuit)
+         {
+            // Nothing queued: wait for the next line without spinning a core. Ten idle minutes end the
+            // session, so a forgotten one does not hold the GPU.
+            if (sServeIdleSince < 0.0)
+               sServeIdleSince = glfwGetTime();
+            if (glfwGetTime() - sServeIdleSince < 600.0)
+            {
+               std::this_thread::sleep_for(std::chrono::milliseconds(50));
+               return;
+            }
+         }
+         sStatus.extraJson.push_back("\"batch_jobs\":" + std::to_string(sBatchNext + 1));
       }
       if (sPngWriter != nullptr)
       {
@@ -2201,22 +2552,8 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
          if (!sBatchRead)
          {
             sBatchRead = true;
-            std::ifstream in(job.batch);
-            if (!in)
+            if (!readBatch())
                return fail("E_USAGE", "--batch: could not read " + job.batch);
-            for (std::string line; std::getline(in, line);)
-            {
-               if (!line.empty() && line.back() == '\r')
-                  line.pop_back();
-               std::vector<std::string> col;
-               for (size_t a = 0, b; a <= line.size(); a = b + 1)
-               {
-                  b = std::min(line.find('\t', a), line.size());
-                  col.push_back(line.substr(a, b - a));
-               }
-               if (col.size() >= 2 && !col[0].empty() && !col[1].empty())
-                  sBatch.push_back({ col[0], col[1], col.size() > 2 ? col[2] : std::string() });
-            }
          }
          if (sBatchNext < sBatch.size())
          {
@@ -2240,6 +2577,10 @@ void HeadlessTick(int& frameId, GLFWwindow* window)
             sTicks = 0;
             sPrepTicks = 0;
             sPhase = Phase::Warm;
+            SpawnSeed::ResetAll(); // the Audio phase seeks to job.start itself
+            gNextNodeUid = 1;
+            MovementStats::Live() = StatsAtStart();
+            NoteCrashPatch(b.patch);
             LoadPatchFrom(b.patch);
             return;
          }

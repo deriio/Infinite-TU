@@ -91,6 +91,12 @@ public:
    // "no kit", and LoadKitIntoEmptyLanes then does nothing. Main thread only.
    static void SetKitDir(const std::string& dir);
    static const std::string& KitDir();
+   // Root of the user's own kits (AppSupportDir()/kits, written by tools/drumkits/build_kits.py):
+   // <root>/<genre-slug>/NN.json, lane -> absolute path, gain_db, tune. A groove whose genre has a kit
+   // there fills empty lanes from the first one; lanes it lacks (or whose file is gone) take the bundled
+   // kit. Empty = bundled kit only. Main thread only.
+   static void SetUserKitRoot(const std::string& dir);
+   static const std::string& UserKitRoot();
 
    // Main thread. Replaces the whole pattern with groove `g`, part `part`
    // (0 = A, 1 = B, 2 = C): clears every step slot (including those past the
@@ -120,7 +126,7 @@ public:
    // `part` actually uses (non-null lane string). If lanes 2 and 3 (closed and
    // open hat) were both filled by this call and both have no choke group, puts
    // them in choke group 1. No-op when the kit directory is unset or missing.
-   void LoadKitIntoEmptyLanes(const DrumPatterns::Part& part);
+   void LoadKitIntoEmptyLanes(const DrumPatterns::Part& part, const char* genre = nullptr);
 
    const std::string& FilePath(int lane) const { return laneFilePath[Clamp(lane)]; }
    const std::string& FileName(int lane) const { return laneFileName[Clamp(lane)]; }
@@ -132,6 +138,14 @@ public:
    // already-published main-thread state, so this is safe to call every
    // frame with no cross-thread read.
    int CurrentStep() const;
+   // Polymeter: a lane's own length (laneSteps, 0 = follow numSteps) and the step it is on now.
+   int LaneStepCount(int lane) const;
+   int LaneCurrentStep(int lane) const;
+   // Puts lane `lane`'s (-1 = every lane's) per-step probability, condition and nudge back to plain.
+   void ResetTrigs(int lane);
+   // Trig conditions, Elektron-style: 0 = always, then Fill, !Fill, 1st, !1st, and A:B (plays on loop A of every B).
+   static constexpr int kNumConds = 14;
+   static const char* CondName(int cond);
 
    void Randomize();
    void ClearPattern();
@@ -144,6 +158,8 @@ public:
    // name, status, waveform cache) but leaves the lane's pattern/knobs
    // alone.
    void ClearLane(int lane);
+   // Sounds one lane now, through its own mute/solo, choke and envelope (the Drum panel's pads).
+   void Audition(int lane, float vel);
 
    // ---- pattern: trigger + velocity only, per lane -----------------------
    float stepVel[kNumLanes][kMaxSteps] = {}; // 0 = off, >0 = on at that velocity (0.05..1.0)
@@ -167,6 +183,18 @@ public:
    // dB added to the same full-velocity steps (0..12). 0 = off, so patches saved before it sound unchanged.
    float laneAccentLevel[kNumLanes];
 
+   // ---- per step trig data (Drum panel Step page) ----------------------
+   float stepProb[kNumLanes][kMaxSteps];        // 0..1 chance the hit plays, 1 = always
+   int stepCond[kNumLanes][kMaxSteps] = {};     // 0 = none, see CondName
+   float stepNudge[kNumLanes][kMaxSteps] = {};  // micro timing, -0.48..0.48 of a step
+   // ---- per lane: own length, reverse, filter --------------------------
+   int laneSteps[kNumLanes] = {};    // 0 = follow numSteps, else 1..32 (polymeter)
+   bool laneReverse[kNumLanes] = {};
+   int laneFilter[kNumLanes] = {};   // 0 off, 1 low-pass, 2 high-pass
+   float laneCutoff[kNumLanes];      // 0..1 -> 20 Hz..20 kHz (log)
+   float laneReso[kNumLanes] = {};   // 0..1
+   bool fill = false;                // live, not saved: the panel's FILL button is held
+
    // Decimated min/max waveform for each lane card's visualizer, filled
    // once at load time (see FinishLaneBuffer) - mirrors SamplerNode's
    // waveformMin/Max/waveformCacheCount, just per-lane and smaller.
@@ -189,6 +217,10 @@ public:
    // Which library groove / part last landed here (ApplyPattern). Saved, but
    // informational: hand-editing steps afterwards does not clear it.
    std::string patternName;
+   // The Drums panel's page: its name (empty shows the node title) and colour as 0xRRGGBB (0 = none).
+   std::string pageName;
+   unsigned int pageColor = 0;
+   int pageOrder = 0; // place in the panel's page strip; ties keep canvas order
    int patternPart = 0; // 0 = A, 1 = B, 2 = C
    bool run = true;
 
@@ -256,6 +288,9 @@ private:
 
    std::string laneFilePath[kNumLanes];
    std::string laneFileName[kNumLanes];
+   // The lane's sample came from a kit (a groove filled it), not from the user: the next groove may swap it for
+   // its own genre's kit, as Logic's Drummer changes kit with the style. A sample the user loads clears it.
+   bool laneKit[kNumLanes] = {};
    std::string laneStatus[kNumLanes] = { "--", "--", "--", "--", "--", "--", "--", "--" };
    // Captured at load time, main thread - the decay coefficient scales to
    // this. Reading it here rather than reaching into the audio thread's
@@ -294,6 +329,15 @@ private:
    float mLastGlobalDecay = -99.0f;
    float mLastGlobalPitch = -999.0f;
    float mLastGlobalPan = -99.0f;
+   float mLastStepProb[kNumLanes][kMaxSteps];
+   int mLastStepCond[kNumLanes][kMaxSteps];
+   float mLastStepNudge[kNumLanes][kMaxSteps];
+   int mLastLaneSteps[kNumLanes];
+   bool mLastLaneReverse[kNumLanes];
+   int mLastLaneFilter[kNumLanes];
+   float mLastLaneCutoff[kNumLanes];
+   float mLastLaneReso[kNumLanes];
+   bool mLastFill = false;
    bool mFirstCook = true;
    // The rate the decay/transient coefficients currently pushed were
    // computed against. PrepareToPlay may run after an earlier cook already

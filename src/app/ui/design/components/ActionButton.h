@@ -13,6 +13,7 @@
 #include "app/ui/design/Tokens.gen.h"
 #include "app/ui/design/UiAnim.h"
 #include "app/ui/design/GlyphDraw.h"
+#include "app/selftest/UiAudit.h"
 
 namespace app { ImVec4 AccentEmphasisSelected(); bool IsThemeLight(); }
 
@@ -48,12 +49,18 @@ namespace ActionButton
       const ImVec2 ts = ImGui::CalcTextSize(shown.c_str());
       const float h = size.y > 0.0f ? size.y : ImGui::GetFrameHeight();
       const float w = size.x < 0.0f ? std::max(1.0f, ImGui::GetContentRegionAvail().x + size.x + 1.0f)
-                                    : std::max(size.x, ts.x + (glyph != nullptr ? 20.0f : 0.0f) + 2.0f * tok::space_2);
+                                    : size.x > 0.0f
+                                    // A given width is a layout cell (a strip that must end flush): kept unless the
+                                    // label would not fit with even the small padding.
+                                    ? std::max(size.x, ts.x + (glyph != nullptr ? 20.0f : 0.0f) + 2.0f * tok::space_1)
+                                    : ts.x + (glyph != nullptr ? 20.0f : 0.0f) + 2.0f * tok::space_2;
       const ImVec2 p = ImGui::GetCursorScreenPos();
       if (ImGui::ButtonLabelHook != nullptr)
          ImGui::ButtonLabelHook(label); // headless --describe lists the buttons a node draws, as ImGui::Button does
       const bool clicked = ImGui::InvisibleButton(label, ImVec2(w, h));
       const bool held = ImGui::IsItemActive();
+      if (kind == Kind::Selected)
+         UiAudit::NoteOn();
       const float hv = UiAnim::Hover(ImGui::GetItemID(), ImGui::IsItemHovered(), tok::motion_hover_in, tok::motion_hover_out);
       const bool light = app::IsThemeLight();
       const ImVec4 t = ImGui::GetStyleColorVec4(ImGuiCol_Text);
@@ -75,13 +82,24 @@ namespace ActionButton
          fill = ImVec4(std::clamp(fill.x + lift, 0.0f, 1.0f), std::clamp(fill.y + lift, 0.0f, 1.0f), std::clamp(fill.z + lift, 0.0f, 1.0f), 1.0f);
       }
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(fill), tok::radius_tile);
+      dl->AddRectFilled(p, ImVec2(p.x + w, p.y + h), ImGui::GetColorU32(fill), tok::radius_control);
       const float iconW = glyph != nullptr ? 20.0f : 0.0f; // 14px glyph + 6px gap
       const ImU32 ink = ImGui::GetColorU32(kind == Kind::Solo ? ImVec4(0.10f, 0.10f, 0.12f, 1.0f) : solid ? ImVec4(1, 1, 1, 1) : ImVec4(t.x, t.y, t.z, 0.85f));
       const float x0 = p.x + (w - ts.x - iconW) * 0.5f;
       if (glyph != nullptr)
          glyph::Draw(dl, ImVec2(std::round(x0 + 7.0f), std::round(p.y + h * 0.5f)), 14.0f, ink, glyph);
-      dl->AddText(ImVec2(std::round(x0 + iconW), std::round(p.y + (h - ts.y) * 0.5f)), ink, shown.c_str());
+      // Snap to device pixels, not points: 15 pt text in a 24 pt control sits at 4.5 pt, where ImGui's own frames put it.
+      const float px = std::max(1.0f, ImGui::GetIO().DisplayFramebufferScale.y);
+      const ImVec2 tp(std::round(x0 + iconW), std::round((p.y + (h - ts.y) * 0.5f) * px) / px);
+      dl->AddText(tp, ink, shown.c_str());
+      if (glyph != nullptr)
+      {
+         ImVec2 gmn, gmx;
+         glyph::InkBox(ImVec2(std::round(x0 + 7.0f), std::round(p.y + h * 0.5f)), 14.0f, glyph, gmn, gmx);
+         UiAudit::NoteInk(1, gmn, gmx, 14.0f, shown.c_str(), glyph);
+      }
+      if (!shown.empty())
+         UiAudit::NoteInk(glyph != nullptr ? 5 : 0, tp, ImVec2(tp.x + ts.x, tp.y + ts.y));
       return clicked;
    }
 

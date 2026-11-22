@@ -286,6 +286,7 @@ namespace Headless
                return true;
             }
             job.fps = (int)v;
+            job.fpsGiven = true;
          }
          else if (a == "--sample-rate")
          {
@@ -323,13 +324,15 @@ namespace Headless
                return true;
             job.wavPath = v;
          }
-         else if (a == "--batch" && job.mode == Mode::AudioSummary)
+         else if (a == "--batch" && (job.mode == Mode::AudioSummary || job.mode == Mode::Frame))
          {
             const char* v = next("--batch");
             if (v == nullptr)
                return true;
             job.batch = v;
          }
+         else if (a == "--serve" && job.mode == Mode::Frame)
+            job.serve = true;
          else if ((a == "--notes" || a == "--note-map" || a == "--stems" || a == "--stems-dir") && job.mode == Mode::AudioSummary)
          {
             const char* v = next(a.c_str());
@@ -469,7 +472,7 @@ namespace Headless
          }
          else if (a == "--no-audio")
             job.noAudio = true;
-         else if (a == "--timeline" && job.mode == Mode::AudioSummary)
+         else if (a == "--timeline" && (job.mode == Mode::AudioSummary || job.mode == Mode::Render))
             job.timeline = true;
          else if (a == "--plugin-params" && (job.mode == Mode::Render || job.mode == Mode::AudioSummary))
             job.pluginParams = true;
@@ -508,6 +511,11 @@ namespace Headless
          usageError = "--timeline measures the arrangement mix; --output picks a canvas sink, which Timeline mode does not feed";
          return true;
       }
+      if (job.timeline && !job.node.empty())
+      {
+         usageError = "--timeline renders the arrangement; --node taps a canvas node, which the Timeline does not draw";
+         return true;
+      }
       if (!job.stems.empty() && job.stemsDir.empty())
       {
          usageError = "--stems needs --stems-dir <dir> to say where the per-node WAVs go";
@@ -521,6 +529,11 @@ namespace Headless
       if (job.mode == Mode::Render && !job.node.empty() && job.duration <= 0.0)
       {
          usageError = "--render --node needs --duration S (there is no Output to take the length from)";
+         return true;
+      }
+      if (job.serve && job.batch.empty())
+      {
+         usageError = "--serve needs --batch <queue.txt>: the file new jobs are appended to";
          return true;
       }
       if (!job.geometry.empty() && job.node.empty())
@@ -554,7 +567,8 @@ namespace Headless
       // checked to give zero hits (docs/fix-briefs/headless-engine.md 3.1b); the corpus in
       // this repo is one file, which is not enough to promote it.
       return code == "W_UNUSED_NODE" || code == "W_NO_OUTPUT" || code == "W_DURATION_ROUNDED" || code == "W_OUT_OF_RANGE" ||
-             code == "W_OVERRIDDEN_BY_MODULATION" || code == "W_UNMAPPED_EVENT" || code == "W_NOTE_PAN_IGNORED" || code == "W_CLIPPING" || code == "W_SILENT" || code == "W_BLACK_FRAME";
+             code == "W_OVERRIDDEN_BY_MODULATION" || code == "W_UNMAPPED_EVENT" || code == "W_NOTE_PAN_IGNORED" || code == "W_CLIPPING" || code == "W_SILENT" || code == "W_BLACK_FRAME" ||
+             code == "W_SCENE_EMPTY";   // a bare 3D View stage is a valid start
    }
 
    void PromoteWarnings(std::vector<Issue>& warnings, std::vector<Issue>& errors)

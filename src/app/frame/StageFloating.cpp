@@ -14,14 +14,12 @@ namespace app
 {
 int DrawFloating(FrameCtx& fc)
 {
-   ImGuiStyle& style = ImGui::GetStyle();
    auto& window = fc.window;
    auto& frameId = fc.frameId;
    auto& isBenchB3 = fc.isBenchB3;
    auto& benchStagesSample = fc.benchStagesSample;
    auto& benchStagesCpuSample = fc.benchStagesCpuSample;
    auto& benchGpuPerNode = fc.benchGpuPerNode;
-   auto& vp = fc.vp;
 
 
       // Expression globals now live only in Settings > Expression Globals
@@ -44,6 +42,8 @@ int DrawFloating(FrameCtx& fc)
          DrawInspectorFloating();
       if (gPerfPanelOpen && gPerfPanelDock == kDockFloating)
          DrawPerfPanelFloating();
+      if (gMixerPanelOpen && gMixerPanelDock == kDockFloating)
+         DrawMixerPanelFloating();
 
 #ifndef NDEBUG
       // Stock ImGui windows, deliberately left un-themed (PushElevatedPanelStyle
@@ -80,7 +80,7 @@ int DrawFloating(FrameCtx& fc)
                   ImGui::PopID();
                }
             }
-            ImGui::EndChild();
+            EndChildSafe();
          }
          ImGui::End();
       }
@@ -198,7 +198,7 @@ int DrawFloating(FrameCtx& fc)
          }
          ImGui::Dummy(ImVec2(0.0f, tok::space_2));
          {
-            UiType::Scope s(UiType::Size::Title, UiType::Weight::Medium);
+            UiType::Scope s(UiType::Size::Body, UiType::Weight::Medium);
             Centered("Infinite", false);
          }
          char ver[64];
@@ -753,7 +753,11 @@ int DrawFloating(FrameCtx& fc)
          }
          if (frameId == 24)
          {
-            const bool ok = !drifted && firstRows > 0 && gModMatrixScrollMax <= 0.0f;
+            // The guard is against UNBOUNDED growth: a row count that climbs with each scroll step
+            // (the infinite-scroll bug). The filler is bounded and offset-independent, but it can
+            // overshoot the panel by up to 1 px (the last ruled row is sized from the measured
+            // rows, not the final one), so the scroll range may be 1.0 px and no more.
+            const bool ok = !drifted && firstRows > 0 && gModMatrixScrollMax <= 1.0f;
             printf("modmatrix geom (fill stable under scroll) rows=%d firstRows=%d "
                    "drifted=%d scrollMax=%.1f  %s\n",
                    gModMatrixFillRows, firstRows, (int)drifted, gModMatrixScrollMax,

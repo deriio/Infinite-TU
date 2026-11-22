@@ -1,6 +1,8 @@
+#include <set>
 // Per-frame modulation + palette application (runtime code that sat among the fixtures in main.cpp).
 #include "app/graph/LearningLog.h"
 #include "app/AppShared.h"
+#include "core/bci/BciTypes.h"
 #include "audio/VoiceMod.h"
 #include "plugin/engine/HostAudio.h"
 
@@ -165,6 +167,9 @@ void RefreshParamDriverFlags()
    }
 }
 
+// The crawler (selftest/UiAudit.cpp) holds every bound value still, so a value that changes after a click was the click.
+bool gModulationFrozen = false;
+
 void ApplyModulationAndPalette(int frameId, bool isNormalFrame)
 {
    // Live: pin this frame's clock to where the audio is now, interpolated
@@ -202,10 +207,18 @@ void ApplyModulationAndPalette(int frameId, bool isNormalFrame)
    // without depending on the order params happened to draw in - and it
    // means a cycle between two expressions just settles a frame late
    // rather than reading half-updated state mid-pass.
+   // Only nodes that carry an expression are snapshotted: nothing else reads the
+   // snapshot, and the common patch has none, so it costs no allocation at all.
    std::map<int, std::map<std::string, float>> paramSnapshot;
-   for (const ParamRef& ref : modulation.FrameParams())
-      if (ref.value != nullptr)
-         paramSnapshot[ref.nodeIndex][ref.name] = *ref.value;
+   if (!modulation.Expressions().empty())
+   {
+      std::set<int> exprNodes;
+      for (const auto& e : modulation.Expressions())
+         exprNodes.insert(e.first.first);
+      for (const ParamRef& ref : modulation.FrameParams())
+         if (ref.value != nullptr && exprNodes.count(ref.nodeIndex) != 0)
+            paramSnapshot[ref.nodeIndex][ref.name] = *ref.value;
+   }
 
    // Fixture only: put one envelope field into the expression state, so
    // the UI fixture also covers the fx badge and the clear button - the
@@ -410,11 +423,24 @@ void ApplyModulationAndPalette(int frameId, bool isNormalFrame)
    // gMachineDrivenModNodes below): a macro knob with an LFO wired into it is not a hand.
    gMachineDrivenModNodesPrev.swap(gMachineDrivenModNodes);
    gMachineDrivenModNodes.clear();
+   for (GraphNode& gn : gNodes)
+   {
+      if (auto* bs = dynamic_cast<BrainSourceNode*>(gn.node.get()))
+         bs->CookIfNeeded(frameId);
+   }
+   {
+      static float sPrevMasterPeak = 0.0f;
+      const float peakNow = AudioEngine::Instance().BlockPeakCeil();
+      const float delta = peakNow - sPrevMasterPeak;
+      sPrevMasterPeak = peakNow;
+      if (delta > 0.25f)
+         Bci::NotifyOutputTransient(delta, 0.0f);
+   }
    ExprGlobals::EvaluateAll(t);
    const std::map<std::string, float>& globals = ExprGlobals::Values();
    for (const ParamRef& ref : modulation.FrameParams())
    {
-      if (ref.value == nullptr)
+      if (ref.value == nullptr || gModulationFrozen)
          continue;
       const Modulation::Source src = modulation.ResolvedSourceFor(ref);
       if (src.nodeIndex >= 0)
@@ -693,7 +719,8 @@ void ApplyModulationAndPalette(int frameId, bool isNormalFrame)
            dynamic_cast<Sketch3DNode*>(gn.node.get()) != nullptr ||
            dynamic_cast<FieldElementNode*>(gn.node.get()) != nullptr ||
            dynamic_cast<VmpcNode*>(gn.node.get()) != nullptr ||
-           (gView3DOpen && dynamic_cast<Scene3DNode*>(gn.node.get()) != nullptr)))
+           (gView3DOpen && dynamic_cast<Scene3DNode*>(gn.node.get()) != nullptr) ||
+           (gView2DOpen && dynamic_cast<Scene2DNode*>(gn.node.get()) != nullptr)))
       {
          CookProbe::Scope probe(gn.node.get());
          gn.node->CookIfNeeded(frameId);
@@ -741,7 +768,18 @@ void ApplyModulationAndPalette(int frameId, bool isNormalFrame)
          scene->Items();
          gn.hiddenFromCanvas = scene->panelOnly;
       }
+      auto* doc = dynamic_cast<Scene2DNode*>(gn.node.get());
+      if (auto* out = dynamic_cast<OutputNode*>(gn.node.get()))
+         doc = dynamic_cast<Scene2DNode*>(out->Input().GetSource());
+      if (doc != nullptr)
+      {
+         doc->Layers();
+         gn.hiddenFromCanvas = doc->panelOnly;
+      }
    }
+   for (GraphNode& gn : gNodes)
+      if (auto* doc = dynamic_cast<Scene2DNode*>(gn.node.get()))
+         HideEffectNodes(*doc);
 
    // Colours, the same way and for the same reason: the registry was rebuilt
    // while the nodes drew, so every pointer here belongs to a node that
@@ -766,5 +804,15 @@ void ApplyModulationAndPalette(int frameId, bool isNormalFrame)
    // would stamp every hand move made with playback stopped at one instant.
    MovementLog::Capture(ImGui::GetTime(), isNormalFrame);
    LearningLog::Frame(ImGui::GetTime());
+}
+
+// Nodes a layer's effect stack owns stay off the canvas until "Show on canvas"; they still cook (the stack runs them).
+void HideEffectNodes(Scene2DNode& doc)
+{
+   for (const Scene2DNode::Layer& l : doc.Layers())
+      for (const Scene2DNode::Effect& e : l.effects)
+         if (e.uid != 0)
+            if (GraphNode* owned = FindNodeByUid(e.uid))
+               owned->hiddenFromCanvas = !e.shown;
 }
 }

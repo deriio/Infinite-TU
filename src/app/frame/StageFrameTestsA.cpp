@@ -8,7 +8,10 @@ void RunView3DDropTest(int frameId);
 void RunView3DNavTest(int frameId);
 void RunView3DEditTest(int frameId);
 void RunEditMeshRefineTest(int frameId);
+void RunFurTest(int frameId);
 void RunView3DPivotTest(int frameId);
+void RunPageMenuTest(int frameId, GLFWwindow* window);
+void RunMenuAliveTest(int frameId, GLFWwindow* window);
 
 void DrawFrameTestsA(FrameCtx& fc)
 {
@@ -1991,12 +1994,32 @@ void DrawFrameTestsA(FrameCtx& fc)
          RunRpcBatchTest();
       if (getenv("INFINITE_OSCCONTROLTEST") != nullptr && frameId == 4)
          RunOscControlTest();
+      if (getenv("INFINITE_PARAMRESETTEST") != nullptr && frameId == 4)
+         RunParamResetTest();
+      if (getenv("INFINITE_CUSTOMAGENTTEST") != nullptr && frameId == 4)
+         RunCustomAgentTest();
       if (getenv("INFINITE_HISTORYTEST") != nullptr && frameId == 4)
          RunHistoryTest();
       if (getenv("INFINITE_CLIPBOARDTEST") != nullptr && frameId == 4)
          RunClipboardTest();
       if (getenv("INFINITE_VIEW3DTEST") != nullptr && frameId == 4)
          RunView3DTest();
+      // The docks need drawn frames, so they are checked over the frames before the document tests.
+      if (getenv("INFINITE_MIXERPANELTEST") != nullptr && frameId >= 4)
+         MixerPanelTestStep(frameId);
+      if (getenv("INFINITE_AB2D") != nullptr && frameId == 4)
+      {
+         const int abFails = View2DAffinityAb(getenv("INFINITE_AB2D"));
+         printf("AB2D %s\n", abFails == 0 ? "OK" : "FAIL");
+         fflush(stdout);
+         std::_Exit(abFails == 0 ? 0 : 1);
+      }
+      if (getenv("INFINITE_VIEW2DTEST") != nullptr && frameId >= 4 && View2DDockTestStep(frameId))
+         RunView2DTest();
+      if (getenv("INFINITE_PAGEMENUTEST") != nullptr)
+         RunPageMenuTest(frameId, window);
+      if (getenv("INFINITE_MENUALIVETEST") != nullptr)
+         RunMenuAliveTest(frameId, window);
       if (getenv("INFINITE_VIEW3DNAVTEST") != nullptr)
          RunView3DNavTest(frameId);
       if (getenv("INFINITE_VIEW3DEDITTEST") != nullptr)
@@ -2005,6 +2028,8 @@ void DrawFrameTestsA(FrameCtx& fc)
          RunView3DPivotTest(frameId);
       if (getenv("INFINITE_EDITMESHREFINETEST") != nullptr)
          RunEditMeshRefineTest(frameId);
+      if (getenv("INFINITE_FURTEST") != nullptr)
+         RunFurTest(frameId);
       if (getenv("INFINITE_VIEW3DTEST") != nullptr && getenv("INFINITE_VIEW3DSHOT") == nullptr && (frameId == 7 || frameId == 8))
          RunView3DMenuTest(frameId);
       if (getenv("INFINITE_VIEW3DTEST") != nullptr && getenv("INFINITE_VIEW3DSHOT") == nullptr && (frameId == 9 || frameId == 11))
@@ -2484,6 +2509,8 @@ void DrawFrameTestsA(FrameCtx& fc)
 
       // Debug builds: every item of every audited state checked, sliders dragged (docs/plans/ui-system/ui-audit.md).
       FrameTest_UIAUDIT(frameId, window);
+      FrameTest_JOURNEYS(frameId, window);
+      FrameTest_CRAWL(frameId, window);
 
       // Curve Editor M8: open on 8 MSEG pages costs at most 1 ms a frame.
       FrameTest_CURVEBENCH(frameId, window);
@@ -2493,6 +2520,15 @@ void DrawFrameTestsA(FrameCtx& fc)
 
       // Curve Editor motion grade: + Position on a selected Transform makes three bound X Y Z pages.
       FrameTest_CURVEMOTIONTEST(frameId, window);
+
+      // Field Patcher: box edits reach the node, scratch pages export, Value mode, pages survive save.
+      FrameTest_FIELDPATCHERTEST(frameId, window);
+
+      // Canvas Link: arm, a real canvas click picks (ineligible ignored), Esc cancels, one pick at a time.
+      FrameTest_CANVASLINKTEST(frameId, window);
+
+      // The Timeline export in the app, for comparing with --render --timeline (H2).
+      FrameTest_TIMELINEEXPORTTEST(frameId, window);
 
       // Keyed mod/expr on a Star: lands on the named control, survives a shape change.
       FrameTest_KEYEDSTARTEST(frameId, window);

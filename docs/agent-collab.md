@@ -53,7 +53,7 @@ git fetch origin && git merge origin/tu/main     # merge, не rebase — ист
 
 Открыть Pull Request **из `tu/<имя>` в `tu/main`** (не в `main` и не в `my/main`!):
 ```bash
-gh pr create --base tu/main --head tu/<имя> --title "..." --body "что сделано / как проверить"
+gh pr create --repo deriio/Infinite-TU --base tu/main --head tu/<имя> --title "..." --body "что сделано / как проверить"
 ```
 turiaart (или её агент) смотрит и сливает в `tu/main`. После слияния ветку задачи можно удалить.
 

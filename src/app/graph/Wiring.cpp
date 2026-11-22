@@ -1,4 +1,5 @@
 // Cable / slot compatibility, connect, schema probe, cluster links, spawn (moved verbatim from main.cpp).
+#include "core/Notices.h"
 #include "app/AppShared.h"
 #include "app/graph/PortProbeCache.h"
 
@@ -140,6 +141,7 @@ namespace app
          s.noteNodeUid = lane.noteNodeUid;
          s.scaleSnap = lane.scaleSnap;
          s.drumRows = lane.drumRows;
+         s.pageOrder = lane.pageOrder;
          for (const Arrange::Clip& c : lane.clips)
             s.clips.push_back(ArrangeClipToRecord(c));
          // Session slots ride in the same list, flagged by sessionScene.
@@ -240,6 +242,7 @@ namespace app
          lane.noteNodeUid = s.noteNodeUid;
          lane.scaleSnap = s.scaleSnap;
          lane.drumRows = s.drumRows;
+         lane.pageOrder = s.pageOrder;
          lane.blendMode = 0; // legacy lane-wide mode migrates onto each clip below
          lane.opacity = s.opacity;
          lane.gainDb = s.gainDb;
@@ -387,6 +390,8 @@ namespace app
          return 1;
       if (dynamic_cast<PaletteNode*>(gn.node.get()) != nullptr)
          return 1; // the reference image, when it comes from the graph
+      if (auto* sh = dynamic_cast<ShadeNode*>(gn.node.get()))
+         return sh->ShadeInputCount();
       if (auto* fp = dynamic_cast<FieldPixelNode*>(gn.node.get()))
          // Dynamic pins, Phase 2b (build step 13, §5.7): no native input pin
          // (device-catalog simplification) - one slot per currently-declared
@@ -438,11 +443,11 @@ namespace app
       if (dynamic_cast<OceanNode*>(gn.node.get()) != nullptr)
          return 1;
       if (dynamic_cast<MaterialNode*>(gn.node.get()) != nullptr)
-         return 1 + kMapCount; // geometry, then one pin per material channel
+         return 4 + kMapCount; // geometry, one pin per material channel, field, then layer and its mask
       if (dynamic_cast<Render3DNode*>(gn.node.get()) != nullptr)
          return Render3DNode::kEnvSlot + 1; // geo, camera, lights, env
-      if (dynamic_cast<GeometryOpNode*>(gn.node.get()) != nullptr)
-         return 1;
+      if (auto* op = dynamic_cast<GeometryOpNode*>(gn.node.get()))
+         return op->op == GeometryOpNode::kFur ? 2 : 1; // Fur: geo, then an optional guide curve
       if (dynamic_cast<DisplacementNode*>(gn.node.get()) != nullptr)
          return 2; // geometry, then the displacement texture
       if (dynamic_cast<AudioDisplacementNode*>(gn.node.get()) != nullptr)
@@ -603,6 +608,8 @@ namespace app
          return slot == 0 ? &ht->Input() : nullptr;
       if (auto* pal = dynamic_cast<PaletteNode*>(gn.node.get()))
          return slot == 0 ? &pal->Input() : nullptr;
+      if (auto* sh = dynamic_cast<ShadeNode*>(gn.node.get()))
+         return sh->ShadeInput(slot);
       if (auto* fp = dynamic_cast<FieldPixelNode*>(gn.node.get()))
          // Dynamic pins, Phase 2b (build step 13, §5.7): no native input pin
          // (device-catalog simplification) - slot 0..N-1 route to the
@@ -621,7 +628,11 @@ namespace app
       // Slot 0 is a geometry pin, wired by pointer, not an image cable; the
       // rest are the material channels in MaterialMap order.
       if (auto* mat = dynamic_cast<MaterialNode*>(gn.node.get()))
+         {
+         if (slot == MaterialNode::kFieldSlot) return &mat->FieldInput();
+         if (slot == MaterialNode::kMaskSlot) return &mat->LayerMaskInput();
          return (slot >= 1 && slot <= kMapCount) ? &mat->MapInput(slot - 1) : nullptr;
+      }
       // Slot 0 is the geometry pin, wired by pointer in ConnectGeometrySlot;
       // slot 1 is the height/vector displacement texture.
       if (auto* disp = dynamic_cast<DisplacementNode*>(gn.node.get()))
@@ -763,6 +774,12 @@ namespace app
    }
 
 
+   bool IsShadeSource(const INode* n)
+   {
+      return dynamic_cast<const ShadeNode*>(n) != nullptr;
+   }
+
+
    // Whether an output pin carrying the given src-side facts may connect into
    // `dstNode`'s input `slot`. Mirrors the geometry/camera/light/audio/render
    // input-pin rules every drag validation and drop-to-spawn suggestion needs,
@@ -774,7 +791,7 @@ namespace app
                                IGeometrySource* srcGeometry, CameraNode* srcCamera,
                                LightNode* srcLight,
                                bool srcIsEnvironment, bool srcIsAudioNode, bool srcIsNoteSource,
-                               bool srcIsPredictor)
+                               bool srcIsPredictor, bool srcIsShade)
    {
       if (dstNode == nullptr || dstNode->node == nullptr)
          return false;
@@ -840,6 +857,8 @@ namespace app
          else
             return false;
       }
+      else if (dstMaterial != nullptr && slot == MaterialNode::kLayerSlot)
+         return dynamic_cast<MaterialNode*>(srcGeometry) != nullptr; // row 4.1: a Material only (one on itself is ignored)
       else if (dstNode->node->GeometryInputSlot(slot) != nullptr)
          return srcGeometry != nullptr && srcCamera == nullptr && srcLight == nullptr;
       else if (dstMaterial != nullptr)
@@ -854,6 +873,12 @@ namespace app
          return false; // 3D cables only go into 3D nodes
       else if (dstNode->node->ModulatorInputSlot(slot) != nullptr && !dstWantsImage)
          return srcIsModulator;
+      // A Shade field pin reads its input only as another Shade output (ShadeBuild::Input returns the fallback for
+      // any other picture), so a plain picture is refused here instead of being accepted and then silently dropped.
+      // Shade Image's picture pin (slot 1) is the exception: it reads any picture as a texture.
+      else if (dynamic_cast<ShadeNode*>(dstNode->node.get()) != nullptr &&
+               !(dynamic_cast<ShadeImageNode*>(dstNode->node.get()) != nullptr && slot == 1))
+         return srcIsShade && srcIsImage;
       else
          return srcIsImage;
    }
@@ -1069,6 +1094,7 @@ namespace app
       bool audio = false;
       bool note = false;
       bool predictor = false;
+      bool shade = false;
    };
 
 
@@ -1088,6 +1114,7 @@ namespace app
       c.audio = audioSource != nullptr && audioSource->IsAudioOutputIndex(srcOutputIndex);
       c.note = dynamic_cast<INoteSource*>(n) != nullptr;
       c.predictor = dynamic_cast<IPredictor*>(n) != nullptr;
+      c.shade = IsShadeSource(n);
       return c;
    }
 
@@ -1095,7 +1122,7 @@ namespace app
    bool CapsAcceptedBy(const SrcCaps& c, GraphNode* dst, int slot)
    {
       return IsInputSlotCompatible(dst, slot, c.modulator, c.palette, c.geometry, c.camera, c.light,
-                                   c.environment, c.audio, c.note, c.predictor);
+                                   c.environment, c.audio, c.note, c.predictor, c.shade);
    }
 
 
@@ -1140,6 +1167,9 @@ namespace app
       if (srcIsAudioNode && WouldCreateAudioCycle(srcNode->node.get(), dstNode->node.get()))
       {
          outError = "would create an audio feedback loop";
+         // Shown too, so a refused send return (mixer-panel B1) or agent edit says why on screen.
+         Notices::Post(Notices::Level::Warning, "audio.cycle", T("Can't connect"),
+                       T("That would feed the audio back into itself."));
          return false;
       }
       if (srcIsNoteSource && WouldCreateNoteCycle(srcNode->node.get(), dstNode->node.get()))
@@ -1287,6 +1317,9 @@ namespace app
                                    KindOfOutput(caps), caps.modulator || caps.predictor });
          }
          t->hardwareDriven = gn->node->IsHardwareDriven();
+         t->liveInput = gn->node->IsLiveInput();
+         t->machineDependent = gn->node->IsMachineDependent();
+         t->profileDependent = gn->node->IsProfileDependent();
          t->canBypass = CanBypass(*gn);
       }
       return t;
@@ -1544,13 +1577,120 @@ namespace app
       if (srcNode == nullptr)
          return result;
 
-      // fork: answered from the per-type port cache (PortProbeCache.cpp) - no node is constructed per drop.
-      // A Predictive LFO / Macro (kSrcPredictor) drives parameters only, so nothing is a legal drop target for it.
-      const uint16_t kind = SrcKindOfOutput(srcNode, srcOutputIndex);
+      const bool srcIsModulator =
+         dynamic_cast<IModulator*>(srcNode->node.get()) != nullptr ||
+         (srcOutputIndex >= 0 && srcOutputIndex < srcNode->node->OutputCount() && srcNode->node->ModulatorOutput(srcOutputIndex) != nullptr);
+      auto* srcPalette = dynamic_cast<IPaletteSource*>(srcNode->node.get());
+      auto* srcGeometry = dynamic_cast<IGeometrySource*>(srcNode->node.get());
+      if (srcGeometry != nullptr && !srcGeometry->IsGeometryOutputIndex(srcOutputIndex))
+         srcGeometry = nullptr;
+      auto* srcCamera = dynamic_cast<CameraNode*>(srcNode->node.get());
+      auto* srcLight = dynamic_cast<LightNode*>(srcNode->node.get());
+      const bool srcIsEnvironment = dynamic_cast<EnvironmentNode*>(srcNode->node.get()) != nullptr;
+      auto* srcAudioSource = dynamic_cast<IAudioSource*>(srcNode->node.get());
+      const bool srcIsAudioNode = srcAudioSource != nullptr && srcAudioSource->IsAudioOutputIndex(srcOutputIndex);
+      const bool srcIsNoteSource = dynamic_cast<INoteSource*>(srcNode->node.get()) != nullptr;
+      // A Predictive LFO / Macro drives parameters only, so nothing in the
+      // catalogue is a legal drop target for it - suggesting anything here
+      // would offer a link IsInputSlotCompatible then refuses.
+      const bool srcIsPredictor = dynamic_cast<IPredictor*>(srcNode->node.get()) != nullptr;
+      const bool srcIsShade = IsShadeSource(srcNode->node.get());
+
+      // The answer depends only on what kind of source this is, so it is kept per kind: building every node type
+      // again on each cable drop cost a visible stall.
+      const unsigned kindKey = (srcIsModulator ? 1u : 0u) | (srcPalette != nullptr ? 2u : 0u) | (srcGeometry != nullptr ? 4u : 0u) |
+                               (dynamic_cast<MaterialNode*>(srcGeometry) != nullptr ? 8u : 0u) | (srcCamera != nullptr ? 16u : 0u) |
+                               (srcLight != nullptr ? 32u : 0u) | (srcIsEnvironment ? 64u : 0u) | (srcIsAudioNode ? 128u : 0u) |
+                               (srcIsNoteSource ? 256u : 0u) | (srcIsPredictor ? 512u : 0u) | (srcIsShade ? 1024u : 0u);
+      static std::map<unsigned, std::vector<std::pair<std::string, std::string>>> sByKind;
+      static size_t sTypeCount = 0;
+      size_t typeCount = 0;
       for (const std::string& category : NodeFactory::Instance().GetCategories())
+         typeCount += NodeFactory::Instance().GetNodesInCategory(category).size();
+      if (typeCount != sTypeCount)   // a plugin or macro type registered since: start over
+      {
+         sByKind.clear();
+         sTypeCount = typeCount;
+      }
+      auto cached = sByKind.find(kindKey);
+      const bool have = cached != sByKind.end();
+      if (have)
+         result = cached->second;
+      for (const std::string& category : have ? std::vector<std::string>() : NodeFactory::Instance().GetCategories())
+      {
          for (const std::string& name : NodeFactory::Instance().GetNodesInCategory(category))
-            if (IsUserSpawnable(name) && TypeAcceptsKind(name, kind))
+         {
+            if (!IsUserSpawnable(name))
+               continue;
+
+            GraphNode probe;
+            probe.node.reset(NodeFactory::Instance().MakeNode(name));
+            if (!probe.node)
+               continue;
+
+            const int slotCount = InputCountFor(probe);
+            bool compatible = false;
+            for (int slot = 0; slot < slotCount; ++slot)
+            {
+               if (IsInputSlotCompatible(&probe, slot, srcIsModulator, srcPalette, srcGeometry,
+                                          srcCamera, srcLight, srcIsEnvironment,
+                                          srcIsAudioNode, srcIsNoteSource, srcIsPredictor, srcIsShade))
+               {
+                  compatible = true;
+                  break;
+               }
+            }
+            if (compatible)
                result.emplace_back(name, category);
+         }
+      }
+
+      if (!have)
+         sByKind[kindKey] = result;
+
+      // Rank suggestions so the most useful downstream nodes appear first:
+      // 1) domain-specific primary sinks (e.g. Output/Blend for video, Scene/Render for 3D, AudioOut for audio)
+      // 2) CategoryColors::SemanticRank(category)
+      // 3) DisplayName(name)
+      auto rankOf = [&](const std::pair<std::string, std::string>& item) -> int {
+         const std::string& n = item.first;
+         if (srcGeometry != nullptr)
+         {
+            if (n == "Scene" || n == "Render3D" || n == "Transform3D" || n == "Material")
+               return 0;
+         }
+         else if (srcIsAudioNode)
+         {
+            if (n == "AudioOut" || n == "Gain" || n == "Mixer" || n == "Spectrum" || n == "Waveform")
+               return 0;
+         }
+         else if (srcIsNoteSource)
+         {
+            if (n == "Synthesizer" || n == "Sampler" || n == "MidiOut" || n == "Arpeggiator")
+               return 0;
+         }
+         else if (srcPalette != nullptr)
+         {
+            if (n == "ColorRamp" || n == "Shape" || n == "Background" || n == "Gradient")
+               return 0;
+         }
+         else if (!srcIsModulator && !srcIsPredictor)
+         {
+            if (n == "Output" || n == "Blend" || n == "Transform" || n == "Blur" || n == "ColorAdjust" || n == "Feedback")
+               return 0;
+         }
+         return 1;
+      };
+      std::stable_sort(result.begin(), result.end(), [&](const auto& a, const auto& b) {
+         const int ra = rankOf(a), rb = rankOf(b);
+         if (ra != rb)
+            return ra < rb;
+         const int ca = CategoryColors::SemanticRank(a.second);
+         const int cb = CategoryColors::SemanticRank(b.second);
+         if (ca != cb)
+            return ca < cb;
+         return DisplayName(a.first) < DisplayName(b.first);
+      });
       return result;
    }
 
@@ -1651,6 +1791,9 @@ namespace app
       gn.node.reset(node);
       gn.typeName = typeName;
       gn.category = category;
+      // Shade nodes moved from 3D to Shader: a patch saved before that still names 3D.
+      if (category == "3D" && typeName.rfind("Shade ", 0) == 0)
+         gn.category = NodeFactory::Instance().CategoryOf(typeName);
       gn.index = gNextIndex++;
       // Every node gets one, not just the ones an arrangement clip happens to
       // point at: a node can be added to the timeline at any later moment, and
@@ -1861,6 +2004,10 @@ namespace app
          fp->Apply();
       if (auto* fs = dynamic_cast<FieldSampleNode*>(node))
          fs->Apply();
+      if (auto* rbg = dynamic_cast<RemoveBgNode*>(node))
+         rbg->ReloadDerived();
+      if (auto* sfn = dynamic_cast<SpectralFieldNode*>(node))
+         sfn->Apply();
       if (auto* fsn = dynamic_cast<FieldSynthNode*>(node))
          fsn->Apply();
       if (auto* fnn = dynamic_cast<FieldNotesNode*>(node))

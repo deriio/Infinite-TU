@@ -53,6 +53,8 @@ public:
       float objHi[3] = { 1.0f, 1.0f, 1.0f };
       float normalStrength = 1.0f;
       int normalBump = 0;             // 1: the normal map is a grayscale height
+      int fieldProgram = 0;           // Field material program (MaterialRegistry id) run after the maps, 0 none
+      float fieldParams[16] = {};     // its live knobs (row 3.4), texels 20..23 of the material record
 
       static PtMaterial FromLinear(float r, float g, float b, float rough = 0.5f, float metal = 0.0f,
                                    float emR = 0.0f, float emG = 0.0f, float emB = 0.0f);
@@ -100,6 +102,7 @@ public:
    void SetWorldColorLinear(float r, float g, float b);
    void SetExposure(float exp) { exposure = exp; }
    void SetTonemap(int mode) { tonemap = mode; }
+   void SetFieldTime(float seconds) { mFldTime = seconds; } // t for Field material programs
 
    void SetCameraLookAt(const float eye[3], const float target[3], const float up[3],
                         float fovDegrees, float aspect);
@@ -137,6 +140,11 @@ public:
    // Renders from 0 up to `totalSpp` samples and resolves the final image.
    bool RenderToSpp(int width, int height, int totalSpp);
 
+   // Raster's probe grid: traces `spp` samples of `dirs` directions from each probe of a dims grid starting at lo,
+   // spaced by step, and reads back one RGBA32F texel per probe (x) and direction (y, bottom row first): the
+   // radiance arriving from that direction, alpha 1 where the first hit was a back face (the probe is inside).
+   bool TraceProbes(const float lo[3], const float step[3], const int dims[3], int dirs, int spp, std::vector<float>& out);
+
    // Reads the resolved sRGB display image back as top-to-bottom RGBA8 pixels.
    bool ReadDisplayRGBA8(std::vector<unsigned char>& outRgba, int& outW, int& outH) const;
 
@@ -166,6 +174,7 @@ private:
    };
 
    bool EnsureShaders();
+   unsigned int CompileTrace(); // the trace shader with mFldGlsl spliced in (falls back to none)
    bool EnsureTargets(int w, int h);
    void UploadBufferTex(BufferTex& bt, const std::vector<float>& data, const char* label);
    void DestroyBufferTex(BufferTex& bt);
@@ -194,6 +203,10 @@ private:
    int mHeight = 0;
 
    unsigned int mProgTrace = 0;
+   std::string mFldGlsl;               // Field material library spliced into the trace shader, empty for none
+   unsigned long long mFldKey = 0;     // its program set; the trace shader relinks when it changes
+   std::vector<int> mFldIds;           // the ids drawn, for finding the one that fails (row 1.5)
+   float mFldTime = 0.0f;
    unsigned int mProgDisplay = 0;
    bool mShadersTried = false;
    bool mSceneUploaded = false;
@@ -208,6 +221,10 @@ private:
    float mLensRadius = 0.0f;
    float mFocusDist = 4.0f;
    float mBokeh[3] = { 0.0f, 0.0f, 1.0f };
+   bool mProbeMode = false;
+   float mProbeLo[3] = {};
+   float mProbeStep[3] = {};
+   int mProbeDims[3] = { 1, 1, 1 };
    float mWorldColor[3] = { 0.0f, 0.0f, 0.0f };
    unsigned int mEnvTex = 0;
    bool mEnvGradient = false;

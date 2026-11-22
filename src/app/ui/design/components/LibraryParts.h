@@ -16,9 +16,9 @@
 
 namespace LibraryParts
 {
-   constexpr float kFieldH = 28.0f;
-   constexpr float kRowH = 24.0f;
-   constexpr float kHeaderH = 28.0f;
+   constexpr float kFieldH = tok::control_h;
+   constexpr float kRowH = tok::row_h;
+   constexpr float kHeaderH = tok::row_h;
 
    // Search field: rounded well, magnifier at the left, clear (x) at the right while there is text.
    // Returns true when the text changed. `buf` is a char array of `cap` bytes.
@@ -30,10 +30,11 @@ namespace LibraryParts
       ImDrawList* dl = ImGui::GetWindowDrawList();
       const float padL = tok::space_2 + 16.0f + tok::space_1;   // well edge + magnifier + gap
       const float padR = tok::space_2 + 16.0f;                  // room for the clear button
+      (void)padR;
 
       ImGui::PushID(id);
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(padL, (kFieldH - ImGui::GetFontSize()) * 0.5f));
-      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_tile);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_control);
       ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
       ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(text.x, text.y, text.z, CategoryColors::kFieldWellTint)); // the contrast guard measures text against this
       ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, ImVec4(text.x, text.y, text.z, 0.10f));
@@ -58,7 +59,7 @@ namespace LibraryParts
       {
          const ImVec4 a = app::AccentEmphasisSelected();
          dl->AddRect(p, ImVec2(p.x + w, p.y + kFieldH), ImGui::GetColorU32(ImVec4(a.x, a.y, a.z, 0.85f * focus)),
-                     tok::radius_tile, 0, 1.0f);
+                     tok::radius_control, 0, 1.0f);
       }
       glyph::Draw(dl, ImVec2(p.x + tok::space_2 + 8.0f, p.y + kFieldH * 0.5f), 16.0f,
                   ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, active ? 0.8f : 0.5f)), IconsInfinite::Search);
@@ -114,7 +115,7 @@ namespace LibraryParts
       const ImVec4 t = ImGui::GetStyleColorVec4(ImGuiCol_Text);
       ImDrawList* dl = ImGui::GetWindowDrawList();
       dl->AddRectFilled(p, ImVec2(p.x + w, p.y + kFieldH),
-                        ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, (down ? 0.14f : 0.07f + 0.04f * hv))), tok::radius_tile);
+                        ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, (down ? 0.14f : 0.07f + 0.04f * hv))), tok::radius_control);
       const float iconSize = 14.0f;
       const float textW = ImGui::CalcTextSize(label).x;
       const float x0 = p.x + std::floor((w - (iconSize + tok::space_2 + textW)) * 0.5f);
@@ -129,7 +130,7 @@ namespace LibraryParts
    // Small square icon action (refresh / remove) on a folder row.
    inline bool IconButton(const char* id, Icon icon, bool enabled = true, bool danger = false)
    {
-      const float s = 24.0f;
+      const float s = tok::control_h;
       const ImVec2 p = ImGui::GetCursorScreenPos();
       ImGui::PushID(id);
       if (!enabled)
@@ -141,7 +142,7 @@ namespace LibraryParts
       const float hv = UiAnim::Hover(ImGui::GetItemID(), hot, tok::motion_hover_in, tok::motion_hover_out);
       const ImVec4 t = ImGui::GetStyleColorVec4(ImGuiCol_Text);
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(p, ImVec2(p.x + s, p.y + s), ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, 0.07f + 0.05f * hv)), tok::radius_tile);
+      dl->AddRectFilled(p, ImVec2(p.x + s, p.y + s), ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, 0.07f + 0.05f * hv)), tok::radius_control);
       const ImU32 col = (danger && hot) ? tok::U32(tok::pal::c_E63C3CFF)
                                          : ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, enabled ? 0.45f + 0.45f * hv : 0.3f));
       DrawIcon(dl, ImVec2(p.x + s * 0.5f, p.y + s * 0.5f), 13.0f, col, icon);
@@ -156,7 +157,7 @@ namespace LibraryParts
       const float top = first ? tok::space_1 : tok::space_3;
       const ImVec2 p = ImGui::GetCursorScreenPos();
       ImGui::Dummy(ImVec2(w, top + kHeaderH - tok::space_2));
-      UiType::Scope ts(UiType::Size::Title, UiType::Weight::Semibold);
+      UiType::Scope ts(UiType::Size::Body, UiType::Weight::Semibold);
       const ImVec4 text = ImGui::GetStyleColorVec4(ImGuiCol_Text);
       ImDrawList* dl = ImGui::GetWindowDrawList();
       const float y = std::round(p.y + top + (kHeaderH - tok::space_2 - ImGui::GetFontSize()) * 0.5f + 2.0f);
@@ -202,7 +203,7 @@ namespace LibraryParts
       const float o = down ? 0.12f : 0.07f * hv;
       if (o > 0.001f)
          dl->AddRectFilled(ImVec2(p.x + tok::space_1, p.y + 1.0f), ImVec2(p.x + w - tok::space_1, p.y + kRowH - 1.0f),
-                           ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, o)), tok::radius_tile);
+                           ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, o)), tok::radius_control);
       float x = p.x + tok::space_3;
       const float cy = p.y + kRowH * 0.5f;
       if (dot != nullptr)
@@ -210,7 +211,7 @@ namespace LibraryParts
          dl->AddCircleFilled(ImVec2(x + 3.0f, cy), 3.0f, ImGui::GetColorU32(ImVec4(dot->x, dot->y, dot->z, 1.0f)), 12);
          x += 6.0f + tok::space_2;
       }
-      UiType::Scope ts(UiType::Size::Title);
+      UiType::Scope ts(UiType::Size::Body);
       dl->AddText(ImVec2(x, std::round(cy - ImGui::GetFontSize() * 0.5f)), ImGui::GetColorU32(text), label.c_str());
 
       const ImVec2 trail(p.x + w - tok::space_3 - 6.0f, cy);
@@ -244,12 +245,12 @@ namespace LibraryParts
       const float o = down ? 0.12f : 0.07f * hv;
       if (o > 0.001f)
          dl->AddRectFilled(ImVec2(p.x + tok::space_1, p.y + 1.0f), ImVec2(p.x + w - tok::space_1, p.y + kRowH - 1.0f),
-                           ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, o)), tok::radius_tile);
+                           ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, o)), tok::radius_control);
       const float cy = p.y + kRowH * 0.5f;
       const float x = p.x + tok::space_3;
       glyph::Draw(dl, ImVec2(x + 7.0f, cy), 14.0f, ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, dim ? 0.35f : 0.6f)),
                   IconsInfinite::Folder);
-      UiType::Scope ts(UiType::Size::Title);
+      UiType::Scope ts(UiType::Size::Body);
       dl->AddText(ImVec2(x + 14.0f + tok::space_2, std::round(cy - ImGui::GetFontSize() * 0.5f)),
                   ImGui::GetColorU32(ImVec4(text.x, text.y, text.z, dim ? 0.45f : text.w)), label.c_str());
       glyph::Draw(dl, ImVec2(p.x + w - tok::space_3 - 6.0f, cy), 12.0f,
@@ -344,13 +345,13 @@ namespace LibraryParts
       const ImVec2 w1(w0.x + avail.x, w0.y + (height > 0.0f ? height : avail.y));
       const bool light = CategoryColors::IsThemeLight();
       ImDrawList* dl = ImGui::GetWindowDrawList();
-      dl->AddRectFilled(w0, w1, ImGui::GetColorU32(ImVec4(0, 0, 0, light ? 0.04f : 0.27f)), tok::radius_pill);
-      dl->AddRect(w0, w1, ImGui::GetColorU32(light ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f)), tok::radius_pill);
+      dl->AddRectFilled(w0, w1, ImGui::GetColorU32(ImVec4(0, 0, 0, light ? 0.04f : 0.27f)), tok::radius_container);
+      dl->AddRect(w0, w1, ImGui::GetColorU32(light ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f)), tok::radius_container);
       ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(tok::space_2, tok::space_2));
       ImGui::BeginChild(id, ImVec2(0, height > 0.0f ? height : 0.0f), ImGuiChildFlags_AlwaysUseWindowPadding);
       ImGui::PopStyleVar();
       ImGui::PopStyleColor();
    }
-   inline void EndWell() { ImGui::EndChild(); }
+   inline void EndWell() { EndChildSafe(); }
 }

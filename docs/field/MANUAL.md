@@ -1,6 +1,6 @@
 # The Field Language Manual
 
-Everything you need to write real Field kernels and build real devices: the domains, the syntax, the declarations, and the six node types that host them. Every code example is self-contained Field code you can paste into the matching Field node.
+Everything you need to write real Field kernels and build real devices: the domains, the syntax, the declarations, and the node types that host them. Every code example is self-contained Field code you can paste into the matching Field node.
 
 ## 1. What Field is, and why it exists
 
@@ -8,7 +8,7 @@ Infinite is a node-based audiovisual workstation: you build patches by wiring bo
 
 The one idea underneath all of Field is the **kernel**: a short body of code run once per element of some domain, automatically, forever. Write `col = vec3(uv.x, uv.y, 0.5)` and it runs once per pixel, 60 times a second, on the GPU: a shader. Write `P.y += sin(P.x * 4.0 + t) * 0.2` and it runs once per point in a mesh: a geometry deformer. Write `out = in * 0.5` and it runs once per audio sample: a DSP effect. You never say where it runs; Field infers that from which identifiers your code touches.
 
-Every example in this manual is valid, runnable Field code written against the six node types that ship in Infinite today. Chapter 13 covers the language additions that landed after v1.
+Every example in this manual is valid, runnable Field code written against the node types that ship in Infinite today. Chapter 13 covers the language additions that landed after v1.
 
 ## 2. The five domains
 
@@ -41,7 +41,7 @@ This is the shape that governs what can see what. `element`, `pixel` and `sample
 - Sample kernels live in the **Field Effect** node (an `in` pin to process) or the **Field Synth** node (note-driven `freq` and `gate`, no `in` pin).
 - Graph kernels live in the **Field Graph** node.
 
-See Chapter 9 for what each of the six nodes does.
+See Chapter 9 for what each of the first six nodes does; Chapter 15 covers the seventh, Spectral Field.
 
 ## 3. Core syntax
 
@@ -210,7 +210,7 @@ Live params on the graph node's own knobs forward into the emitted nodes, and th
 
 ## 9. Field node reference
 
-Field is exposed to the user as six node types, each hosting one domain's kernel. All six compile the same source-text grammar covered in Chapters 1 to 8; the only thing that changes is which reserved names are in scope and which backend the kernel is compiled to.
+Field is exposed to the user as seven node types, each hosting one domain's kernel (Chapter 15 covers the seventh, Spectral Field). All of them compile the same source-text grammar covered in Chapters 1 to 8; the only thing that changes is which reserved names are in scope and which backend the kernel is compiled to.
 
 | Node | Domain | What it does |
 |---|---|---|
@@ -420,3 +420,97 @@ if (tick(1/8) > 0.5) {
 - Vector literals are no longer mistaken for scalars by the constant folder.
 
 Presets added since v1 include Gray-Scott reaction-diffusion and a flow and advection pair (Pixel), Verlet Rope and Buckling Ribbon (Element), and the pixel illusion, nature and Field Effect and Synth libraries.
+
+## 14. Patching Field
+
+The Field Patcher shows a Field program as boxes and wires. The code stays the program: every box you add, wire you
+draw or number you drag is written back into the node's code, compiled, and kept as one undo step. Open the code and
+the boxes side by side and either one can be edited.
+
+```
+ Canvas: [Field Notes 1]  [Field Primitive 2]
+              |                 |
+              v   select one    v
+ +-- Field Patcher -----------------------------------------------+
+ | Field Notes 1 | Field Primitive 2 | Scratch 1 | + |       |
+ | rail | box canvas                          | Code | Box         |
+ |  o   |  [time]--->[*]--->[floor]--->[...]  | step = floor(t*4)  |
+ |  o   |                                     | ...                |
+ | Field Primitive  (ok)   9 boxes                                    |
+ +----------------------------------------------------------------+
+```
+
+### 14.1 Opening it
+
+| From | What happens |
+|---|---|
+| View > Field Patcher, the panel rail, or Shift+F | the panel docks at the bottom (or top) |
+| **Boxes** on a Field Notes, Field Primitive or Field Modifier body | the panel opens on that node's page |
+| selecting one of those nodes on the canvas | its page comes to the front, unless the front page is pinned |
+| File > Template library > Field patches | a scratch page with that starter |
+
+### 14.2 Pages
+
+One page per node. Right-click a page to pin it (it then stays in front whatever you select), close it, move it, or
+delete the node. A **scratch page** (+) belongs to no node yet. When it has an outlet, the footer offers **the down-arrow icon** to place
+it as a node:
+
+| The page has | It becomes |
+|---|---|
+| a play note box | Field Notes (with the publish output on if it also has a value or pulse outlet) |
+| a position, normal or colour outlet | Field Primitive |
+| only value or pulse outlets | Field Primitive in Value mode |
+
+Scratch pages are saved with the patch.
+
+### 14.3 Boxes
+
+The rail holds the ten families: sources, arithmetic, range, waves, logic, time and memory, random, geometry, music,
+inlets and outlets. Right-click the canvas, or drag a wire into empty space, to search every box by its name or Field
+word. Boxes the page's node cannot run are greyed out. Wire colours follow the kind: number, on/off, pulse, note,
+point, per-point. Pulse wires animate.
+
+Anything the boxes cannot show stays a **code** box with its text intact, so no program is ever lost by opening it.
+
+### 14.4 Value mode and publish
+
+**value** on Field Primitive turns it into a value source: no mesh, and its publish output carries the program's
+`publish`. Field Notes has the same **publish scalar output** toggle as the other Field nodes, so a melody page can
+also send a value or a pulse to any knob.
+
+```
+publish = 0 + (sin(t * 2) - -1) / (1 - -1) * (1 - 0) // Breathing light: 0..1, wire it to any knob
+```
+
+### 14.5 When a program breaks
+
+A broken program never silences the node: it keeps playing its last good program and the footer shows the error.
+Fix it in the boxes or the code and it takes over again.
+
+## 15. Spectral Field
+
+Spectral Field is the seventh node that hosts Field. It runs a kernel once per frequency bin: audio goes in, is cut into a spectrum by an STFT, your kernel runs on every bin, and the result is turned back into sound with a phase vocoder. The domain is **bin**, so a kernel that only touches bin identifiers compiles here and nowhere else.
+
+### 15.1 What the kernel can read and write
+
+| Name | Direction | Meaning |
+|---|---|---|
+| `bin` | read | index of this bin |
+| `bins` | read | number of bins in the frame |
+| `binhz` | read | centre frequency of this bin, in Hz |
+| `hop`, `sr` | read | hop size in samples, and the sample rate |
+| `mag`, `phase`, `freq` | read and write | the bin's magnitude, phase and true frequency; they start as the analysis values and behave like locals |
+| `mag.at(k)` | read | the magnitude of another bin `k` |
+| `state` | read and write | per-bin memory that survives from frame to frame (16 cells at most) |
+
+Writing `mag` alone is the normal case: the phase vocoder keeps the phase coherent. Writing `phase` or `freq` switches to raw mode, which resynthesises with the phase you wrote.
+
+The starter kernel that ships in the node is a low-pass built from these names: it scales `mag` by whether `binhz` is under the Cutoff control.
+
+### 15.2 Controls and cross-synthesis
+
+- **Size** is the frame length, 512 to 8192 (default 2048). A larger frame gives finer frequency detail and a longer latency; the latency is one Size.
+- **Cutoff** (20 to 20000 Hz, default 2000) and **Mix** are exposed on the node. The starter kernel is the low-pass above.
+- Declare a second audio input with `input bin audio B` and the kernel can read its spectrum as `B.mag.at(k)`, which is how you build a vocoder or a cross-synthesis effect.
+
+Everyday uses: a custom EQ, a spectral filter, a robot-voice effect. Try it first with the starter kernel: drop Size to 512 and sweep Cutoff for a fast, tight filter.

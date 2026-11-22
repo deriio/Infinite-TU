@@ -1,6 +1,7 @@
 // Field node parameter bodies and scopes (moved verbatim from main.cpp).
 #include "app/ui/design/TokenColors.h"
 #include "app/AppShared.h"
+#include "app/panels/FieldPatcherPanel.h"
 #include "app/ui/design/components/AudioViz.h"
 
 namespace app
@@ -112,6 +113,52 @@ namespace app
                : (pass == 0 ? tok::U32(tok::pal::c_78C8FF2E) : tok::U32(tok::pal::c_96D6FFF5));
             dl->PathStroke(strokeCol, 0, pass == 0 ? 4.5f : 1.6f);
          }
+      }
+      else
+      {
+         dl->AddText(ImVec2(origin.x + 8.0f, origin.y + 4.0f), ScopeTextCol(), "idle");
+      }
+
+      dl->PopClipRect();
+      AudioViz::Border(dl, origin, br);
+      ImGui::Dummy(ImVec2(w, h));
+   }
+
+
+   // Spectral Field preview: 64 log bands, input as a faint fill, output as
+   // the stroke. dB scale -90..0.
+   void DrawSpectralFieldSpectrum(SpectralFieldNode* n, float h, float width)
+   {
+      constexpr int kB = SpectralFieldNode::kBands;
+      float in[kB], out[kB];
+      const bool valid = n->ReadSpectrum(in, out);
+
+      const float w = width > 0.0f ? width : gAudioContentW;
+      const ImVec2 origin = ImGui::GetCursorScreenPos();
+      ImDrawList* dl = ImGui::GetWindowDrawList();
+      const ImVec2 br(origin.x + w, origin.y + h);
+      AudioViz::Fill(dl, origin, br);
+      dl->PushClipRect(origin, br, true);
+      for (int i = 1; i < 4; i++)
+         dl->AddLine(ImVec2(origin.x, origin.y + h * i / 4.0f), ImVec2(br.x, origin.y + h * i / 4.0f), ScopeGridCol(), 1.0f);
+
+      if (valid)
+      {
+         auto yFor = [&](float mag) {
+            const float db = 20.0f * std::log10(std::max(mag, 1e-6f));
+            const float t = std::clamp((db + 90.0f) / 90.0f, 0.0f, 1.0f);
+            return br.y - t * h;
+         };
+         const bool isLight = IsThemeLight();
+         const ImU32 fillCol = isLight ? tok::U32(tok::pal::c_1E6EE632) : tok::U32(tok::pal::c_78C8FF2E);
+         const ImU32 strokeCol = isLight ? tok::U32(tok::pal::c_1464E6FF) : tok::U32(tok::pal::c_96D6FFF5);
+         const float bw = w / (float)kB;
+         for (int i = 0; i < kB; i++)
+            dl->AddRectFilled(ImVec2(origin.x + i * bw, yFor(in[i])), ImVec2(origin.x + (i + 1) * bw, br.y), fillCol);
+         dl->PathClear();
+         for (int i = 0; i < kB; i++)
+            dl->PathLineTo(ImVec2(origin.x + (i + 0.5f) * bw, yFor(out[i])));
+         dl->PathStroke(strokeCol, 0, 1.6f);
       }
       else
       {
@@ -263,6 +310,8 @@ namespace app
             gFieldElementEditor = n;
             gFieldElementEditorOpen = true;
          }
+         if (ActionButton::Draw(T("Boxes"), ImVec2(kPreviewSize, 0)) && gCurrentNodeIndex >= 0 && gCurrentNodeIndex < (int)gNodes.size())
+            FieldPatcherOpenNode(gNodes[gCurrentNodeIndex].uid);
 
          if (!n->LastError().empty())
          {
@@ -338,6 +387,8 @@ namespace app
             gFieldPrimitiveEditor = n;
             gFieldPrimitiveEditorOpen = true;
          }
+         if (ActionButton::Draw(T("Boxes"), ImVec2(kPreviewSize, 0)) && gCurrentNodeIndex >= 0 && gCurrentNodeIndex < (int)gNodes.size())
+            FieldPatcherOpenNode(gNodes[gCurrentNodeIndex].uid);
 
          if (!n->LastError().empty())
          {
@@ -368,14 +419,26 @@ namespace app
          }
       }
 
+      {
+         bool value = n->valueMode;
+         if (ModCheckbox("value", &value) && value != n->valueMode)
+         {
+            n->valueMode = value;
+            if (value)
+               n->publishScalarOutput = true;
+         }
+      }
       static const std::vector<std::string> kTopologies = {
          "Points", "Plane (Grid)", "Sphere", "Cylinder", "Torus", "Disc"
       };
-      DropdownButton("topology", kTopologies, n->topology, [n](int i) { n->topology = i; });
+      if (!n->valueMode || gParamRegisterOnly)
+      {
+         DropdownButton("topology", kTopologies, n->topology, [n](int i) { n->topology = i; });
+         ModSliderInt("count", &n->count, 1, 100000);
+         ModSliderInt("max elements", &n->maxElements, 100, 200000);
+      }
 
-      ModSliderInt("count", &n->count, 1, 100000);
-      ModSliderInt("max elements", &n->maxElements, 100, 200000);
-
+      if (!n->valueMode || gParamRegisterOnly)
       {
          bool publish = n->publishScalarOutput;
          if (ModCheckbox("publish scalar output", &publish) && publish != n->publishScalarOutput)
@@ -462,6 +525,44 @@ namespace app
             PopTextWrapWidth();
          }
       }
+
+      DrawFieldParamSliders(n);
+   }
+
+
+   void DrawSpectralFieldParams(SpectralFieldNode* n)
+   {
+      gParamWidthLive = std::max(gParamWidthLive, kPreviewSize);
+      n->SetNodeIndex(gCurrentNodeIndex);
+
+      if (!gParamRegisterOnly)
+      {
+         DrawFieldDeviceControls<SpectralFieldNode>(n, "bin", &SpectralFieldNode::PresetNames(),
+                                                    [](SpectralFieldNode* n2, int i) { n2->presetIndex = i; n2->LoadPreset(i); });
+
+         if (ActionButton::Draw("Edit Field...", ImVec2(kPreviewSize, 0)))
+         {
+            gSpectralFieldEditor = n;
+            gSpectralFieldEditorOpen = true;
+         }
+
+         if (!n->LastError().empty())
+         {
+            PushTextWrapWidth(kPreviewSize);
+            ImGui::TextColored(ImVec4(1, 0.4f, 0.4f, 1), "%s", n->LastError().c_str());
+            PopTextWrapWidth();
+         }
+
+         if (!n->Notice().empty())
+         {
+            PushTextWrapWidth(kPreviewSize);
+            ImGui::TextColored(tok::V4(tok::palf::v_1000_700_200_1000), "%s", n->Notice().c_str());
+            PopTextWrapWidth();
+         }
+      }
+
+      DropdownButton("size", SpectralFieldNode::SizeNames(), n->sizeIndex, [n](int i) { n->sizeIndex = i; });
+      ModSlider("mix", &n->mix, 0.0f, 1.0f, "%.2f");
 
       DrawFieldParamSliders(n);
    }
@@ -555,6 +656,8 @@ namespace app
             gFieldNotesEditor = n;
             gFieldNotesEditorOpen = true;
          }
+         if (ActionButton::Draw(T("Boxes"), ImVec2(kPreviewSize, 0)) && gCurrentNodeIndex >= 0 && gCurrentNodeIndex < (int)gNodes.size())
+            FieldPatcherOpenNode(gNodes[gCurrentNodeIndex].uid);
 
          if (!n->LastError().empty())
          {
@@ -585,6 +688,17 @@ namespace app
          int scale = n->scale;
          if (ModSliderInt("scale", &scale, 0, MusicTime::kNumScaleTypes - 1))
             n->scale = scale;
+      }
+
+      {
+         bool publish = n->publishScalarOutput;
+         if (ModCheckbox("publish scalar output", &publish) && publish != n->publishScalarOutput)
+         {
+            if (!publish && FieldOutputPinHasLiveCable(gCurrentNodeIndex, 1))
+               ImGui::SetTooltip("%s", T("refused: publish output is still wired"));
+            else
+               n->publishScalarOutput = publish;
+         }
       }
 
       DrawFieldParamSliders(n);
@@ -713,6 +827,12 @@ namespace app
          }
       }
 
+      DropdownButton("domain", FieldPixelNode::DomainNames(), n->domain, [n](int i)
+      {
+         if (i == n->domain) return;
+         n->domain = i;
+         n->Apply();
+      });
       ModSlider("width", &n->width, 16.0f, 4096.0f, "%.0f");
       ModSlider("height", &n->height, 16.0f, 4096.0f, "%.0f");
       ModCheckbox("animate", &n->animate);

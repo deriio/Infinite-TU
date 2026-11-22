@@ -1,7 +1,9 @@
 #include "FieldIR.h"
+#include "FieldNoise.h"
 #include "FieldSwizzle.h"
 #include "FieldCycles.h"
 #include "ExprGlobals.h"
+#include "core/bci/BciTypes.h"
 #include "../../audio/PhaseShape.h"
 
 #include <cctype>
@@ -32,6 +34,7 @@ namespace Field
 
    namespace
    {
+      thread_local bool tMaterialLowering = false; // row 2.4: img() types only inside a Material program
       bool IsLiteralConstant(const AstNodePtr& node, std::string& outNonConst)
       {
          if (!node) return true;
@@ -104,6 +107,11 @@ namespace Field
          {
             return checkExact(3);
          }
+         int noiseArity = 0;
+         if (IsNoiseBuiltin(name, &noiseArity))
+            return checkExact(noiseArity);
+         if (IsImageBuiltin(name))
+            return checkExact(2);
          if (name == "rand" || name == "noise" || name == "sh")
          {
             if (argCount > 4)
@@ -325,6 +333,21 @@ namespace Field
                {
                   const std::string& baseName = std::static_pointer_cast<AstIdent>(acc->base)->name;
                   const VarSymbol* baseSym = scope.Find(baseName);
+                  if (baseName == "brain" && !baseSym)
+                  {
+                     if (!Bci::IsBrainGlobalField(acc->field))
+                     {
+                        error.severity = Severity::Error;
+                        error.span = acc->span;
+                        error.message = "unknown brain symbol 'brain." + acc->field + "'";
+                        return nullptr;
+                     }
+                     auto ir = std::make_shared<IRNode>(IRKind::Variable, acc->span);
+                     ir->varName = "brain." + acc->field;
+                     ir->type = FieldType(DataType::Float, 1);
+                     ir->domain = Domain::Frame;
+                     return ir;
+                  }
                   if (baseSym && baseSym->isStructuralGeometry)
                   {
                      FieldType fieldType;
@@ -1122,6 +1145,36 @@ namespace Field
                      error.message = rankErr;
                      return nullptr;
                   }
+               }
+               else if (int noiseLanes = 1; IsNoiseBuiltin(call->callee, nullptr, &noiseLanes))
+               {
+                  // row 2.1: p is a vec3, every other argument a scalar
+                  for (size_t k = 0; k < argIRs.size(); k++)
+                  {
+                     const int want = k == 0 ? 3 : 1;
+                     if (argIRs[k]->type.lanes != want)
+                     {
+                        error.severity = Severity::Error;
+                        error.span = call->span;
+                        error.message = k == 0 ? call->callee + "() needs a vec3 point first, e.g. " + call->callee + "(vec3(uv * 8.0, 0.0)" + (argIRs.size() > 1 ? ", ...)" : ")")
+                                               : call->callee + "() argument " + std::to_string(k + 1) + " must be a scalar";
+                        return nullptr;
+                     }
+                  }
+                  fnResultType = noiseLanes == 3 ? FieldType(DataType::Vec3, 3) : FieldType(DataType::Float, 1);
+               }
+               else if (IsImageBuiltin(call->callee))
+               {
+                  // row 2.4: a slot (0 to 3) and a vec2 uv in, rgba out
+                  if (!tMaterialLowering || argIRs[0]->type.lanes != 1 || argIRs[1]->type.lanes != 2)
+                  {
+                     error.severity = Severity::Error;
+                     error.span = call->span;
+                     error.message = !tMaterialLowering ? call->callee + "() is only available in the Material domain"
+                                                        : call->callee + "() takes an image slot (0 to 3) and a vec2, e.g. " + call->callee + "(0, UV)";
+                     return nullptr;
+                  }
+                  fnResultType = FieldType(DataType::Vec4, 4);
                }
                else if (call->callee == "rand" || call->callee == "noise" || call->callee == "sh")
                {
@@ -3228,10 +3281,89 @@ namespace Field
       return true;
    }
 
-   bool LowerPixelProgramToIR(const AstNodePtr& ast, PixelIRProgram& outProgram, FieldError& outError)
+   const MaterialChannel kMaterialInputs[] = {
+      { "P", DataType::Vec3, 3 },         { "N", DataType::Vec3, 3 },       { "UV", DataType::Vec2, 2 },
+      { "W", DataType::Vec3, 3 },         { "V", DataType::Vec3, 3 },       // row 2.3: world position, unit vector to the eye
+      { "curvature", DataType::Float, 1 }, { "cavity", DataType::Float, 1 },
+      { "backfacing", DataType::Float, 1 }, { "objrand", DataType::Float, 1 }, // row 2.6: 1 on the back side; per-object random (0 until row 7.2)
+      { "attr", DataType::Float, 1 },       // row 3.3: the mesh's per-vertex mask (Sketch 3D mask()), 0 when it has none
+   };
+   const int kMaterialInputCount = (int)(sizeof(kMaterialInputs) / sizeof(kMaterialInputs[0]));
+   const MaterialChannel kMaterialOutputs[] = {
+      { "base", DataType::Vec3, 3 },    { "roughness", DataType::Float, 1 }, { "metallic", DataType::Float, 1 },
+      { "normal", DataType::Vec3, 3 },  { "height", DataType::Float, 1 },    { "emission", DataType::Vec3, 3 },
+      { "opacity", DataType::Float, 1 }, { "mask", DataType::Float, 1 },
+   };
+   const int kMaterialOutputCount = (int)(sizeof(kMaterialOutputs) / sizeof(kMaterialOutputs[0]));
+
+   int MaterialOutputBit(const std::string& name)
+   {
+      for (int i = 0; i < kMaterialOutputCount; ++i)
+         if (name == kMaterialOutputs[i].name)
+            return i;
+      return -1;
+   }
+
+   namespace
+   {
+      std::string MaterialOutputList()
+      {
+         std::string list;
+         for (int i = 0; i < kMaterialOutputCount; ++i)
+            list += (i ? ", " : "") + std::string(kMaterialOutputs[i].name);
+         return list;
+      }
+
+      void CollectReads(const IRNodePtr& n, std::unordered_set<std::string>& reads)
+      {
+         if (!n) return;
+         if (n->kind == IRKind::Variable) reads.insert(n->varName);
+         for (const auto& c : n->children) CollectReads(c, reads);
+      }
+
+      // Material domain: which outputs are written (any depth), which names are read, and the first assignment
+      // of every other bare name - a local nobody reads is a misspelt output, the one error bare names allow.
+      void WalkMaterialStmts(const std::vector<IRStmtPtr>& stmts, uint32_t& written,
+                             std::unordered_set<std::string>& reads,
+                             std::vector<std::pair<std::string, SourceSpan>>& locals)
+      {
+         for (const auto& s : stmts)
+         {
+            if (!s) continue;
+            if (s->kind == IRStmtKind::Assign && !s->assignTarget.empty())
+            {
+               const int bit = MaterialOutputBit(s->assignTarget);
+               if (bit >= 0)
+                  written |= 1u << bit;
+               else if (s->assignTarget.compare(0, 2, "__") != 0)
+               {
+                  bool seen = false;
+                  for (const auto& l : locals) seen = seen || l.first == s->assignTarget;
+                  if (!seen) locals.push_back({ s->assignTarget, s->span });
+               }
+            }
+            CollectReads(s->rvalueExpr, reads);
+            CollectReads(s->lvalueExpr, reads);
+            CollectReads(s->expr, reads);
+            CollectReads(s->ifCond, reads);
+            CollectReads(s->forCond, reads);
+            WalkMaterialStmts(s->thenStmts, written, reads, locals);
+            WalkMaterialStmts(s->elseStmts, written, reads, locals);
+            WalkMaterialStmts(s->forBody, written, reads, locals);
+            if (s->forInit) WalkMaterialStmts({ s->forInit }, written, reads, locals);
+            if (s->forStep) WalkMaterialStmts({ s->forStep }, written, reads, locals);
+         }
+      }
+   }
+
+   bool LowerPixelProgramToIR(const AstNodePtr& ast, PixelIRProgram& outProgram, FieldError& outError,
+                              PixelProgramKind kind)
    {
       outError.Clear();
       outProgram = PixelIRProgram{};
+      outProgram.kind = kind;
+      const bool material = (kind == PixelProgramKind::Material);
+      struct ImgScope { bool was; ImgScope(bool on) : was(tMaterialLowering) { tMaterialLowering = on; } ~ImgScope() { tMaterialLowering = was; } } imgScope(material);
 
       if (!ast)
       {
@@ -3255,35 +3387,51 @@ namespace Field
             sym.isReadOnly = readOnly;
             scope.Add(sym);
          };
-         addSym("uv", FieldType(DataType::Vec2, 2), Domain::Pixel, true);
-         addSym("xy", FieldType(DataType::Vec2, 2), Domain::Pixel, true);
-         // res and aspect are Pixel-domain, not Frame. They are frame-constant
-         // in value, but marking them Frame let rate inference hoist any
-         // expression mentioning them - `d = 1.0 / res` - into the CPU-side
-         // prologue, and the prologue evaluator only knows t/dt/frame/params.
-         // So `res` evaluated to 0 there and every kernel that measured a
-         // texel silently got a texel size of zero (a hoisted vec2 was also
-         // being uploaded with glUniform1f, which cannot carry two lanes).
-         // In GLSL both are bound from fld_res inside main() at no cost, so
-         // keeping them per-pixel is free and correct.
-         addSym("res", FieldType(DataType::Vec2, 2), Domain::Pixel, true);
-         addSym("aspect", FieldType(DataType::Float, 1), Domain::Pixel, true);
-         // Pixel-domain like res: bound from a uniform inside main(), never
-         // hoisted, because the CPU prologue evaluator does not know it.
-         addSym("age", FieldType(DataType::Float, 1), Domain::Pixel, true);
-         addSym("t", FieldType(DataType::Float, 1), Domain::Frame, true);
-         addSym("dt", FieldType(DataType::Float, 1), Domain::Frame, true);
-         addSym("frame", FieldType(DataType::Float, 1), Domain::Frame, true);
-         // Step 26 (OPEN-D note history): like `age` just above, these are
-         // always an inert 0.0 in the pixel domain (no node with a pixel
-         // kernel has a note pipeline) - bound the same way, as Pixel domain
-         // so GlslBackend.cpp emits them inline rather than trying to hoist
-         // them into the CPU-side prologue evaluator, which doesn't know them.
-         addSym("noteOn", FieldType(DataType::Float, 1), Domain::Pixel, true);
-         addSym("notePitch", FieldType(DataType::Float, 1), Domain::Pixel, true);
-         addSym("noteVel", FieldType(DataType::Float, 1), Domain::Pixel, true);
-         addSym("col", FieldType(DataType::Vec3, 3), Domain::Pixel, false);
-         addSym("alpha", FieldType(DataType::Float, 1), Domain::Pixel, false);
+         if (material)
+         {
+            // Per hit, so Pixel domain like uv: never hoisted into the CPU prologue.
+            for (int i = 0; i < kMaterialInputCount; ++i)
+               addSym(kMaterialInputs[i].name, FieldType(kMaterialInputs[i].type, kMaterialInputs[i].lanes),
+                      Domain::Pixel, true);
+            for (int i = 0; i < kMaterialOutputCount; ++i)
+               addSym(kMaterialOutputs[i].name, FieldType(kMaterialOutputs[i].type, kMaterialOutputs[i].lanes),
+                      Domain::Pixel, false);
+            addSym("t", FieldType(DataType::Float, 1), Domain::Frame, true);
+            addSym("dt", FieldType(DataType::Float, 1), Domain::Frame, true);
+            addSym("frame", FieldType(DataType::Float, 1), Domain::Frame, true);
+         }
+         else
+         {
+            addSym("uv", FieldType(DataType::Vec2, 2), Domain::Pixel, true);
+            addSym("xy", FieldType(DataType::Vec2, 2), Domain::Pixel, true);
+            // res and aspect are Pixel-domain, not Frame. They are frame-constant
+            // in value, but marking them Frame let rate inference hoist any
+            // expression mentioning them - `d = 1.0 / res` - into the CPU-side
+            // prologue, and the prologue evaluator only knows t/dt/frame/params.
+            // So `res` evaluated to 0 there and every kernel that measured a
+            // texel silently got a texel size of zero (a hoisted vec2 was also
+            // being uploaded with glUniform1f, which cannot carry two lanes).
+            // In GLSL both are bound from fld_res inside main() at no cost, so
+            // keeping them per-pixel is free and correct.
+            addSym("res", FieldType(DataType::Vec2, 2), Domain::Pixel, true);
+            addSym("aspect", FieldType(DataType::Float, 1), Domain::Pixel, true);
+            // Pixel-domain like res: bound from a uniform inside main(), never
+            // hoisted, because the CPU prologue evaluator does not know it.
+            addSym("age", FieldType(DataType::Float, 1), Domain::Pixel, true);
+            addSym("t", FieldType(DataType::Float, 1), Domain::Frame, true);
+            addSym("dt", FieldType(DataType::Float, 1), Domain::Frame, true);
+            addSym("frame", FieldType(DataType::Float, 1), Domain::Frame, true);
+            // Step 26 (OPEN-D note history): like `age` just above, these are
+            // always an inert 0.0 in the pixel domain (no node with a pixel
+            // kernel has a note pipeline) - bound the same way, as Pixel domain
+            // so GlslBackend.cpp emits them inline rather than trying to hoist
+            // them into the CPU-side prologue evaluator, which doesn't know them.
+            addSym("noteOn", FieldType(DataType::Float, 1), Domain::Pixel, true);
+            addSym("notePitch", FieldType(DataType::Float, 1), Domain::Pixel, true);
+            addSym("noteVel", FieldType(DataType::Float, 1), Domain::Pixel, true);
+            addSym("col", FieldType(DataType::Vec3, 3), Domain::Pixel, false);
+            addSym("alpha", FieldType(DataType::Float, 1), Domain::Pixel, false);
+         }
       }
 
       std::vector<AstNodePtr> stmts;
@@ -3584,6 +3732,14 @@ namespace Field
          else if (s->kind != AstKind::Assign && s->kind != AstKind::If && s->kind != AstKind::For)
          {
             // Top-level expression statement (e.g. `col = expr` or bare `vec3(...)`)
+            if (material)
+            {
+               outError.severity = Severity::Error;
+               outError.span = s->span;
+               outError.message = "a bare expression has nowhere to go in the Material domain; assign it to a "
+                                  "material output (" + MaterialOutputList() + ")";
+               return false;
+            }
             auto exprIR = LowerAstExpr(s, scope, outError);
             if (!outError.Empty()) return false;
             if (exprIR)
@@ -3873,6 +4029,24 @@ namespace Field
          if (s->rvalueExpr && !checkPixelRand(s->rvalueExpr, checkPixelRand, outError)) return false;
          if (s->expr && !checkPixelRand(s->expr, checkPixelRand, outError)) return false;
          if (s->ifCond && !checkPixelRand(s->ifCond, checkPixelRand, outError)) return false;
+      }
+
+      if (material)
+      {
+         std::unordered_set<std::string> reads;
+         std::vector<std::pair<std::string, SourceSpan>> locals;
+         WalkMaterialStmts(irStmts, outProgram.materialWritten, reads, locals);
+         for (const auto& l : locals)
+         {
+            bool isState = false;
+            for (const auto& ds : outProgram.declaredStates) isState = isState || ds.name == l.first;
+            if (isState || reads.count(l.first)) continue;
+            outError.severity = Severity::Error;
+            outError.span = l.second;
+            outError.message = "'" + l.first + "' is written but never read, and it is not a material output (" +
+                               MaterialOutputList() + ")";
+            return false;
+         }
       }
 
       // Constant folding pass

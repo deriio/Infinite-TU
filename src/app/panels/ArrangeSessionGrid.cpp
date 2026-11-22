@@ -24,9 +24,9 @@ namespace app
       constexpr float kSceneColW = 136.0f;
       constexpr float kColMinW = 112.0f;
       constexpr float kColMaxW = 176.0f;
-      constexpr float kHeaderH = 28.0f;
-      constexpr float kRowH = 30.0f;
-      constexpr float kFooterH = 30.0f;
+      constexpr float kHeaderH = tok::row_h;
+      constexpr float kRowH = tok::cell_h;   // a clip or scene cell: taller than a list row so a clip name and its state read
+      constexpr float kFooterH = tok::row_h;
       constexpr float kGap = 2.0f;
       constexpr int kMinRows = 6;
 
@@ -64,6 +64,8 @@ namespace app
       int sCtxRow = -1;
       bool sClipCtxRequest = false;
       uint64_t sTrackCtxLaneId = 0;
+      uint64_t sTrackRenameLaneId = 0;   // the track header showing its name field
+      char sTrackNameBuf[64] = {};
       constexpr float kAddColW = 40.0f;
 
       void AddTrackOfType(int type)
@@ -78,6 +80,11 @@ namespace app
       // One menu for the "+" column and a track header's right-click.
       void DrawTrackMenu()
       {
+         if (!gArrange.lanes.empty() && MenuParts::TestOpen("##sessiontrackctx"))
+         {
+            sTrackCtxLaneId = gArrange.lanes.front().id;
+            ImGui::OpenPopup("##sessiontrackctx");
+         }
          if (!MenuParts::BeginPopup("##sessiontrackctx"))
             return;
          if (MenuParts::Item(L("Add Video Track")))
@@ -100,6 +107,13 @@ namespace app
             if (MenuParts::Item(L("Stop Track"), nullptr, false, ArrangeSessionLaneQuery(lid).playingSlot >= 0))
                ArrangeSessionStopLane(lid);
             MenuParts::Separator();
+            if (MenuParts::Item(L("Rename Track"), T("Double-click")))
+            {
+               sTrackRenameLaneId = lid;
+               snprintf(sTrackNameBuf, sizeof(sTrackNameBuf), "%s", l->name.c_str());
+            }
+            if (MenuParts::Item(L("Duplicate Track")))
+               ArrangeEdit([&]() { Arrange::DuplicateLane(gArrange, lid); });
             if (MenuParts::Item(L("Delete Track")))
             {
                ArrangeSessionStopLane(lid);
@@ -110,6 +124,10 @@ namespace app
          MenuParts::EndPopup();
       }
       int sSceneCtxRow = -1;
+      // Row and slot menus are requested inside PushID scopes and opened next to their BeginPopup,
+      // so the popup ID matches.
+      bool sSceneCtxOpen = false;
+      bool sSlotCtxOpen = false;
       int sTrackDragFrom = -1;   // track column being dragged to a new place
       int sSceneDragFrom = -1;   // scene row being dragged to a new place
       char sSceneNameBuf[64] = {};
@@ -228,12 +246,12 @@ namespace app
       {
          if (ss.followAction == Arrange::kFollowNone)
             return;
-         char num[8];
+         char num[16];
          snprintf(num, sizeof(num), "%d", ss.followBars);
          const ImVec2 ns = ImGui::CalcTextSize(num);
          const float gx = rightCentre.x - ns.x - 9.0f;
          const ImVec2 gc(gx, rightCentre.y);
-         const float gs = tok::icon_sm;
+         const float gs = tok::icon_control;
          switch (ss.followAction)
          {
             case Arrange::kFollowNext: glyph::DrawChevronDown(dl, gc, gs, col); break;
@@ -313,6 +331,20 @@ namespace app
 
       void DrawSlotMenu()
       {
+         // Self-test: the first empty cell of the first track, as a right-click on it would.
+         if (!gArrange.lanes.empty() && MenuParts::TestOpen("##sessionslotctx"))
+         {
+            const Arrange::Lane& l = gArrange.lanes.front();
+            int row = 0;
+            while (row < (int)l.slots.size() && l.slots[(size_t)row].Has())
+               row++;
+            sCtxLaneId = l.id;
+            sCtxRow = row;
+            sSlotCtxOpen = true;
+         }
+         if (sSlotCtxOpen)
+            ImGui::OpenPopup("##sessionslotctx");
+         sSlotCtxOpen = false;
          if (!MenuParts::BeginPopup("##sessionslotctx"))
             return;
          Arrange::Lane* lane = Arrange::FindLane(gArrange, sCtxLaneId);
@@ -452,6 +484,16 @@ namespace app
 
       void DrawSceneMenu()
       {
+         if (!gArrange.scenes.empty() && MenuParts::TestOpen("##sessionscenectx"))
+         {
+            sSelScene = sSceneCtxRow = 0;
+            snprintf(sSceneNameBuf, sizeof(sSceneNameBuf), "%s", gArrange.scenes.front().name.c_str());
+            sSceneTempoEdit = gArrange.scenes.front().tempo;
+            sSceneCtxOpen = true;
+         }
+         if (sSceneCtxOpen)
+            ImGui::OpenPopup("##sessionscenectx");
+         sSceneCtxOpen = false;
          if (!MenuParts::BeginPopup("##sessionscenectx"))
             return;
          const int row = sSceneCtxRow;
@@ -606,10 +648,12 @@ namespace app
          const Arrange::Lane& lane = gArrange.lanes[(size_t)li];
          const float x0 = o.x + kSceneColW + colW * (float)li;
          const ImVec2 a(x0 + kGap, o.y + kGap), b(x0 + colW - kGap, o.y + kHeaderH - kGap);
-         dl->AddRectFilled(a, b, TextCol(0.06f), tok::radius_field);
+         dl->AddRectFilled(a, b, TextCol(0.06f), tok::radius_control);
          const std::string name = lane.name.empty() ? (lane.type == Arrange::kLaneVideo ? T("Video") : T("Audio"))
                                                     : lane.name;
          const float th = ImGui::GetTextLineHeight();
+         if (lane.id == sTrackRenameLaneId)
+            continue;
          dl->PushClipRect(a, ImVec2(b.x - 4.0f, b.y), true);
          dl->AddText(ImVec2(a.x + 9.0f, (a.y + b.y - th) * 0.5f),
                      Arrange::LaneEffectivelyEnabled(gArrange, lane) ? TextCol(0.92f) : TextCol(0.40f), name.c_str());
@@ -628,10 +672,44 @@ namespace app
          if (ImGui::IsItemHovered() && sTrackDragFrom < 0)
             HelpTip("%s", T("Drag to reorder tracks. Right-click for more."));
          ImGui::PopID();
+         const uint64_t hdrLaneId = gArrange.lanes[(size_t)li].id;
+         if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left))
+         {
+            sTrackRenameLaneId = hdrLaneId;
+            snprintf(sTrackNameBuf, sizeof(sTrackNameBuf), "%s", gArrange.lanes[(size_t)li].name.c_str());
+         }
          if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
          {
-            sTrackCtxLaneId = gArrange.lanes[(size_t)li].id;
+            sTrackCtxLaneId = hdrLaneId;
             ImGui::OpenPopup("##sessiontrackctx");
+         }
+         if (hdrLaneId == sTrackRenameLaneId)
+         {
+            static uint64_t sFocused = 0;
+            ImGui::SetCursorScreenPos(ImVec2(x0 + kGap + 4.0f, o.y + kGap + 3.0f));
+            ImGui::SetNextItemWidth(std::max(20.0f, colW - 2.0f * kGap - 8.0f));
+            if (sFocused != hdrLaneId)
+            {
+               ImGui::SetKeyboardFocusHere();
+               sFocused = hdrLaneId;
+            }
+            const bool commit = FieldWell::InputText("##sessrenametrack", sTrackNameBuf, sizeof(sTrackNameBuf),
+                                                     ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_AutoSelectAll);
+            if (commit || ImGui::IsItemDeactivated())
+            {
+               const std::string newName = sTrackNameBuf;
+               if (!ImGui::IsKeyPressed(ImGuiKey_Escape, false))
+                  ArrangeEdit([&]() {
+                     if (Arrange::Lane* ln = Arrange::FindLane(gArrange, hdrLaneId))
+                        if (ln->name != newName)
+                        {
+                           ln->name = newName;
+                           gArrange.revision++;
+                        }
+                  });
+               sTrackRenameLaneId = 0;
+               sFocused = 0;
+            }
          }
       }
       {
@@ -691,7 +769,7 @@ namespace app
             const std::string nm = realScene ? gArrange.scenes[(size_t)row].name : std::string();
             snprintf(sSceneNameBuf, sizeof(sSceneNameBuf), "%s", nm.c_str());
             sSceneTempoEdit = realScene ? gArrange.scenes[(size_t)row].tempo : 0.0f;
-            ImGui::OpenPopup("##sessionscenectx");
+            sSceneCtxOpen = true;
          }
          if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 6.0f))
             sSceneDragFrom = row;
@@ -699,7 +777,7 @@ namespace app
             HelpTip("%s", rowHasClip ? T("Click to launch this row on every track, click again to stop it. Drag to reorder. Right-click for its tempo and what plays next.")
                                      : T("Right-click to rename this scene or set its tempo"));
          ImGui::PopID();
-         dl->AddRectFilled(a, b, TextCol(hov ? 0.10f : 0.05f), tok::radius_field);
+         dl->AddRectFilled(a, b, TextCol(hov ? 0.10f : 0.05f), tok::radius_control);
          const float cy = (a.y + b.y) * 0.5f;
          // Scene state: playing = every filled cell of the row is running (a ring sweeps with the clip),
          // queued = the launch is waiting for the quantize point (the play glyph pulses on the beat).
@@ -714,13 +792,13 @@ namespace app
                break;
             }
          if (sSelScene == row)
-            dl->AddRect(a, b, TextCol(0.70f), tok::radius_field, 0, 1.5f);
+            dl->AddRect(a, b, TextCol(0.70f), tok::radius_control, 0, 1.5f);
          if (rowPlaying)
-            dl->AddRectFilled(a, b, WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), 0.10f), tok::radius_field);
+            dl->AddRectFilled(a, b, WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), 0.10f), tok::radius_control);
          if (rowPlaying)
             DrawProgressRing(dl, ImVec2(a.x + 13.0f, cy), 7.0f, rowProgress, TextCol(0.95f));
          else
-            glyph::DrawPlayerPlay(dl, ImVec2(a.x + 13.0f, cy), tok::icon_sm,
+            glyph::DrawPlayerPlay(dl, ImVec2(a.x + 13.0f, cy), tok::icon_control,
                                   rowQueued ? WithAlpha(TextCol(0.95f), pulse) : (rowHasClip ? TextCol(0.85f) : TextCol(0.25f)), true);
          const std::string label = SceneLabel(row);
          const float th = ImGui::GetTextLineHeight();
@@ -852,7 +930,7 @@ namespace app
                   sClipCtxRequest = true;
                }
                else
-                  ImGui::OpenPopup("##sessionslotctx");
+                  sSlotCtxOpen = true;
             }
             const float cy = (a.y + b.y) * 0.5f;
             const float th = ImGui::GetTextLineHeight();
@@ -864,26 +942,26 @@ namespace app
                ImU32 fill = SlotFill(ss->clip, isVideo, st.playing || held);
                if (muted)
                   fill = isLight ? tok::U32(tok::pal::c_B0B2BADC) : tok::U32(tok::pal::c_484850DC);
-               dl->AddRectFilled(a, b, fill, tok::radius_field);
+               dl->AddRectFilled(a, b, fill, tok::radius_control);
                if (muted)
                   DrawArrangeHatch(dl, a, b, isLight ? tok::U32(tok::pal::c_0000002D) : tok::U32(tok::pal::c_FFFFFF26));
                const ImU32 ink = muted ? TextCol(0.55f) : LabelOn(fill);
                if (st.playing)
-                  dl->AddRect(a, b, tok::U32(tok::pal::c_FFFFFFF0), tok::radius_field, 0, 1.5f);
+                  dl->AddRect(a, b, tok::U32(tok::pal::c_FFFFFFF0), tok::radius_control, 0, 1.5f);
                else if (hov)
-                  dl->AddRect(a, b, tok::U32(tok::pal::c_E6E6F0DC), tok::radius_field, 0, 1.0f);
+                  dl->AddRect(a, b, tok::U32(tok::pal::c_E6E6F0DC), tok::radius_control, 0, 1.0f);
                const ImVec2 ic(a.x + 13.0f, cy);
                if (st.playing)
                   DrawProgressRing(dl, ic, 7.0f, st.progress, tok::U32(tok::pal::c_FFFFFFFF));
                else
-                  glyph::DrawPlayerPlay(dl, ic, tok::icon_sm, WithAlpha(ink, st.queued ? pulse : 0.85f), !st.queued);
+                  glyph::DrawPlayerPlay(dl, ic, tok::icon_control, WithAlpha(ink, st.queued ? pulse : 0.85f), !st.queued);
                if (gArrangeAssigningClipId == ss->clip.id)
                {
                   // Waiting for a canvas node: the same cue as the Timeline's
                   // target - a pulsing outline, steady under Reduce Motion.
                   const float ap = UiAnim::ReduceMotion() ? 1.0f : 0.55f + 0.45f * std::sin((float)ImGui::GetTime() * 5.0f);
                   dl->AddRect(ImVec2(a.x - 2.0f, a.y - 2.0f), ImVec2(b.x + 2.0f, b.y + 2.0f),
-                              WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), ap), tok::radius_field, 0, 2.5f);
+                              WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), ap), tok::radius_control, 0, 2.5f);
                   HelpTip("%s", T("Click a node on the canvas to assign it. Esc cancels."));
                }
                if (gArrangeFlashClipId == ss->clip.id)
@@ -893,16 +971,16 @@ namespace app
                      gArrangeFlashClipId = 0;
                   else
                      dl->AddRect(ImVec2(a.x - 2.0f, a.y - 2.0f), ImVec2(b.x + 2.0f, b.y + 2.0f),
-                                 IM_COL32(255, 255, 255, (int)(255.0f * (1.0f - ft / 1.2f))), tok::radius_field, 0, 2.5f);
+                                 IM_COL32(255, 255, 255, (int)(255.0f * (1.0f - ft / 1.2f))), tok::radius_control, 0, 2.5f);
                }
                if (st.queued)
-                  dl->AddRect(a, b, WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), 0.9f * pulse), tok::radius_field, 0, 1.5f);
+                  dl->AddRect(a, b, WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), 0.9f * pulse), tok::radius_control, 0, 1.5f);
                if (st.upNext)
                {
                   // Up next (a follow action is about to start this clip): a steady inner outline and a chevron.
                   dl->AddRect(ImVec2(a.x + 2.0f, a.y + 2.0f), ImVec2(b.x - 2.0f, b.y - 2.0f),
-                              WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), 0.75f), tok::radius_field, 0, 1.0f);
-                  glyph::DrawChevronDown(dl, ImVec2(b.x - 14.0f, a.y + 8.0f), tok::icon_sm, WithAlpha(ink, 0.9f));
+                              WithAlpha(tok::U32(tok::pal::c_FFFFFFFF), 0.75f), tok::radius_control, 0, 1.0f);
+                  glyph::DrawChevronDown(dl, ImVec2(b.x - 14.0f, a.y + 8.0f), tok::icon_control, WithAlpha(ink, 0.9f));
                }
                const std::string label = SlotLabel(ss->clip);
                const float badgeW = ss->followAction != Arrange::kFollowNone ? 30.0f : 0.0f;
@@ -918,7 +996,7 @@ namespace app
             {
                // Empty: a quiet recess. While the track plays, the cell is a
                // stop button, and says so on hover.
-               dl->AddRectFilled(a, b, TextCol(hov ? 0.08f : 0.035f), tok::radius_field);
+               dl->AddRectFilled(a, b, TextCol(hov ? 0.08f : 0.035f), tok::radius_control);
                if (hov)
                {
                   // A plus: a double-click adds an unassigned clip to this cell.
@@ -934,7 +1012,7 @@ namespace app
             // The keyboard cursor / selected clip.
             if ((ss != nullptr && gArrangeSel.count(ss->clip.id) != 0) || (laneId == sCurLaneId && row == sCurRow))
                dl->AddRect(ImVec2(a.x - 1.0f, a.y - 1.0f), ImVec2(b.x + 1.0f, b.y + 1.0f),
-                           WithAlpha(TextCol(1.0f), gSessionClaimedKeys ? 0.9f : 0.45f), tok::radius_field, 0, 1.5f);
+                           WithAlpha(TextCol(1.0f), gSessionClaimedKeys ? 0.9f : 0.45f), tok::radius_control, 0, 1.5f);
             if (ss != nullptr && gArrangeRenamingClipId == ss->clip.id)
             {
                static uint64_t sRenameFocusedId = 0;
@@ -1004,7 +1082,7 @@ namespace app
                ArrangeSessionStopLane(laneId);
             const bool hov = ImGui::IsItemHovered();
             ImGui::EndDisabled();
-            dl->AddRectFilled(a, b, TextCol(canStop ? (hov ? 0.12f : 0.07f) : 0.03f), tok::radius_field);
+            dl->AddRectFilled(a, b, TextCol(canStop ? (hov ? 0.12f : 0.07f) : 0.03f), tok::radius_control);
             const float alpha = !canStop ? 0.22f : (ls.stopQueued ? 0.9f * pulse : 0.85f);
             DrawStopSquare(dl, ImVec2((a.x + b.x) * 0.5f, (a.y + b.y) * 0.5f), 9.0f, TextCol(alpha));
             if (hov)
@@ -1027,7 +1105,7 @@ namespace app
          {
             const float x0 = o.x + kSceneColW + colW * (float)li, y0 = bodyTop + kRowH * (float)row;
             dl->AddRect(ImVec2(x0 + kGap - 1.0f, y0 + kGap - 1.0f), ImVec2(x0 + colW - kGap + 1.0f, y0 + kRowH - kGap + 1.0f),
-                        TextCol(0.95f), tok::radius_field, 0, 2.0f);
+                        TextCol(0.95f), tok::radius_control, 0, 2.0f);
          }
          if (srcLane != nullptr && SlotOf(*srcLane, sDrag.row) != nullptr)
          {
@@ -1058,7 +1136,7 @@ namespace app
       ImGui::Dummy(ImVec2(gridW, footerTop + kFooterH - o.y));
       (void)mouse;
       (void)gridHovered;
-      ImGui::EndChild();
+      EndChildSafe();
       // A browser drop that missed every cell is done with either way.
       gArrangePendingBrowserDrop.pending = false;
    }
@@ -1353,9 +1431,18 @@ namespace app
                });
          ImGui::EndMenu();
       }
-      MenuParts::Separator();
-      // Destructive rows are queued, not run: the shared menu still holds pointers into the slot and lane vectors
-      // and keeps reading them for the rest of this frame. ArrangeSessionApplyMenuAction() runs them after it closes.
+   }
+
+   // The slot's edit rows (Cut, Copy, Paste, Duplicate), drawn after Rename in the shared clip menu.
+   // Rows are queued, not run: the shared menu still holds pointers into the slot and lane vectors and keeps reading
+   // them for the rest of this frame. ArrangeSessionApplyMenuAction() runs them after it closes.
+   void DrawArrangeSessionSlotEditItems(uint64_t clipId)
+   {
+      const Arrange::Loc loc = Arrange::FindSlot(gArrange, clipId);
+      if (loc.lane < 0 || loc.slot < 0)
+         return;
+      const uint64_t laneId = gArrange.lanes[(size_t)loc.lane].id;
+      const int row = loc.slot;
       if (MenuParts::Item(L("Cut"), MODKEY "+X"))
          sMenuAction = {MenuAction::Cut, laneId, row};
       if (MenuParts::Item(L("Copy"), MODKEY "+C"))
@@ -1365,11 +1452,26 @@ namespace app
          sMenuAction = {MenuAction::Paste, laneId, row};
       if (MenuParts::Item(L("Duplicate"), MODKEY "+D"))
          sMenuAction = {MenuAction::Duplicate, laneId, row};
-      if (MenuParts::Item(L("Delete"), "Backspace"))
-         sMenuAction = {MenuAction::Clear, laneId, row};
-      MenuParts::Separator();
+   }
+
+   // The slot's Place on Timeline row (an "other action", after the toggles in the shared clip menu).
+   void DrawArrangeSessionSlotPlaceItem(uint64_t clipId)
+   {
+      const Arrange::Loc loc = Arrange::FindSlot(gArrange, clipId);
+      if (loc.lane < 0 || loc.slot < 0)
+         return;
       if (MenuParts::Item(L("Place on Timeline at Playhead")))
-         sMenuAction = {MenuAction::PlaceOnTimeline, laneId, row};
+         sMenuAction = {MenuAction::PlaceOnTimeline, gArrange.lanes[(size_t)loc.lane].id, loc.slot};
+   }
+
+   // The slot's Delete row, last in the shared clip menu (queued like the edit rows).
+   void DrawArrangeSessionSlotDeleteItem(uint64_t clipId)
+   {
+      const Arrange::Loc loc = Arrange::FindSlot(gArrange, clipId);
+      if (loc.lane < 0 || loc.slot < 0)
+         return;
+      if (MenuParts::Item(L("Delete"), "Backspace"))
+         sMenuAction = {MenuAction::Clear, gArrange.lanes[(size_t)loc.lane].id, loc.slot};
    }
 
    // The inspector's Launch card for a session slot: how a click plays it, where it lands, how long it runs and
@@ -1421,7 +1523,7 @@ namespace app
       });
       SectionCard::RowLabel(T("Loop"));
       bool loopOn = ss.loop;
-      if (ChipButton::Draw(loopOn ? L("On##slotloop") : L("Off##slotloop"), loopOn, tok::tile, fieldW))
+      if (ChipButton::Draw(loopOn ? L("On##slotloop") : L("Off##slotloop"), loopOn, tok::control_h, fieldW))
          edit([&](Arrange::SessionSlot& s) { s.loop = !loopOn; });
       const char* lenName = T("Clip Length");
       for (const LoopChoice& lc : kLoopChoices)
@@ -1509,7 +1611,7 @@ namespace app
                dl->AddImage((ImTextureID)(intptr_t)tex, origin, br, ImVec2(0, 1), ImVec2(1, 0));
          }
          ImGui::Dummy(avail);
-         ImGui::EndChild();
+         EndChildSafe();
       }
 
       // ---- keyboard: the Session panel's shortcuts, live only while it owns the keys (a click inside it claims
@@ -1699,7 +1801,7 @@ namespace app
          };
          auto nextTo = [](float gap) { ImGui::SetCursorScreenPos(ImVec2(ImGui::GetItemRectMax().x + gap, ImGui::GetItemRectMin().y)); };
          ActionButton::Scoped() = sSessionShowMonitor ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
-         if (ActionButton::Draw("##sessionmonitortoggle", ImVec2(30, tok::tile)))
+         if (ActionButton::Draw("##sessionmonitortoggle", ImVec2(tok::control_h, tok::control_h)))
             sSessionShowMonitor = !sSessionShowMonitor;
          ActionButton::Scoped() = ActionButton::Kind::Plain;
          if (ImGui::IsItemHovered())
@@ -1725,7 +1827,7 @@ namespace app
          Transport& tr = Transport::Instance();
          const bool playing = tr.IsPlaying();
          ActionButton::Scoped() = playing ? ActionButton::Kind::Go : ActionButton::Kind::Plain;
-         if (ActionButton::Draw("##sessionplay", ImVec2(30, tok::tile)))
+         if (ActionButton::Draw("##sessionplay", ImVec2(tok::control_h, tok::control_h)))
          {
             if (!playing && gAudioMode != AudioMode::Session)
                SetSessionAudio(true);
@@ -1735,16 +1837,16 @@ namespace app
          if (ImGui::IsItemHovered())
             HelpTip(playing ? T("Pause (Space)") : T("Play (Space)"));
          if (playing)
-            glyph::DrawPlayerPause(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_md, tok::U32(tok::pal::c_FFFFFFFF));
+            glyph::DrawPlayerPause(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_control, tok::U32(tok::pal::c_FFFFFFFF));
          else
-            glyph::DrawPlayerPlay(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_md, iconCol);
+            glyph::DrawPlayerPlay(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_control, iconCol);
          nextTo(tok::space_1);
          }
 
          // Record: what you launch is written into the Timeline as clips; Render Take turns it into a movie.
          const bool rec = ArrangeSessionRecording();
          ActionButton::Scoped() = rec ? ActionButton::Kind::Record : ActionButton::Kind::Plain;
-         if (ActionButton::Draw("##sessionrecord", ImVec2(30, tok::tile)))
+         if (ActionButton::Draw("##sessionrecord", ImVec2(tok::control_h, tok::control_h)))
             ArrangeSessionSetRecording(!rec);
          ActionButton::Scoped() = ActionButton::Kind::Plain;
          if (ImGui::IsItemHovered())
@@ -1752,19 +1854,19 @@ namespace app
                               : Platform::PluginModeActive() // Render Take is the DAW's bounce here
                                     ? T("Record your performance: the clips and scenes you launch are written into the Timeline.")
                                     : T("Record your performance: the clips and scenes you launch are written into the Timeline, ready to render with Render Take."));
-         glyph::Draw(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_md,
+         glyph::Draw(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_control,
                      rec ? tok::U32(tok::pal::c_FFFFFFFF) : RecordDotCol(), IconsInfinite::RecordFill);
          nextTo(tok::space_1);
 
          // Stop All: every track stops at the next quantize point.
          const bool anyLaunched = ArrangeSessionAnyLaunched();
          ImGui::BeginDisabled(!anyLaunched);
-         if (ActionButton::Draw("##sessionstopall", ImVec2(30, tok::tile)))
+         if (ActionButton::Draw("##sessionstopall", ImVec2(tok::control_h, tok::control_h)))
             ArrangeSessionStopAll();
          ImGui::EndDisabled();
          if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
             HelpTip("%s", T("Stop All (.): every track stops at the next quantize point"));
-         glyph::Draw(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_md, WithAlpha(iconCol, anyLaunched ? 1.0f : 0.35f),
+         glyph::Draw(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_control, WithAlpha(iconCol, anyLaunched ? 1.0f : 0.35f),
                      IconsInfinite::StopFill);
          nextTo(tok::space_1);
 
@@ -1773,7 +1875,7 @@ namespace app
             const int q = std::clamp(gArrange.sessionQuantize, 0, 3);
             char qlabel[48];
             snprintf(qlabel, sizeof(qlabel), "%s##sessionquant", L(kQuantNames[q + 1]));
-            if (ChipButton::Draw(qlabel, false, tok::tile))
+            if (ChipButton::Draw(qlabel, false, tok::control_h))
                ImGui::OpenPopup("##sessionquantpop");
             if (ImGui::IsItemHovered())
                HelpTip("%s", T("Launch Quantize: launches and stops wait for this grid line, so everything stays in time"));
@@ -1788,26 +1890,27 @@ namespace app
                MenuParts::EndPopup();
             }
          }
-         nextTo(tok::space_4);
-         const bool inspWasOpen = gArrangeClipSettingsPanelOpen;
-         ActionButton::Scoped() = inspWasOpen ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
-         if (ActionButton::Draw("##sessioninspectortoggle", ImVec2(30, tok::tile)))
-            gArrangeClipSettingsPanelOpen = !gArrangeClipSettingsPanelOpen;
-         ActionButton::Scoped() = ActionButton::Kind::Plain;
-         if (ImGui::IsItemHovered())
-            HelpTip("%s", inspWasOpen ? T("Clip Inspector: Open") : T("Settings of the selected clip. Double-click a clip to open it."));
-         glyph::DrawEdit(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_md, inspWasOpen ? tok::U32(tok::pal::c_FFFFFFFF) : iconCol);
          const float toolbarBottom = ImGui::GetItemRectMax().y;
 
-         // Pinned right: Session Audio (the twin of the Timeline's chip), and Render Take left of it.
+         // Pinned right, the Timeline's order: Render Take, Audio, then the inspector toggle in the corner.
          {
             const ImVec2 saved = ImGui::GetCursorScreenPos();
             const bool sessionMode = gAudioMode == AudioMode::Session;
-            const char* audioLabel = sessionMode ? T("Session Audio On") : T("Enable Session Audio");
-            const float audioW = ImGui::CalcTextSize(audioLabel).x + 2.0f * tok::space_2;
             const float right = ImGui::GetWindowPos().x + ImGui::GetWindowSize().x - ImGui::GetStyle().WindowPadding.x;
-            ImGui::SetCursorScreenPos(ImVec2(right - audioW, toolbarOrigin.y));
-            if (ChipButton::Draw(audioLabel, sessionMode, tok::tile))
+            const bool inspWasOpen = gArrangeClipSettingsPanelOpen;
+            ImGui::SetCursorScreenPos(ImVec2(right - tok::control_h, toolbarOrigin.y));
+            ActionButton::Scoped() = inspWasOpen ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
+            if (ActionButton::Draw("##sessioninspectortoggle", ImVec2(tok::control_h, tok::control_h)))
+               gArrangeClipSettingsPanelOpen = !gArrangeClipSettingsPanelOpen;
+            ActionButton::Scoped() = ActionButton::Kind::Plain;
+            if (ImGui::IsItemHovered())
+               HelpTip("%s", inspWasOpen ? T("Clip Inspector: Open") : T("Settings of the selected clip. Double-click a clip to open it."));
+            glyph::DrawEdit(ImGui::GetWindowDrawList(), itemCentre(), tok::icon_control, inspWasOpen ? tok::U32(tok::pal::c_FFFFFFFF) : iconCol);
+            const char* audioLabel = T("Audio");
+            const float audioW = ImGui::CalcTextSize(audioLabel).x + 2.0f * tok::space_2;
+            const float audioX = right - tok::control_h - tok::space_1 - audioW;
+            ImGui::SetCursorScreenPos(ImVec2(audioX, toolbarOrigin.y));
+            if (ChipButton::Draw(audioLabel, sessionMode, tok::control_h))
                SetSessionAudio(!sessionMode);
             if (ImGui::IsItemHovered())
                HelpTip("%s", !gAudioStartError.empty() && AudioEngine::Instance().SampleRate() <= 0.0
@@ -1818,8 +1921,8 @@ namespace app
             {
                const char* takeLabel = T("Render Take");
                const float takeW = ImGui::CalcTextSize(takeLabel).x + 2.0f * tok::space_2;
-               ImGui::SetCursorScreenPos(ImVec2(right - audioW - tok::space_1 - takeW, toolbarOrigin.y));
-               if (ChipButton::Draw(takeLabel, false, tok::tile))
+               ImGui::SetCursorScreenPos(ImVec2(audioX - tok::space_2 - takeW, toolbarOrigin.y));
+               if (ChipButton::Draw(takeLabel, false, tok::control_h))
                {
                   // Record wrote the take onto the Timeline; the render dialog opens right here with its span
                   // set (audio and video together, saved to the folder you pick).
@@ -1839,8 +1942,10 @@ namespace app
             const ImVec2 m = ImGui::GetIO().MousePos;
             const ImVec2 o = ImGui::GetWindowPos();
             if (m.y >= toolbarTop && m.y < toolbarBottom && m.x >= o.x && m.x < o.x + panelSize.x &&
-                ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && ImGui::IsMouseReleased(ImGuiMouseButton_Right) &&
-                !ImGui::IsPopupOpen("##sessiondockctx"))
+                ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) && !ImGui::IsAnyItemHovered() &&
+                ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImGui::IsPopupOpen("##sessiondockctx"))
+               ImGui::OpenPopup("##sessiondockctx");
+            if (MenuParts::TestOpen("##sessiondockctx"))
                ImGui::OpenPopup("##sessiondockctx");
          }
          DrawArrangeRenderDialogs();
@@ -1864,7 +1969,7 @@ namespace app
                }
                ImGui::EndMenu();
             }
-            ImGui::Dummy(ImVec2(0.0f, tok::space_1));
+            MenuParts::Separator();
             if (MenuParts::Item(L("Close Session")))
                gSessionPanelOpen = false;
             MenuParts::EndPopup();
@@ -1881,7 +1986,7 @@ namespace app
          const bool isWide = panelSize.x >= 720.0f;
          const bool showMon = isWide && sSessionShowMonitor;
          const float monW = isWide ? std::clamp(panelSize.x * 0.28f, 180.0f, 320.0f) : 0.0f;
-         constexpr float kInspectorW = 244.0f;
+         const float kInspectorW = ArrangeClipSettingsWidth(std::max(244.0f, ImGui::GetContentRegionAvail().x * 0.5f));
          // The inspector shows the selected slot clip; it opens from a cell (double-click) and closes with its own X.
          const bool showInspector = gArrangeClipSettingsPanelOpen && ArrangeSelectedSlotId() != 0;
          const float spacing = ImGui::GetStyle().ItemSpacing.x;
@@ -1898,7 +2003,19 @@ namespace app
             ImGui::SetCursorScreenPos(ImVec2(gridX + gridW + spacing, rowOrigin.y));
             DrawArrangeClipSettingsChild(kInspectorW);
          }
-         DrawArrangeClipContextMenu(ArrangeSessionTakeClipCtxRequest());
+         bool clipCtx = ArrangeSessionTakeClipCtxRequest();
+         // Self-test: the first filled cell, selected, as a right-click on it would.
+         if (MenuParts::TestOpen("##arrangeclipctx"))
+            for (const Arrange::Lane& l : gArrange.lanes)
+               for (size_t r = 0; r < l.slots.size() && !clipCtx; r++)
+                  if (l.slots[r].Has())
+                  {
+                     gArrangeCtxClipId = l.slots[r].clip.id;
+                     gArrangeSel = { gArrangeCtxClipId };
+                     gArrangeSelAnchor = gArrangeCtxClipId;
+                     clipCtx = true;
+                  }
+         DrawArrangeClipContextMenu(clipCtx);
       }
    }
 
@@ -1939,7 +2056,21 @@ namespace app
          grip();
       const ImVec2 savedSpacing = ImGui::GetStyle().ItemSpacing;
       ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, 0.0f);
-      ImGui::EndChild();
+      EndChildSafe();
       ImGui::GetStyle().ItemSpacing = savedSpacing;
    }
+
+// MENUALIVETEST: the slot clipboard is state a person sees (Paste lights up), but the patch does not hold it.
+std::string ArrangeSessionTestFingerprint()
+{
+   return (sSlotClip.has ? "slotclip:" + std::to_string((int)sSlotClip.laneType) : std::string("slotclip:-")) +
+          " timelineclip:" + std::to_string(gArrangeClipboard.items.size()) + " trackrename:" + std::to_string(sTrackRenameLaneId);
+}
+void ArrangeSessionTestReset()
+{
+   sSlotClip = {};
+   sTrackRenameLaneId = 0;
+   gArrangeClipboard = {};
+   gArrangeSel.clear();
+}
 }

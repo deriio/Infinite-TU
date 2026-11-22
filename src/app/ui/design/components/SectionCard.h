@@ -1,4 +1,4 @@
-// SectionCard: the grouping used by inspectors and dialogs. A soft well (5% text tint, radius_group) sits behind a
+// SectionCard: the grouping used by inspectors and dialogs. A soft well (5% text tint, radius_container) sits behind a
 // muted title and its rows; Begin() closes the previous card and opens the next, so a caller only marks where a
 // section starts. Cards reach kPad into the window padding, so the window needs at least that much of its own.
 // Also here: the label column (RowLabel), the dialog title, and a thin progress bar.
@@ -7,19 +7,27 @@
 #include <cmath>
 #include "app/AppShared.h"
 #include "app/ui/design/UiAnim.h"
+#include "app/ui/design/UiDensity.h"
 #include "app/ui/design/UiType.h"
 #include "app/ui/design/components/ChipButton.h"
+#include "app/ui/design/components/DeskParts.h"
 
 namespace SectionCard
 {
    constexpr float kPad = tok::space_2;     // card edge to content, and how far a card reaches into the window padding
-   constexpr float kLabelW = 72.0f;         // field label column
+   constexpr float kLabelW = tok::label_w;  // field label column
+   // The same two at the current density (UiDensity): use these inside a panel's settings.
+   inline float Pad() { return UiDensity::M().pad; }
+   inline float LabelW() { return UiDensity::M().label; }
 
    struct State
    {
       ImDrawListSplitter split;
       bool open = false;
       float top = 0.0f;
+      bool desk = false;   // a panel with the desk look sets this: cards draw as graphite faces
+      ImU32 deskCap = 0;
+      bool header = false;   // a card with a header row (collapsed or switched off) keeps its well
    };
    inline State& S()
    {
@@ -27,14 +35,19 @@ namespace SectionCard
       return s;
    }
 
-   // The soft well itself (5% text tint, hairline edge, radius_group), on the current window's draw list.
+   // The soft well itself (5% text tint, hairline edge, radius_container), on the current window's draw list.
    inline void Well(ImVec2 a, ImVec2 b)
    {
       ImDrawList* dl = ImGui::GetWindowDrawList();
+      if (S().desk)
+      {
+         DeskParts::Face(dl, a, b, S().deskCap, false);
+         return;
+      }
       const ImVec4 t = ImGui::GetStyleColorVec4(ImGuiCol_Text);
-      dl->AddRectFilled(a, b, ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, 0.05f)), tok::radius_group);
+      dl->AddRectFilled(a, b, ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, 0.05f)), tok::radius_container);
       dl->AddRect(a, b, ImGui::GetColorU32(CategoryColors::IsThemeLight() ? ImVec4(0, 0, 0, 0.055f) : ImVec4(1, 1, 1, 0.04f)),
-                  tok::radius_group);
+                  tok::radius_container);
    }
 
    // Call right after the window / child begins (and before its first card).
@@ -60,13 +73,15 @@ namespace SectionCard
       s.open = false;
       ImDrawList* dl = ImGui::GetWindowDrawList();
       const ImVec2 wp = ImGui::GetWindowPos();
-      const float x0 = wp.x + ImGui::GetWindowContentRegionMin().x - kPad;
-      const float x1 = wp.x + ImGui::GetWindowContentRegionMax().x + kPad;
-      const float y1 = ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y + kPad;
-      if (y1 - s.top >= 4.0f * kPad)   // nothing drawn in it: no empty sliver
+      const float x0 = wp.x + ImGui::GetWindowContentRegionMin().x - Pad();
+      const float x1 = wp.x + ImGui::GetWindowContentRegionMax().x + Pad();
+      const float y1 = ImGui::GetCursorScreenPos().y - ImGui::GetStyle().ItemSpacing.y + Pad();
+      const bool header = s.header;
+      s.header = false;
+      if (header || y1 - s.top >= 4.0f * Pad())   // nothing drawn in it: no empty sliver; a header alone is still a card
       {
          s.split.SetCurrentChannel(dl, 0);
-         Well(ImVec2(x0, s.top - kPad), ImVec2(x1, y1));
+         Well(ImVec2(x0, s.top - Pad()), ImVec2(x1, y1));
          s.split.SetCurrentChannel(dl, 1);
       }
       ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, y1 - ImGui::GetStyle().ItemSpacing.y));
@@ -77,10 +92,14 @@ namespace SectionCard
    inline void Begin()
    {
       End();
-      ImGui::Dummy(ImVec2(0.0f, kPad));
+      S().header = false;
+      ImGui::Dummy(ImVec2(0.0f, Pad()));
       S().top = ImGui::GetCursorScreenPos().y;
       S().open = true;
    }
+
+   // The card just begun has a collapsible header: it keeps its well when closed or switched off (Blender panels).
+   inline void MarkHeader() { S().header = true; }
 
    // A card with a muted title (Body size, medium).
    inline void Begin(const char* title)
@@ -99,13 +118,13 @@ namespace SectionCard
       ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(t.x, t.y, t.z, 0.72f));
       ImGui::TextUnformatted(text);
       ImGui::PopStyleColor();
-      ImGui::SameLine(kLabelW);
+      ImGui::SameLine(LabelW());
    }
 
    // Window title: Title size, semibold.
    inline void Title(const char* text)
    {
-      UiType::Scope s(UiType::Size::Title, UiType::Weight::Semibold);
+      UiType::Scope s(UiType::Size::Body, UiType::Weight::Semibold);
       ImGui::TextUnformatted(text);
    }
 

@@ -1,4 +1,5 @@
 // Split out of main(): see docs/plans/main-split/README.md (Block C)
+#include <unordered_map>
 #include "app/ui/design/components/AudioViz.h"
 #include "app/ui/design/TokenColors.h"
 #include "app/ui/design/components/FieldWell.h"
@@ -75,6 +76,12 @@ void DrawNodeParamsBody(GraphNode& gn)
       DrawMathParams(n);
    else if (auto* n = dynamic_cast<CompareNode*>(gn.node.get()))
       DrawCompareParams(n);
+   else if (auto* n = dynamic_cast<LogicGateNode*>(gn.node.get()))
+      DrawLogicGateParams(n);
+   else if (auto* n = dynamic_cast<BrainSourceNode*>(gn.node.get()))
+      DrawBrainSourceParams(n);
+   else if (auto* n = dynamic_cast<BrainSculptNode*>(gn.node.get()))
+      DrawBrainSculptParams(n);
    else if (auto* n = dynamic_cast<RangeToRangeNode*>(gn.node.get()))
       DrawRangeToRangeParams(n);
    else if (auto* n = dynamic_cast<SmoothNode*>(gn.node.get()))
@@ -163,6 +170,48 @@ void DrawNodeParamsBody(GraphNode& gn)
       DrawMaterialParams(n);
    else if (auto* n = dynamic_cast<MappingNode*>(gn.node.get()))
       DrawMappingParams(n);
+   else if (auto* n = dynamic_cast<ShadeCoordNode*>(gn.node.get()))
+      DrawShadeCoordParams(n);
+   else if (auto* n = dynamic_cast<ShadeMappingNode*>(gn.node.get()))
+      DrawShadeMappingParams(n);
+   else if (auto* n = dynamic_cast<ShadeCheckerNode*>(gn.node.get()))
+      DrawShadeCheckerParams(n);
+   else if (auto* n = dynamic_cast<ShadeNoiseNode*>(gn.node.get()))
+      DrawShadeNoiseParams(n);
+   else if (auto* n = dynamic_cast<ShadeVoronoiNode*>(gn.node.get()))
+      DrawShadeVoronoiParams(n);
+   else if (auto* n = dynamic_cast<ShadeGradientNode*>(gn.node.get()))
+      DrawShadeGradientParams(n);
+   else if (auto* n = dynamic_cast<ShadeBrickNode*>(gn.node.get()))
+      DrawShadeBrickParams(n);
+   else if (auto* n = dynamic_cast<ShadeImageNode*>(gn.node.get()))
+      DrawShadeImageParams(n);
+   else if (auto* n = dynamic_cast<ShadeMathNode*>(gn.node.get()))
+      DrawShadeMathParams(n);
+   else if (auto* n = dynamic_cast<ShadeVectorMathNode*>(gn.node.get()))
+      DrawShadeVectorMathParams(n);
+   else if (auto* n = dynamic_cast<ShadeMixNode*>(gn.node.get()))
+      DrawShadeMixParams(n);
+   else if (auto* n = dynamic_cast<ShadeRampNode*>(gn.node.get()))
+      DrawShadeRampParams(n);
+   else if (auto* n = dynamic_cast<ShadeMapRangeNode*>(gn.node.get()))
+      DrawShadeMapRangeParams(n);
+   else if (auto* n = dynamic_cast<ShadeSeparateNode*>(gn.node.get()))
+      DrawShadeSeparateParams(n);
+   else if (auto* n = dynamic_cast<ShadeCombineNode*>(gn.node.get()))
+      DrawShadeCombineParams(n);
+   else if (auto* n = dynamic_cast<ShadeCurvesNode*>(gn.node.get()))
+      DrawShadeCurvesParams(n);
+   else if (auto* n = dynamic_cast<ShadeBumpNode*>(gn.node.get()))
+      DrawShadeBumpParams(n);
+   else if (auto* n = dynamic_cast<ShadeNormalMapNode*>(gn.node.get()))
+      DrawShadeNormalMapParams(n);
+   else if (auto* n = dynamic_cast<ShadeFresnelNode*>(gn.node.get()))
+      DrawShadeFresnelParams(n);
+   else if (auto* n = dynamic_cast<ShadeLayerWeightNode*>(gn.node.get()))
+      DrawShadeLayerWeightParams(n);
+   else if (auto* n = dynamic_cast<ShadeGeometryNode*>(gn.node.get()))
+      DrawShadeGeometryParams(n);
    else if (auto* n = dynamic_cast<ParticleSystemNode*>(gn.node.get()))
       DrawParticleSystemParams(n);
    else if (auto* n = dynamic_cast<ClothNode*>(gn.node.get()))
@@ -237,6 +286,8 @@ void DrawNodeParamsBody(GraphNode& gn)
          DrawEditMeshParams(n);
       else if (auto* n = dynamic_cast<Switcher3DNode*>(gn.node.get()))
          DrawSwitcher3DParams(n);
+      else if (auto* n = dynamic_cast<Group3DNode*>(gn.node.get()))
+         DrawGroup3DParams(n);
       else if (auto* n = dynamic_cast<CameraNode*>(gn.node.get()))
          DrawCameraParams(n);
       else if (auto* n = dynamic_cast<LightNode*>(gn.node.get()))
@@ -245,6 +296,8 @@ void DrawNodeParamsBody(GraphNode& gn)
          DrawRender3DParams(n);
       else if (auto* n = dynamic_cast<Scene3DNode*>(gn.node.get()))
          DrawScene3DParams(n);
+      else if (dynamic_cast<Scene2DNode*>(gn.node.get()) != nullptr)
+         DrawScene2DBody(gn);
       else if (auto* n = dynamic_cast<ImageAnalyzeNode*>(gn.node.get()))
          DrawImageAnalyzeParams(n);
       else if (auto* n = dynamic_cast<TrackNodeBase*>(gn.node.get()))
@@ -299,6 +352,8 @@ void DrawNodeParamsBody(GraphNode& gn)
          DrawSketch3DParams(n);
       else if (auto* n = dynamic_cast<FieldSampleNode*>(gn.node.get()))
          DrawFieldSampleParams(n);
+      else if (auto* n = dynamic_cast<SpectralFieldNode*>(gn.node.get()))
+         DrawSpectralFieldParams(n);
       else if (auto* n = dynamic_cast<FieldSynthNode*>(gn.node.get()))
          DrawFieldSynthParams(n);
       else if (auto* n = dynamic_cast<FieldNotesNode*>(gn.node.get()))
@@ -374,7 +429,7 @@ void DrawNodeParamsBody(GraphNode& gn)
             PopSelectedButtonColors();
 
          if (ActionButton::Draw(L("Export Image"), ImVec2(kPreviewSize, 0)))
-            ExportImage(n, n->exportImagePath);
+            ExportImage(n, n->exportImagePath, std::clamp(n->jpegQuality, 1, 100));
 
          ImGui::Dummy(ImVec2(0, 4));
 
@@ -441,7 +496,7 @@ void DrawNodeParamsBody(GraphNode& gn)
          ModCheckbox(L("include audio"), &n->includeAudio);
          ImGui::EndDisabled();
          if (n->IsRecording() && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-            NodeTip("%s", T("locked for the current take"));
+            ImGui::SetTooltip("%s", T("locked for the current take"));
          if (n->includeAudio && n->AudioInput().IsConnected())
          {
             INode* src = n->AudioInput().GetSource();
@@ -610,7 +665,6 @@ void DrawNodeBodies(FrameCtx& fc)
    // Every envelope panel publishes its rect here each frame (PublishWtTestRect), not only the
    // Wavetable body that clears it, so a patch with no Wavetable grew it forever (~1 MB/min).
    gWtTestRects.clear();
-   ImGuiIO& io = ImGui::GetIO();
    auto& frameId = fc.frameId;
    auto& benchB6Stages = fc.benchB6Stages;
    auto& benchStagesSample = fc.benchStagesSample;
@@ -645,7 +699,10 @@ void DrawNodeBodies(FrameCtx& fc)
          // an encapsulated instrument, §4) are unaffected - those register
          // normally since the FieldGraphNode box itself is never hidden.
          if (gn.hiddenFromCanvas)
+         {
+            RegisterScene2DParams(gn);
             continue;
+         }
 
          bool b6NodeIsVisible = true;
          double b6NodeDrawStartMs = 0.0;
@@ -756,7 +813,7 @@ void DrawNodeBodies(FrameCtx& fc)
             ed::PushStyleColor(ed::StyleColor_NodeBorder, ImColor(0, 0, 0, 0));
             ed::PushStyleVar(ed::StyleVar_NodePadding, ImVec4(0, 0, 0, 0));
             ed::PushStyleVar(ed::StyleVar_NodeBorderWidth, 0.0f);
-            ed::PushStyleVar(ed::StyleVar_NodeRounding, 6.0f);
+            ed::PushStyleVar(ed::StyleVar_NodeRounding, tok::radius_control);
          }
          else
          {
@@ -907,7 +964,7 @@ void DrawNodeBodies(FrameCtx& fc)
          if (!isComment)
          {
             {
-               UiType::Scope titleType(UiType::Size::Title, UiType::Weight::Medium);
+               UiType::Scope titleType(UiType::Size::Body, UiType::Weight::Medium);
                ImGui::TextUnformatted(NodeTitle(gn).c_str());
             }
             int instanceTotal = 0;
@@ -984,6 +1041,14 @@ void DrawNodeBodies(FrameCtx& fc)
             // destination, so the single-history meter below would have to pick one and present
             // it as the node's output. DrawDriftMeter draws the same box with every line in it.
             DrawDriftMeter(dynamic_cast<DriftNode*>(gn.node.get()), gn.index);
+         }
+         else if (auto* brainSrc = dynamic_cast<BrainSourceNode*>(gn.node.get()))
+         {
+            DrawBrainSourceBody(brainSrc, gn.index);
+         }
+         else if (auto* logicGate = dynamic_cast<LogicGateNode*>(gn.node.get()))
+         {
+            DrawLogicGateBody(logicGate, gn.index);
          }
          else if (!isAudioBody && dynamic_cast<IModulator*>(gn.node.get()) != nullptr)
          {
@@ -1234,6 +1299,8 @@ void DrawNodeBodies(FrameCtx& fc)
          }
          else if (auto* fsnPreview = dynamic_cast<FieldSampleNode*>(gn.node.get()))
             DrawFieldSampleScope(fsnPreview, 60.0f, kPreviewSize);
+         else if (auto* sfnPreview = dynamic_cast<SpectralFieldNode*>(gn.node.get()))
+            DrawSpectralFieldSpectrum(sfnPreview, 60.0f, kPreviewSize);
          else if (auto* fspPreview = dynamic_cast<FieldSynthNode*>(gn.node.get()))
             DrawFieldSynthScope(fspPreview, 60.0f, kPreviewSize);
          else if (auto* fnnPreview = dynamic_cast<FieldNotesNode*>(gn.node.get()))
@@ -1418,6 +1485,7 @@ void DrawNodeBodies(FrameCtx& fc)
                                           InspectorOwnsParams(gn)); // fork: inspector draws them, canvas registers
          ImGuiWindow* paramsWindow = ImGui::GetCurrentWindow();
          const bool savedSkipItems = paramsWindow->SkipItems;
+         const ImVec2 savedCursor = paramsWindow->DC.CursorPos;
          if (registerOnlyParams)
          {
             gParamRegisterOnly = true;
@@ -1432,6 +1500,10 @@ void DrawNodeBodies(FrameCtx& fc)
          {
             ImGui::GetWindowDrawList()->PopClipRect();
             paramsWindow->SkipItems = savedSkipItems;
+            // A skipped body still moves the cursor (SetCursorScreenPos is not an item): put it back, so EndGroup
+            // does not see a group grown by a body that drew nothing.
+            paramsWindow->DC.CursorPos = savedCursor;
+            paramsWindow->DC.IsSetPos = false;
             gParamRegisterOnly = false;
          }
 
@@ -1570,9 +1642,7 @@ void DrawNodeBodies(FrameCtx& fc)
       }
 
       fc.timerLinks.emplace((benchB6Stages && benchStagesCpuSample) ? &sStageLinks : nullptr, Bench::FrameTail::kLinks);
-   auto& timerLinks = *fc.timerLinks;
       fc.timerLinksGpu.emplace((benchB6Stages && benchStagesSample) ? &sGpuTimerRing : nullptr, "links", frameId);
-   auto& timerLinksGpu = *fc.timerLinksGpu;
 
       // ---- draw existing links ----
       // Link ids are derived from the destination pin id (kLinkIdBase +
@@ -1589,6 +1659,16 @@ void DrawNodeBodies(FrameCtx& fc)
       // collision-free space across image/audio/note/modulation/palette
       // cables, same as before; only the offset changed.
       gLinks.clear();
+      // One node-pointer lookup for every cable below (each used to scan gNodes);
+      // the first node in order wins, as the scans did.
+      std::unordered_map<const void*, GraphNode*> nodeByPtr;
+      nodeByPtr.reserve(gNodes.size());
+      for (GraphNode& src : gNodes)
+         nodeByPtr.emplace((const void*)src.node.get(), &src);
+      const auto sourceOf = [&](const void* p) -> GraphNode* {
+         const auto it = nodeByPtr.find(p);
+         return it == nodeByPtr.end() ? nullptr : it->second;
+      };
       for (GraphNode& gn : gNodes)
       {
          int inputs = InputCountFor(gn);
@@ -1598,45 +1678,27 @@ void DrawNodeBodies(FrameCtx& fc)
             if (cable == nullptr || !cable->IsConnected())
                continue;
 
-            for (GraphNode& src : gNodes)
-            {
-               if (src.node.get() == cable->GetSource())
-               {
-                  gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
-                                     src.OutputPinId(cable->GetSourceOutput()), gn.InputPinId(slot) });
-                  break;
-               }
-            }
+            if (GraphNode* src = sourceOf((const void*)cable->GetSource()))
+               gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
+                                  src->OutputPinId(cable->GetSourceOutput()), gn.InputPinId(slot) });
          }
          for (int slot = 0; slot < kMaxAudioSlots; slot++)
          {
             AudioCable* cable = gn.node->AudioInputSlot(slot);
             if (cable == nullptr || !cable->IsConnected())
                continue;
-            for (GraphNode& src : gNodes)
-            {
-               if (src.node.get() == cable->GetSource())
-               {
-                  gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
-                                     src.OutputPinId(cable->GetOutputSlot()), gn.InputPinId(slot) });
-                  break;
-               }
-            }
+            if (GraphNode* src = sourceOf((const void*)cable->GetSource()))
+               gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
+                                  src->OutputPinId(cable->GetOutputSlot()), gn.InputPinId(slot) });
          }
          for (int slot = 0; slot < kMaxNoteSlots; slot++)
          {
             NoteCable* cable = gn.node->NoteInputSlot(slot);
             if (cable == nullptr || !cable->IsConnected())
                continue;
-            for (GraphNode& src : gNodes)
-            {
-               if (src.node.get() == cable->GetSource())
-               {
-                  gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
-                                     src.OutputPinId(cable->GetOutputSlot()), gn.InputPinId(slot) });
-                  break;
-               }
-            }
+            if (GraphNode* src = sourceOf((const void*)cable->GetSource()))
+               gLinks.push_back({ kLinkIdBase + gn.InputPinId(slot),
+                                  src->OutputPinId(cable->GetOutputSlot()), gn.InputPinId(slot) });
          }
       }}
 }

@@ -48,10 +48,10 @@ namespace app
       }
       else
       {
-         EmptyState::DrawCaption(origin, ImVec2(origin.x + size, origin.y + size), EmptyPreviewLabel(gn.node.get(), "no geometry"));
+         EmptyState::DrawCaption(origin, ImVec2(origin.x + size, origin.y + size), EmptyPreviewLabel(gn.node.get(), T("No geometry")));
       }
       dl->AddRect(origin, ImVec2(origin.x + size, origin.y + size),
-                  tok::U32(tok::pal::c_464A5AFF), 4.0f);
+                  tok::U32(tok::pal::c_464A5AFF), tok::radius_control);
 
       // Same drag-to-orbit / scroll-to-zoom feel as DrawPreview's embedded
       // Render3DNode viewport. Orbit rotates this node's own entry in
@@ -146,6 +146,9 @@ namespace app
       // IAudioSource (its own audio track) but, unlike every other audio
       // node, GetOutputTexture() is a real video frame, not 0 - so it still
       // belongs in the viewport panel/projector.
+      // Audio Texture is the other exception: audio in, a real spectrum/wave picture out.
+      if (dynamic_cast<AudioTextureNode*>(n) != nullptr)
+         return true;
       if ((dynamic_cast<IAudioSource*>(n) != nullptr && dynamic_cast<VideoSourceNode*>(n) == nullptr) ||
           n->AudioInputSlot(0) != nullptr ||
           dynamic_cast<INoteSource*>(n) != nullptr || n->NoteInputSlot(0) != nullptr)
@@ -176,10 +179,10 @@ namespace app
    // Small breathing room between the title row and the render/image below
    // it - without this the render started at the exact next-line cursor with
    // zero gap, so it visually touched the title row.
-   // A card is a group well: padding on every side, a 28 px title row (title left, close tile right), then
+   // A card is a group well: padding on every side, a row_h title row (title left, close tile right), then
    // the render in a rounded tile.
    constexpr float kViewportCardPad = tok::space_2;
-   constexpr float kViewportCardTitleRow = 28.0f;
+   constexpr float kViewportCardTitleRow = tok::row_h;
 
    float ViewportPanelTitleHeight()
    {
@@ -204,7 +207,7 @@ namespace app
       {
          ImVec4 w = ImGui::GetStyleColorVec4(ImGuiCol_Text);
          w.w *= 0.05f;
-         dl->AddRectFilled(cardMin, cardMax, ImGui::GetColorU32(w), tok::radius_group);
+         dl->AddRectFilled(cardMin, cardMax, ImGui::GetColorU32(w), tok::radius_container);
       }
 
       // Title row: name on the left, a quiet close tile on the right (neutral wash on hover, no red).
@@ -220,7 +223,7 @@ namespace app
          ImVec4 t = ImGui::GetStyleColorVec4(ImGuiCol_Text);
          if (hot)
             dl->AddRectFilled(bmin, bmax, ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, ImGui::IsItemActive() ? 0.12f : 0.07f)),
-                              tok::radius_tile);
+                              tok::radius_control);
          t.w *= hot ? 1.0f : 0.55f;
          glyph::DrawX(dl, ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tile * 0.5f, ImGui::GetColorU32(t));
       }
@@ -237,9 +240,9 @@ namespace app
 
       const ImVec2 origin = ImGui::GetCursorScreenPos();
       const ImVec2 br(origin.x + imageSize.x, origin.y + imageSize.y);
-      DrawCheckerboardBackdrop(dl, origin, br, tok::radius_tile);
+      DrawCheckerboardBackdrop(dl, origin, br, tok::radius_control);
 
-      if (auto* geo = dynamic_cast<IGeometrySource*>(gn.node.get()))
+      if (dynamic_cast<IGeometrySource*>(gn.node.get()) != nullptr)
       {
          // Same solo mesh render as the inline mini viewport, including its
          // orbit/zoom input handling. cam is the same gNodeCameras entry the
@@ -250,9 +253,9 @@ namespace app
          const unsigned int tex = viewport.Render(dynamic_cast<IGeometrySource*>(DisplayNode(gn.node.get())),
                                                   cam, (int)imageSize.x, (int)imageSize.y);
          if (tex != 0)
-            dl->AddImageRounded((ImTextureID)(intptr_t)tex, origin, br, ImVec2(0, 1), ImVec2(1, 0), IM_COL32_WHITE, tok::radius_tile);
+            dl->AddImageRounded((ImTextureID)(intptr_t)tex, origin, br, ImVec2(0, 1), ImVec2(1, 0), IM_COL32_WHITE, tok::radius_control);
          else
-            EmptyState::DrawCaption(origin, br, EmptyPreviewLabel(gn.node.get(), "no geometry"));
+            EmptyState::DrawCaption(origin, br, EmptyPreviewLabel(gn.node.get(), T("No geometry")));
 
          ImGui::SetCursorScreenPos(origin);
          char btnId[32];
@@ -277,7 +280,7 @@ namespace app
          // matching drag-orbit just above on this same gNodeCameras entry.
          ApplyViewHotkeys(cam.azimuth, cam.elevation);
          if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-            dl->AddRect(origin, br, ImGui::GetColorU32(ImGuiCol_CheckMark, 0.6f), tok::radius_tile, 0, 1.0f);
+            dl->AddRect(origin, br, ImGui::GetColorU32(ImGuiCol_CheckMark, 0.6f), tok::radius_control, 0, 1.0f);
          // Layout cursor already sits at origin+imageSize from the
          // InvisibleButton above; the trailing Dummy(imageSize) below is
          // shared with the non-geometry branch, so rewind rather than
@@ -306,7 +309,7 @@ namespace app
          }
          else
          {
-            EmptyState::DrawCaption(origin, ImVec2(origin.x + imageSize.x, origin.y + imageSize.y), EmptyPreviewLabel(gn.node.get(), "no input"));
+            EmptyState::DrawCaption(origin, ImVec2(origin.x + imageSize.x, origin.y + imageSize.y), EmptyPreviewLabel(gn.node.get(), T("No input")));
          }
 
          // A Draw node's panel card is paintable, same as its inline preview
@@ -383,13 +386,13 @@ namespace app
             // this render's "orbit"/"elevation" sliders (main.cpp ~23053).
             ApplyViewHotkeys(*azimuth, *elevation, []() { PushUndoCheckpoint(); });
             if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-               dl->AddRect(origin, br, ImGui::GetColorU32(ImGuiCol_CheckMark, 0.6f), tok::radius_tile, 0, 1.0f);
+               dl->AddRect(origin, br, ImGui::GetColorU32(ImGuiCol_CheckMark, 0.6f), tok::radius_control, 0, 1.0f);
             ImGui::SetCursorScreenPos(origin);
          }
       }
 
       ImGui::Dummy(imageSize);
-      ImGui::EndChild();
+      EndChildSafe();
       PopDockedPanelStyle();
 
       if (closeRequested)
@@ -470,7 +473,7 @@ namespace app
          EmptyState::DrawInWindow(T("No active viewport cards"), T("Select nodes & press Shift+V or right-click to add"));
       }
 
-      ImGui::EndChild();
+      EndChildSafe();
 
       // Right-click anywhere on the panel - empty space or a card - to
       // reposition or close it. Replaces the dock-combo/close-button header
@@ -484,26 +487,31 @@ namespace app
       const ImVec2 mouse = ImGui::GetIO().MousePos;
       const bool overPanel = mouse.x >= panelOrigin.x && mouse.x < panelOrigin.x + strip.x &&
                              mouse.y >= panelOrigin.y && mouse.y < panelOrigin.y + strip.y;
-      if (overPanel && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+      if (overPanel && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImGui::IsAnyItemHovered() &&
+          ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows) &&
+          !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))
          ImGui::OpenPopup("##viewportpanelctx");
 
+      if (MenuParts::TestOpen("##viewportpanelctx"))
+         ImGui::OpenPopup("##viewportpanelctx");
       if (MenuParts::BeginPopup("##viewportpanelctx"))
       {
          static const char* kDockLabels[] = { I18N_KEY("Bottom"), I18N_KEY("Right"), I18N_KEY("Left"), I18N_KEY("Top"), I18N_KEY("Floating Window") };
-         for (int i = 0; i < 5; i++)
-            if (MenuParts::Item(L(kDockLabels[i]), nullptr, i == gViewportPanelDock))
-               gViewportPanelDock = i;
-         MenuParts::Separator();
-         if (MenuParts::Item(L("Close panel")))
-            gViewportPanelOpen = false;
-         if (!gViewportPanelNodes.empty())
+         if (MenuParts::SubMenu(L("Dock Position")))
          {
-            if (MenuParts::Item(L("Clear all cards")))
-            {
-               gViewportPanelNodes.clear();
-               gViewportPanelOpen = false;
-            }
+            for (int i = 0; i < 5; i++)
+               if (MenuParts::Item(L(kDockLabels[i]), nullptr, i == gViewportPanelDock))
+                  gViewportPanelDock = i;
+            ImGui::EndMenu();
          }
+         if (MenuParts::Item(L("Clear Cards"), nullptr, false, !gViewportPanelNodes.empty()))
+         {
+            gViewportPanelNodes.clear();
+            gViewportPanelOpen = false;
+         }
+         MenuParts::Separator();
+         if (MenuParts::Item(L("Close Viewport")))
+            gViewportPanelOpen = false;
          MenuParts::EndPopup();
       }
    }
@@ -609,7 +617,7 @@ namespace app
       // Set directly, not pushed: a push made in the child and popped in the parent unbalances both stacks.
       const ImVec2 savedSpacing = ImGui::GetStyle().ItemSpacing;
       ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, 0.0f);
-      ImGui::EndChild();
+      EndChildSafe();
       ImGui::GetStyle().ItemSpacing = savedSpacing;
 
       // No divider line along the canvas-facing edge, in either theme. This

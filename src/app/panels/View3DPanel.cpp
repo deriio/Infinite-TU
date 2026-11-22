@@ -6,6 +6,11 @@
 #include "app/AppShared.h"
 #include "app/ui/design/GlyphDraw.h"
 #include "app/ui/design/TokenColors.h"
+#include "app/ui/design/UiDensity.h"
+#include "app/ui/design/components/PanelKit.h"
+#include <set>
+#include <sstream>
+#include <tuple>
 #include "app/ui/design/components/ActionButton.h"
 #include "app/ui/design/components/CheckBox.h"
 #include "app/ui/design/components/EmptyState.h"
@@ -31,6 +36,7 @@
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include "app/frame/CanvasLink.h"
 #include <string>
 #include <vector>
 
@@ -42,16 +48,17 @@ using I18n::T;
 bool gView3DOpen = false;
 float gView3DHeight = 420.0f;
 int gView3DDock = 0;
+float gView3DWidth = 620.0f;
+int gView3DDockBack = 0;
 bool gView3DClaimedKeys = false;
 ImVec2 gView3DRectMin, gView3DRectMax;
 
 namespace
 {
-   constexpr float kMinHeight = 300.0f;
-   constexpr float kSideW = 340.0f;
+   constexpr float kSideW = UiDensity::kInspectorW + tok::control_h + tok::space_3;   // tab rail + one compact strip
    constexpr float kPi = 3.14159265f;
    constexpr float kFov = 45.0f;
-   constexpr float kIconW = 30.0f;
+   constexpr float kIconW = tok::control_h;
    constexpr float kGizmoPx = 84.0f;
 
    // Overlay colours are Blender's factory theme, not the app's: a 3D viewport is
@@ -165,6 +172,7 @@ namespace
       int axis = -1;               // engine index; the Z key is 1, the vertical
       bool plane = false;          // Shift + axis: the plane without that axis
       std::string readout;         // the running op in the axes the user sees
+      std::string typed;           // a number typed while the op runs (Blender's numeric input); wins over the mouse
       ImVec2 start;
       float pivot[3] = { 0, 0, 0 };    // world
       float normal[3] = { 0, 1, 0 };   // world, the selected faces' (extrude)
@@ -278,10 +286,32 @@ namespace
       return gn != nullptr ? dynamic_cast<Scene3DNode*>(gn->node.get()) : nullptr;
    }
 
-   // With two 3D View nodes, the panel shows the one last selected on the canvas.
-   // "Assign Node...": the next node clicked on the canvas becomes this item's source.
+   std::vector<GraphNode*> SourceChoices(Scene3DNode* scene, const Item& it);
+   // A picked / chosen source (CanvasLink), applied on the panel's next draw.
    int sPickItem = -1;
    uint64_t sPickedUid = 0;
+
+   // The object's source as a Canvas Link: choose from the list or pick on the canvas; applied on the panel's next draw.
+   CanvasLink::Spec SourceSpec(int itemId)
+   {
+      CanvasLink::Spec spec;
+      spec.owner = "v3d.source";
+      spec.kind = T("source node");
+      spec.accepts = [itemId](const GraphNode& gn) {
+         Scene3DNode* sc = FindScene();
+         const Item* it = sc != nullptr ? sc->FindItem(itemId) : nullptr;
+         if (it == nullptr)
+            return false;
+         for (GraphNode* c : SourceChoices(sc, *it))
+            if (c == &gn)
+               return true;
+         return false;
+      };
+      spec.onPicked = [itemId](uint64_t uid) { sPickItem = itemId, sPickedUid = uid; };
+      return spec;
+   }
+
+   // With two 3D View nodes, the panel shows the one last selected on the canvas.
 
    void FollowCanvasSelection()
    {
@@ -291,7 +321,6 @@ namespace
       ed::SetCurrentEditor(gEditor);
       // Only a new selection moves it, so the panel's own scene picker holds while a node stays selected.
       static uint64_t sFollowed = 0;
-      static uint64_t sLastNode = 0;
       uint64_t selected = 0, anyNode = 0;
       for (GraphNode& gn : gNodes)
          if (ed::IsNodeSelected(gn.NodeId()))
@@ -299,9 +328,7 @@ namespace
             anyNode = gn.uid;
             break;
          }
-      if (anyNode != 0 && anyNode != sLastNode && sPickItem >= 0)
-         sPickedUid = anyNode;
-      sLastNode = anyNode;
+      (void)anyNode;
       for (GraphNode& gn : gNodes)
          if (dynamic_cast<Scene3DNode*>(gn.node.get()) != nullptr && ed::IsNodeSelected(gn.NodeId()))
          {
@@ -1608,26 +1635,55 @@ namespace
    }
 
    // Drops every other selected item, in list order.
+   // A group counts as one: its members select together.
+   int UnitKey(const Item& it) { return it.group != 0 ? -it.group : it.id; }
+   int SelectedUnits(Scene3DNode* scene)
+   {
+      std::vector<int> seen;
+      for (int id : sSel)
+         if (const Item* it = scene->FindItem(id))
+            if (std::find(seen.begin(), seen.end(), UnitKey(*it)) == seen.end())
+               seen.push_back(UnitKey(*it));
+      return (int)seen.size();
+   }
+
+   // Keeps every other selected item, a group counting as one.
    void SelectChecker(Scene3DNode* scene)
    {
-      std::vector<int> now;
-      int n = 0;
+      std::vector<int> keep, now;
       for (const Item& it : scene->Items())
-         if (Selected(it.id) && (n++ % 2) == 0)
-            now.push_back(it.id);
+         if (Selected(it.id))
+         {
+            const int k = UnitKey(it);
+            auto at = std::find(keep.begin(), keep.end(), k);
+            if (at == keep.end())
+            {
+               keep.push_back(k);
+               at = keep.end() - 1;
+            }
+            if (((at - keep.begin()) % 2) == 0)
+               now.push_back(it.id);
+         }
       sSel = now;
    }
 
-   // Adds whatever shares a group with the selection.
+   // Adds what shows the same node as the selection (duplicates), and what shares a group with it.
    void SelectLinked(Scene3DNode* scene)
    {
       std::vector<int> groups;
+      std::vector<uint64_t> uids;
       for (int id : sSel)
          if (const Item* it = scene->FindItem(id))
+         {
             if (it->group != 0)
                groups.push_back(it->group);
+            if (it->uid != 0)
+               uids.push_back(it->uid);
+         }
       for (const Item& it : scene->Items())
-         if (Pickable(scene, it) && !Selected(it.id) && std::find(groups.begin(), groups.end(), it.group) != groups.end())
+         if (Pickable(scene, it) && !Selected(it.id) &&
+             ((it.group != 0 && std::find(groups.begin(), groups.end(), it.group) != groups.end()) ||
+              (it.uid != 0 && std::find(uids.begin(), uids.end(), it.uid) != uids.end())))
             sSel.insert(sSel.begin(), it.id);
    }
 
@@ -1679,6 +1735,32 @@ namespace
                it->pos[k] += d[k];
          }
       scene->Commit();
+   }
+
+   // A selected item off the grid (Selection to Grid has something to move) / following another (Clear Follow has
+   // something to clear): the rows grey otherwise.
+   bool SelectionOffGrid(Scene3DNode* scene)
+   {
+      const float step = sSet->snapMove > 0.0f ? sSet->snapMove : 1.0f;
+      for (int id : sSel)
+         if (const Item* it = scene->FindItem(id))
+         {
+            float c[3];
+            scene->ItemCenter(*it, c);
+            for (int k = 0; k < 3; k++)
+               if (std::fabs(SnapTo(c[k], step) - c[k]) > 1.0e-5f)
+                  return true;
+         }
+      return false;
+   }
+
+   bool SelectionFollows(Scene3DNode* scene)
+   {
+      for (int id : sSel)
+         if (const Item* it = scene->FindItem(id))
+            if (it->follow != 0)
+               return true;
+      return false;
    }
 
    void SelectionToGrid(Scene3DNode* scene)
@@ -1997,6 +2079,8 @@ namespace
 
    // Move to the ground point under the last place the pointer was over the view.
    ImVec2 sViewMouse(-1, -1);
+   ImVec2 sViewMn(0, 0), sViewMx(0, 0);   // the view's screen rect, last frame
+   int sGoToNode = 0;                     // Go to node requests (self-test fingerprint)
    void MoveToMouse(Scene3DNode* scene)
    {
       if (sSel.empty() || sViewMouse.x < 0)
@@ -2068,7 +2152,7 @@ namespace
       if (MenuParts::Item(T("Invert"), MODKEY "+I")) SelectInvert(scene);
       MenuParts::Separator();
       if (MenuParts::Item(T("Select Random"))) SelectRandom(scene, 0.5f);
-      if (MenuParts::Item(T("Checker Deselect"), nullptr, false, sSel.size() > 1)) SelectChecker(scene);
+      if (MenuParts::Item(T("Checker Deselect"), nullptr, false, SelectedUnits(scene) > 1)) SelectChecker(scene);
       MenuParts::Separator();
       if (MenuParts::Item(T("Select Linked"), nullptr, false, any)) SelectLinked(scene);
       if (MenuParts::Item(T("Select Same Type"), nullptr, false, any)) SelectSameType(scene);
@@ -2087,7 +2171,7 @@ namespace
    void DrawSnapItems(Scene3DNode* scene)
    {
       const bool any = !sSel.empty();
-      if (MenuParts::Item(T("Selection to Grid"), nullptr, false, any)) SelectionToGrid(scene);
+      if (MenuParts::Item(T("Selection to Grid"), nullptr, false, any && SelectionOffGrid(scene))) SelectionToGrid(scene);
       if (MenuParts::Item(T("Selection to Cursor"), nullptr, false, any)) SelectionToCursor(scene);
       if (MenuParts::Item(T("Selection to Cursor (Keep Offset)"), nullptr, false, any)) SelectionToCursorKeepOffset(scene);
       if (MenuParts::Item(T("Selection to Active"), nullptr, false, sSel.size() > 1)) SelectionToActive(scene);
@@ -2182,10 +2266,17 @@ namespace
          if (MenuParts::Item(T("Z"))) AlignSelected(scene, 2);
          ImGui::EndMenu();
       }
-      if (MenuParts::Item(T("Follow Active"), "Ctrl+P", false, sSel.size() > 1)) FollowActive(scene, false);
-      if (MenuParts::Item(T("Clear Follow"), "Alt+P", false, any)) FollowActive(scene, true);
-      if (MenuParts::Item(T("Pose Mode"), "Ctrl+Tab", sPose.on, any || sPose.on)) TogglePose(scene);
-      if (MenuParts::Item(T("Sculpt Mode"), "Ctrl+Tab", sSculpt.on, any || sSculpt.on)) ToggleSculpt(scene);
+      if (MenuParts::Item(T("Follow Active"), MODKEY "+P", false, sSel.size() > 1)) FollowActive(scene, false);
+      if (MenuParts::Item(T("Clear Follow"), "Alt+P", false, any && SelectionFollows(scene))) FollowActive(scene, true);
+      // Cmd/Ctrl+Tab poses a rig and sculpts anything else, so the key shows on the row it runs.
+      bool rigSelected = false;
+      {
+         Mat4 world;
+         const Item* it = sSel.empty() ? nullptr : scene->FindItem(sSel.back());
+         rigSelected = it != nullptr && PoseModel(*it, world) != nullptr;
+      }
+      if (MenuParts::Item(T("Pose Mode"), rigSelected ? "Ctrl+Tab" : nullptr, sPose.on, rigSelected || sPose.on)) TogglePose(scene);
+      if (MenuParts::Item(T("Sculpt Mode"), rigSelected ? nullptr : "Ctrl+Tab", sSculpt.on, any || sSculpt.on)) ToggleSculpt(scene);
       if (MenuParts::Item(T("Edit Mode"), "Tab", sEdit.on, any || sEdit.on)) ToggleEdit(scene);
       if (MenuParts::Item(T("Add IK to Bone"), "Shift+I", false, sPose.on && sPose.joint >= 0)) PoseIk(scene, false);
       if (MenuParts::Item(T("Clear IK"), "Alt+I", false, sPose.on)) PoseIk(scene, true);
@@ -2196,7 +2287,9 @@ namespace
          PoseArmature(scene)->ClearPaint();
       }
       if (MenuParts::Item(T("Copy Transform"), nullptr, false, any)) CopyGlobalTransform(scene);
-      if (MenuParts::Item(T("Paste Transform"), nullptr, false, any)) PasteGlobalTransform(scene);
+      const char* clip = ImGui::GetClipboardText();
+      const bool hasTransform = clip != nullptr && strncmp(clip, "infinite-transform ", 19) == 0;
+      if (MenuParts::Item(T("Paste Transform"), nullptr, false, any && hasTransform)) PasteGlobalTransform(scene);
       if (MenuParts::Item(T("Randomize Transform"), nullptr, false, any)) RandomizeTransform(scene);
       if (MenuParts::Item(T("Move to Mouse"), nullptr, false, any)) MoveToMouse(scene);
       MenuParts::Separator();
@@ -2373,7 +2466,7 @@ namespace
       }
       if (io.KeyShift && !command && pressed(ImGuiKey_B))
          sZoomArmed = true;
-      if (command && !io.KeyShift && pressed(ImGuiKey_Tab))
+      if (io.KeyCtrl && !io.KeySuper && !io.KeyShift && pressed(ImGuiKey_Tab))   // Ctrl on every OS: Cmd+Tab is the macOS app switcher
       {
          // A rig poses; anything else sculpts.
          Mat4 world;
@@ -2398,10 +2491,17 @@ namespace
                it.visible = false;
          scene->Commit();
       }
+      if (command && io.KeyShift && pressed(ImGuiKey_F))
+      {
+         ViewDockToggleFill(3);
+         return;
+      }
+      if (!command && !io.KeyShift && !io.KeyAlt && gView3DDock == 4 && pressed(ImGuiKey_Escape))
+         ViewDockToggleFill(3);   // Esc with no tool busy leaves Fill
       if (command && pressed(ImGuiKey_GraveAccent))
          sOverlays = !sOverlays;
       if (command && pressed(ImGuiKey_G))
-         GroupSelected(scene, !io.KeyAlt);
+         GroupSelected(scene, !(io.KeyShift || io.KeyAlt));
       if (command && !io.KeyAlt && !io.KeyShift && pressed(ImGuiKey_C))
          sCopiedScene = scene->SceneText();
       if (command && !io.KeyAlt && !io.KeyShift && pressed(ImGuiKey_V) && !sCopiedScene.empty())
@@ -3244,7 +3344,7 @@ namespace
       if (!hovered || io.WantTextInput)
          return true;
       const bool command = io.KeyCtrl || io.KeySuper;
-      if ((command && pressed(ImGuiKey_Tab)) || pressed(ImGuiKey_Escape))
+      if ((io.KeyCtrl && pressed(ImGuiKey_Tab)) || pressed(ImGuiKey_Escape))
       {
          sPose = {};
          return true;
@@ -3588,7 +3688,7 @@ namespace
       if (sSculpt.stroking || !hovered || io.WantTextInput)
          return true;
       const bool command = io.KeyCtrl || io.KeySuper;
-      if ((command && pressed(ImGuiKey_Tab)) || pressed(ImGuiKey_Escape))
+      if ((io.KeyCtrl && pressed(ImGuiKey_Tab)) || pressed(ImGuiKey_Escape))
       {
          sSculpt.on = false;
          return true;
@@ -4072,6 +4172,7 @@ namespace
       sEdit.axis = -1;
       sEdit.plane = false;
       sEdit.readout.clear();
+      sEdit.typed.clear();
       sEdit.start = mouse;
       sEdit.before = node->ops;
    }
@@ -4099,6 +4200,8 @@ namespace
       ImVec2 pc;
       Project(sEdit.pivot, pc);
       const float axes[3][3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+      const bool hasTyped = !sEdit.typed.empty() && sEdit.typed != "-";
+      const float typed = hasTyped ? std::strtof(sEdit.typed.c_str(), nullptr) : 0.0f;
       char line[160] = "";
       if (sEdit.op == 'g')
       {
@@ -4126,6 +4229,13 @@ namespace
                w[k] = (sCam.right[k] * md.x - sCam.up[k] * md.y) * unit;
          float m[3];
          LinearBy(inv, w, m);
+         if (hasTyped)
+         {
+            // A typed distance moves along the locked axis (X when none), in the mesh's own units.
+            const int ax = sEdit.axis >= 0 && !sEdit.plane ? sEdit.axis : 0;
+            for (int k = 0; k < 3; k++)
+               m[k] = k == ax ? typed : 0.0f;
+         }
          snprintf(line, sizeof(line), "move %.5g %.5g %.5g", m[0], m[1], m[2]);
          // The op line stays in the engine's order (saved patches replay it); the readout is what the user sees.
          char shown[96];
@@ -4136,7 +4246,7 @@ namespace
       {
          const float a0 = std::atan2(-(sEdit.start.y - pc.y), sEdit.start.x - pc.x);
          const float a1 = std::atan2(-(mouse.y - pc.y), mouse.x - pc.x);
-         float deg = (a1 - a0) * 180.0f / kPi;
+         float deg = hasTyped ? typed : (a1 - a0) * 180.0f / kPi;
          // About the view axis toward the eye, or the locked axis turned to face it.
          float w[3] = { -sCam.fwd[0], -sCam.fwd[1], -sCam.fwd[2] };
          if (sEdit.axis >= 0)
@@ -4156,7 +4266,7 @@ namespace
       else if (sEdit.op == 's')
       {
          const float d0 = std::max(1.0f, std::hypot(sEdit.start.x - pc.x, sEdit.start.y - pc.y));
-         const float f = std::hypot(mouse.x - pc.x, mouse.y - pc.y) / d0;
+         const float f = hasTyped ? typed : std::hypot(mouse.x - pc.x, mouse.y - pc.y) / d0;
          float s[3] = { f, f, f };
          if (sEdit.axis >= 0)
             for (int k = 0; k < 3; k++)
@@ -4171,15 +4281,17 @@ namespace
          ImVec2 dir;
          const float px = ScreenAlong(sEdit.normal, dir);
          const float t = px > 2.0f ? (md.x * dir.x + md.y * dir.y) / px : -md.y * unit;
-         snprintf(line, sizeof(line), "extrude %.5g", t / WorldScale(world));
-         sEdit.readout = std::string("Extrude   ") + std::to_string(t / WorldScale(world));
+         const float d = hasTyped ? typed : t / WorldScale(world);
+         snprintf(line, sizeof(line), "extrude %.5g", d);
+         sEdit.readout = std::string("Extrude   ") + std::to_string(d);
       }
       else if (sEdit.op == 'i')
       {
          const float d0 = std::hypot(sEdit.start.x - pc.x, sEdit.start.y - pc.y);
          const float d = std::hypot(mouse.x - pc.x, mouse.y - pc.y);
-         snprintf(line, sizeof(line), "inset %.5g", std::max(0.0f, d0 - d) * unit / WorldScale(world));
-         sEdit.readout = std::string("Inset   ") + std::to_string(std::max(0.0f, d0 - d) * unit / WorldScale(world));
+         const float in = hasTyped ? std::max(0.0f, typed) : std::max(0.0f, d0 - d) * unit / WorldScale(world);
+         snprintf(line, sizeof(line), "inset %.5g", in);
+         sEdit.readout = std::string("Inset   ") + std::to_string(in);
       }
       node->ops = WithOp(sEdit.before, line);
    }
@@ -4288,6 +4400,16 @@ namespace
                sEdit.axis = again ? -1 : k;
                sEdit.plane = !again && asPlane;
             }
+         // Typed amount, as in object mode: digits, one point, a leading minus, Backspace.
+         for (int i = 0; i < 10; i++)
+            if (pressed((ImGuiKey)(ImGuiKey_0 + i)) || pressed((ImGuiKey)(ImGuiKey_Keypad0 + i)))
+               sEdit.typed += (char)('0' + i);
+         if ((pressed(ImGuiKey_Period) || pressed(ImGuiKey_KeypadDecimal)) && sEdit.typed.find('.') == std::string::npos)
+            sEdit.typed += '.';
+         if ((pressed(ImGuiKey_Minus) || pressed(ImGuiKey_KeypadSubtract)) && sEdit.typed.empty())
+            sEdit.typed = "-";
+         if (pressed(ImGuiKey_Backspace) && !sEdit.typed.empty())
+            sEdit.typed.pop_back();
          EditUpdate(node, world, mouse);
          ImVec2 pc;
          if (sEdit.op != 'g' && Project(sEdit.pivot, pc))
@@ -4534,13 +4656,19 @@ namespace
       if (type == 5)
       {
          const float hw = light->areaWidth * 0.5f, hh = light->areaHeight * 0.5f;
-         const float xs[4] = { -hw, hw, hw, -hw }, ys[4] = { -hh, -hh, hh, hh };
-         float c[4][3];
-         for (int i = 0; i < 4; i++)
+         // The outline: four corners, or 32 points round the ellipse a disc light fills.
+         const int nPts = light->areaShape == 1 ? 32 : 4;
+         float c[32][3];
+         for (int i = 0; i < nPts; i++)
+         {
+            float x, y;
+            if (nPts == 4) { x = (i == 1 || i == 2) ? hw : -hw; y = i < 2 ? -hh : hh; }
+            else { const float a = 6.2831853f * float(i) / float(nPts); x = std::cos(a) * hw; y = std::sin(a) * hh; }
             for (int k = 0; k < 3; k++)
-               c[i][k] = p[k] + u[k] * xs[i] + v[k] * ys[i];
-         for (int i = 0; i < 4; i++)
-            Line3D(dl, c[i], c[(i + 1) % 4], col, 1.5f);
+               c[i][k] = p[k] + u[k] * x + v[k] * y;
+         }
+         for (int i = 0; i < nPts; i++)
+            Line3D(dl, c[i], c[(i + 1) % nPts], col, 1.5f);
       }
       if (type == 1 || type == 4 || type == 5)
       {
@@ -4970,14 +5098,14 @@ namespace
       const char* icons[4] = { IconsInfinite::Zoom, IconsInfinite::Hand, IconsInfinite::ViewCamera,
                                sCameraView ? IconsInfinite::Lock : sOrtho ? IconsInfinite::ViewOrtho : IconsInfinite::ViewPersp };
       const char* tips[4] = { T("Zoom: drag"), T("Pan: drag"), T("Camera view (0)"),
-                              sCameraView ? T("Lock camera to view") : T("Perspective or orthographic (5)") };
+                              sCameraView ? T("Lock camera to view") : sOrtho ? T("Orthographic: click for perspective (5)") : T("Perspective: click for orthographic (5)") };
       for (int i = 0; i < 4; i++)
       {
          const ImVec2 c(mx.x - r - 12.0f - (float)(3 - i) * (r * 2.0f + 6.0f), y);
          const bool hot = hovered && std::hypot(mouse.x - c.x, mouse.y - c.y) <= r;
          const bool on = (i == 2 && sCameraView) || (i == 3 && sCameraView && sLockCam) || sPadDrag == i + 1;
          dl->AddCircleFilled(c, r, Hex(on ? kSelected : 0x000000, hot || on ? 0.85f : 0.4f), 32);
-         glyph::Draw(dl, c, tok::icon_md, Hex(0xFFFFFF), icons[i]);
+         glyph::Draw(dl, c, tok::icon_control, Hex(0xFFFFFF), icons[i]);
          if (!hot)
             continue;
          onPad = true;
@@ -5146,6 +5274,8 @@ namespace
          dl->AddImage((ImTextureID)(intptr_t)tex, mn, mx, ImVec2(0, 1), ImVec2(1, 0));
 
       const ImVec2 mouse = io.MousePos;
+      sViewMn = mn;
+      sViewMx = mx;
       if (hovered)
          sViewMouse = mouse;
       int selCount = 0;
@@ -5608,15 +5738,7 @@ namespace
 
    bool IconChip(const char* id, const char* glyphStr, bool on, const char* tip)
    {
-      ActionButton::Scoped() = on ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
-      const bool clicked = ActionButton::Draw(id, ImVec2(kIconW, tok::tile));
-      ActionButton::Scoped() = ActionButton::Kind::Plain;
-      if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-         HelpTip("%s", tip);
-      const ImVec2 bmin = ImGui::GetItemRectMin(), bmax = ImGui::GetItemRectMax();
-      glyph::Draw(ImGui::GetWindowDrawList(), ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tok::icon_md,
-                  on ? tok::U32(tok::pal::c_FFFFFFFF) : ImGui::GetColorU32(ImGuiCol_Text), glyphStr);
-      return clicked;
+      return PanelKit::IconChip(id, glyphStr, on, tip, kIconW, PanelKit::Chip());
    }
 
    void DrawHeader(Scene3DNode* scene)
@@ -5649,9 +5771,17 @@ namespace
       next();
       if (IconChip("##v3dscale", IconsInfinite::ToolScale, sTool == 3, T("Scale tool (Shift+Space, S). S scales at once"))) sTool = 3;
       next();
+      // Sculpt and Edit need a selected geometry item (Blender greys modes with no active mesh); off, they stay live.
+      const Item* modeIt = sSel.empty() ? nullptr : scene->FindItem(sSel.back());
+      const GraphNode* modeGn = modeIt != nullptr ? FindNodeByUid(modeIt->uid) : nullptr;
+      const bool modeOk = modeGn != nullptr && dynamic_cast<IGeometrySource*>(modeGn->node.get()) != nullptr;
+      ImGui::BeginDisabled(!modeOk && !sSculpt.on);
       if (IconChip("##v3dsculpt", IconsInfinite::Pencil, sSculpt.on, T("Sculpt (Ctrl+Tab)"))) ToggleSculpt(scene);
+      ImGui::EndDisabled();
       next();
+      ImGui::BeginDisabled(!modeOk && !sEdit.on);
       if (IconChip("##v3dedit", IconsInfinite::EditMesh, sEdit.on, T("Edit Mode (Tab)"))) ToggleEdit(scene);
+      ImGui::EndDisabled();
       gap();
       if (IconChip("##v3dwire", IconsInfinite::ShadeWire, sShading == Shading::Wire, T("Wireframe (Shift+Z)"))) sShading = Shading::Wire;
       next();
@@ -5666,7 +5796,7 @@ namespace
                    scene->activeCamera != 0 ? T("Camera view (Numpad 0 or 0)") : T("Add a camera from this view (0)")))
          ToggleCamera(scene);
       next();
-      if (IconChip("##v3dortho", sOrtho ? IconsInfinite::ViewOrtho : IconsInfinite::ViewPersp, sOrtho, T("Perspective or orthographic (5)")))
+      if (IconChip("##v3dortho", sOrtho ? IconsInfinite::ViewOrtho : IconsInfinite::ViewPersp, sOrtho, sOrtho ? T("Orthographic: click for perspective (5)") : T("Perspective: click for orthographic (5)")))
       {
          sOrtho = !sOrtho;
          sAutoOrtho = false;
@@ -5683,13 +5813,13 @@ namespace
       if (IconChip("##v3doverlays", IconsInfinite::Eye, sOverlays, T("Overlays (Ctrl+`)"))) sOverlays = !sOverlays;
       ActionButton::RowNext();
       // Pinned right like the Sample Studio's Convert.
-      const float rightX = startX + availW - kIconW;
+      const float rightX = startX + availW - 2.0f * kIconW - tok::space_1;
       if (scene->panelOnly)
       {
          const char* convertL = L("Convert##v3dconvert");
          const float convertW = ImGui::CalcTextSize(convertL, ImGui::FindRenderedTextEnd(convertL)).x + 2.0f * tok::space_3;
          ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightX - tok::space_1 - convertW));
-         if (ActionButton::Draw(convertL, ImVec2(convertW, tok::tile)))
+         if (ActionButton::Draw(convertL, ImVec2(convertW, PanelKit::Chip())))
             sPending.what = Pending::ConvertScene;
          if (ImGui::IsItemHovered())
             HelpTip("%s", T("Put this scene on the canvas"));
@@ -5697,6 +5827,8 @@ namespace
       }
       ImGui::SetCursorPosX(std::max(ImGui::GetCursorPosX(), rightX));
       if (IconChip("##v3dside", IconsInfinite::Edit, sSideOpen, T("Properties (N)"))) sSideOpen = !sSideOpen;
+      FormParts::Inline(0.0f, tok::space_1);
+      if (IconChip("##v3dfill", IconsInfinite::PopOut, gView3DDock == 4, ViewDockFillTip())) ViewDockToggleFill(3);
    }
 
    OutputNode* FindOutput()
@@ -5732,7 +5864,8 @@ namespace
    std::string sCard;   // the open card: rows share labels across cards ("Strength" in Shadows and AO)
 
    std::string RowId(const char* label) { return FormParts::Id((sCard + "/" + label).c_str()); }
-   constexpr float kFieldLabelW = 100.0f;   // the shared column is too narrow for Resolution X or Field of view
+   // Wider than the shared column: Resolution X and Field of view need it.
+   inline float FieldLabelW() { return UiDensity::IsCompact() ? 74.0f : 100.0f; }
 
    void FieldLabel(const char* text)
    {
@@ -5740,10 +5873,15 @@ namespace
       const ImVec4 t = ImGui::GetStyleColorVec4(ImGuiCol_Text);
       const ImVec2 p = ImGui::GetCursorScreenPos();
       const float h = ImGui::GetFrameHeight();
-      ImGui::PushClipRect(p, ImVec2(p.x + kFieldLabelW - ImGui::GetCursorPosX() - 4.0f, p.y + h), true);
-      ImGui::TextColored(ImVec4(t.x, t.y, t.z, 0.72f), "%s", text);
+      // A label longer than its column ends in an ellipsis and shows whole in a tip, never cut mid-letter.
+      const float room = FieldLabelW() - ImGui::GetCursorPosX() - 4.0f;
+      const std::string full = FormParts::Visible(text), shown = app::TruncateWithEllipsis(full, room);
+      ImGui::PushClipRect(p, ImVec2(p.x + room, p.y + h), true);
+      ImGui::TextColored(ImVec4(t.x, t.y, t.z, 0.72f), "%s", shown.c_str());
       ImGui::PopClipRect();
-      FormParts::Inline(kFieldLabelW);
+      if (shown != full && ImGui::IsItemHovered())
+         app::HelpTip("%s", full.c_str());
+      FormParts::Inline(FieldLabelW());
    }
 
    void Hint(const char* text)
@@ -5792,6 +5930,32 @@ namespace
       return changed;
    }
 
+   // Block 4b pairs: two short values of one setting (X | Y, min | max) share a row, each well half the field.
+   // One label, n equal fields on one row (X/Y pairs, X/Y/Z triples).
+   bool FloatMultiRow(const char* label, float* const* v, const char* const* fmt, int n, float lo, float hi)
+   {
+      FieldLabel(label);
+      const float w = (sFieldW - tok::space_1 * (n - 1)) / n;
+      bool changed = false;
+      for (int i = 0; i < n; i++)
+      {
+         if (i > 0)
+            FormParts::Inline(0.0f, tok::space_1);
+         ImGui::SetNextItemWidth(i < n - 1 ? w : sFieldW - (w + tok::space_1) * (n - 1));
+         const float was = *v[i];
+         changed |= FieldWell::Slider((RowId(label) + (char)('a' + i)).c_str(), v[i], lo, hi, fmt[i]);
+         UndoableFrom(v[i], was, "Edit in 3D View");
+      }
+      return changed;
+   }
+
+   bool FloatPairRow(const char* label, float* a, float* b, float lo, float hi, const char* fmtA, const char* fmtB)
+   {
+      float* v[2] = { a, b };
+      const char* fmt[2] = { fmtA, fmtB };
+      return FloatMultiRow(label, v, fmt, 2, lo, hi);
+   }
+
    bool ComboRow(const char* label, int* v, const std::vector<std::string>& names, const char* undo = "Edit in 3D View")
    {
       FieldLabel(label);
@@ -5816,7 +5980,7 @@ namespace
    {
       // Box first and the label beside it, so a long label has the whole row.
       const float rowY = ImGui::GetCursorPosY();
-      ImGui::SetCursorPosY(rowY + (ImGui::GetFrameHeight() - CheckBox::kSize) * 0.5f);
+      ImGui::SetCursorPosY(rowY + (ImGui::GetFrameHeight() - CheckBox::Size()) * 0.5f);
       bool on = *v;
       bool hit = CheckBox::Box(RowId(label).c_str(), &on);
       FormParts::Inline(0.0f, tok::space_2);
@@ -5833,6 +5997,30 @@ namespace
          return false;
       PushUndoCheckpoint(undo);
       *v = on;
+      return true;
+   }
+
+   // A run of on/off settings as one grid (PanelKit::CheckGrid): columns as wide as the longest label allows.
+   bool Checks(const char* id, std::initializer_list<std::pair<const char*, bool*>> items, int maxCols = 3,
+               const char* undo = "Edit in 3D View")
+   {
+      std::vector<const char*> labels;
+      std::vector<char> vals;
+      for (const auto& [l, v] : items)
+      {
+         labels.push_back(l);
+         vals.push_back(*v ? 1 : 0);
+      }
+      bool tmp[64] = {};
+      const int n = std::min((int)labels.size(), 64);
+      for (int i = 0; i < n; i++)
+         tmp[i] = vals[i] != 0;
+      const int hit = PanelKit::CheckGrid((sCard + "/" + id).c_str(), labels.data(), tmp, n, maxCols);
+      if (hit < 0)
+         return false;
+      PushUndoCheckpoint(undo);
+      bool* v = (items.begin() + hit)->second;
+      *v = !*v;
       return true;
    }
 
@@ -5855,6 +6043,7 @@ namespace
       auto found = sOpen.find(title);
       bool open = found != sOpen.end() ? found->second : startOpen;
       SectionCard::Begin();
+      SectionCard::MarkHeader();
       sCard = title;
       ImGui::PushID(title);
       const float h = ImGui::GetTextLineHeight() + 2.0f;
@@ -5865,6 +6054,7 @@ namespace
       if (ImGui::InvisibleButton("##head", ImVec2(w, h)))
          open = !open;
       sOpen[title] = open;
+      open = open || PanelKit::AuditOpenAll();
       const ImU32 text = ImGui::GetColorU32(ImGuiCol_Text);
       ImDrawList* dl = ImGui::GetWindowDrawList();
       const ImVec2 c(p.x + 5.0f, p.y + h * 0.5f);
@@ -5941,16 +6131,20 @@ namespace
       if (Card(T("Filter"), nullptr, false))
       {
          Scene3DNode::Settings& f = *sSet;
-         BoolRow(T("Match case"), &f.listCase);
-         BoolRow(T("Exact match"), &f.listComplete);
-         BoolRow(T("Sort A to Z"), &f.listSort);
-         BoolRow(T("Objects"), &f.listObjects);
-         BoolRow(T("Lights"), &f.listLights);
-         BoolRow(T("Cameras"), &f.listCameras);
+         Checks("##checks1", {
+            { T("Match case"), &f.listCase },
+            { T("Exact match"), &f.listComplete },
+            { T("Sort A to Z"), &f.listSort },
+            { T("Objects"), &f.listObjects },
+            { T("Lights"), &f.listLights },
+            { T("Cameras"), &f.listCameras },
+         });
          ComboRow(T("State"), &f.listState, std::vector<std::string>{ T("All"), T("Visible"), T("Selected"), T("Active"), T("Selectable") });
-         BoolRow(T("Invert filter"), &f.listInvert);
-         BoolRow(T("Selectable column"), &f.colSelect);
-         BoolRow(T("Render column"), &f.colRender);
+         Checks("##checks2", {
+            { T("Invert filter"), &f.listInvert },
+            { T("Selectable column"), &f.colSelect },
+            { T("Render column"), &f.colRender },
+         });
       }
       bool scrollToActive = false;
       if (ActionButton::Draw(L("Show Active"), ImVec2(availW, 0)))
@@ -5973,7 +6167,7 @@ namespace
          return hit != lf.listInvert;
       };
       const ImGuiIO& io = ImGui::GetIO();
-      const float rowH = 24.0f;
+      const float rowH = tok::row_h;
       // Fills the tab below the search box, then scrolls.
       const int count = (int)scene->Items().size();
       const float step = rowH + ImGui::GetStyle().ItemSpacing.y;
@@ -6060,7 +6254,7 @@ namespace
          ImDrawList* dl = ImGui::GetWindowDrawList();
          const ImU32 text = ImGui::GetColorU32(missing || !it.visible ? ImGuiCol_TextDisabled : ImGuiCol_Text);
          const float midY = p.y + rowH * 0.5f;
-         glyph::Draw(dl, ImVec2(p.x + 12.0f, midY), tok::icon_sm, text, KindGlyph(scene, it));
+         glyph::Draw(dl, ImVec2(p.x + 12.0f, midY), tok::icon_control, text, KindGlyph(scene, it));
          const std::string name = ItemName(it);
          const std::string shown = it.group != 0 ? name + "  (" + T("Group") + " " + std::to_string(it.group) + ")" : name;
          if (sRename == it.id)
@@ -6089,34 +6283,34 @@ namespace
             dl->PopClipRect();
          }
          if (it.id == scene->activeCamera)
-            glyph::Draw(dl, ImVec2(p.x + availW - 36.0f, midY), tok::icon_sm, ImGui::GetColorU32(AccentEmphasisSelected()), IconsInfinite::ViewCamera);
-         float colX = availW - 24.0f;
+            glyph::Draw(dl, ImVec2(p.x + availW - 36.0f, midY), tok::icon_control, ImGui::GetColorU32(AccentEmphasisSelected()), IconsInfinite::ViewCamera);
+         float colX = availW - tok::control_h;
          if (lf.colRender)
          {
-            colX -= 24.0f;
+            colX -= tok::control_h;
             ImGui::SetCursorScreenPos(ImVec2(p.x + colX, p.y));
-            if (ImGui::InvisibleButton("##rnd", ImVec2(24.0f, rowH)))
+            if (ImGui::InvisibleButton("##rnd", ImVec2(tok::control_h, rowH)))
             {
                PushUndoCheckpoint("Render toggle in 3D View");
                it.render = !it.render;
                scene->Commit();
             }
-            glyph::Draw(dl, ImVec2(p.x + colX + 12.0f, midY), tok::icon_sm, text, it.render ? IconsInfinite::ViewCamera : IconsInfinite::EyeOff);
+            glyph::Draw(dl, ImVec2(p.x + colX + 12.0f, midY), tok::icon_control, text, it.render ? IconsInfinite::ViewCamera : IconsInfinite::EyeOff);
          }
          if (lf.colSelect)
          {
-            colX -= 24.0f;
+            colX -= tok::control_h;
             ImGui::SetCursorScreenPos(ImVec2(p.x + colX, p.y));
-            if (ImGui::InvisibleButton("##sel", ImVec2(24.0f, rowH)))
+            if (ImGui::InvisibleButton("##sel", ImVec2(tok::control_h, rowH)))
             {
                PushUndoCheckpoint("Selectable toggle in 3D View");
                it.hideSelect = !it.hideSelect;
                scene->Commit();
             }
-            glyph::Draw(dl, ImVec2(p.x + colX + 12.0f, midY), tok::icon_sm, text, it.hideSelect ? IconsInfinite::EyeOff : IconsInfinite::Cube);
+            glyph::Draw(dl, ImVec2(p.x + colX + 12.0f, midY), tok::icon_control, text, it.hideSelect ? IconsInfinite::EyeOff : IconsInfinite::Cube);
          }
-         ImGui::SetCursorScreenPos(ImVec2(p.x + availW - 24.0f, p.y));
-         if (ImGui::InvisibleButton("##eye", ImVec2(24.0f, rowH)))
+         ImGui::SetCursorScreenPos(ImVec2(p.x + availW - tok::control_h, p.y));
+         if (ImGui::InvisibleButton("##eye", ImVec2(tok::control_h, rowH)))
          {
             PushUndoCheckpoint("Show or hide in 3D View");
             it.visible = !it.visible;
@@ -6124,7 +6318,7 @@ namespace
          }
          if (ImGui::IsItemHovered())
             HelpTip("%s", it.visible ? T("Hide (H)") : T("Show (Alt+H shows everything)"));
-         glyph::Draw(dl, ImVec2(p.x + availW - 12.0f, midY), tok::icon_sm, text, it.visible ? IconsInfinite::Eye : IconsInfinite::EyeOff);
+         glyph::Draw(dl, ImVec2(p.x + availW - 12.0f, midY), tok::icon_control, text, it.visible ? IconsInfinite::Eye : IconsInfinite::EyeOff);
          ImGui::SetCursorScreenPos(ImVec2(p.x, p.y + rowH));
          ImGui::Dummy(ImVec2(0.0f, 0.0f));
          ImGui::PopID();
@@ -6135,7 +6329,7 @@ namespace
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))
          sListActive = listHovered;
       if (count > 0)
-         ImGui::EndChild();
+         EndChildSafe();
       if ((listHovered || sListActive) && sRename == 0 && !io.WantTextInput && !sSel.empty())
       {
          const bool command = io.KeyCtrl || io.KeySuper;
@@ -6259,13 +6453,17 @@ namespace
       {
          FloatRow(T("Width"), &light->areaWidth, 0.05f, 20.0f, "%.2f");
          FloatRow(T("Height"), &light->areaHeight, 0.05f, 20.0f, "%.2f");
+         ComboRow(T("Shape"), &light->areaShape, std::vector<std::string>{ T("Rectangle"), T("Disc") }, "Light shape");
+         FloatRow(T("Spread"), &light->areaSpread, 1.0f, 180.0f, "%.0f");
          BoolRow(T("Normalize"), &light->normalize);
       }
       if (light->type == 1 || light->type == 4 || light->type == 5)
       {
          FloatRow(T("Falloff"), &light->falloff, 0.0f, 4.0f, "%.2f");
-         BoolRow(T("Soft falloff"), &light->softFalloff);
-         BoolRow(T("Custom distance"), &light->useCutoff);
+         Checks("##checks3", {
+            { T("Soft falloff"), &light->softFalloff },
+            { T("Custom distance"), &light->useCutoff },
+         });
          if (light->useCutoff)
             FloatRow(T("Cutoff"), &light->cutoffDistance, 0.01f, 100.0f, "%.2f");
       }
@@ -6325,6 +6523,36 @@ namespace
       }
    }
 
+   // Shadow linking (row 4.2): the lights this item blocks; unchecked, that light passes through it.
+   void DrawBlocks(Scene3DNode* scene, Item* item)
+   {
+      bool header = false;
+      for (const Item& other : scene->Items())
+      {
+         if (scene->ItemKind(other) != Kind::Light)
+            continue;
+         if (!header)
+            if (!Card(T("Blocks")))
+               return;
+         header = true;
+         ImGui::PushID(other.id);
+         auto found = std::find(item->unshadow.begin(), item->unshadow.end(), other.uid);
+         bool blocks = found == item->unshadow.end();
+         if (CheckBox::Box("##blocks", &blocks))
+         {
+            PushUndoCheckpoint("Shadow linking");
+            if (blocks)
+               item->unshadow.erase(found);
+            else
+               item->unshadow.push_back(other.uid);
+            scene->Commit();
+         }
+         ActionButton::RowNext();
+         ImGui::TextUnformatted(ItemName(other).c_str());
+         ImGui::PopID();
+      }
+   }
+
    float RenderAspect(Scene3DNode* scene)
    {
       return std::max(1.0f, scene->renderW) / std::max(1.0f, scene->renderH);
@@ -6354,9 +6582,11 @@ namespace
          FloatRow(T("Orbit"), &cam->azimuth, -180.0f, 180.0f, "%.1f");
          FloatRow(T("Elevation"), &cam->elevation, -90.0f, 90.0f, "%.1f");
          FloatRow(T("Roll"), &cam->roll, -180.0f, 180.0f, "%.1f");
-         FloatRow(T("Target X"), &cam->targetX, -50.0f, 50.0f, "%.2f");
-         FloatRow(T("Target Y"), &cam->targetY, -50.0f, 50.0f, "%.2f");
-         FloatRow(T("Target Z"), &cam->targetZ, -50.0f, 50.0f, "%.2f");
+         {
+            float* v[3] = { &cam->targetX, &cam->targetY, &cam->targetZ };
+            const char* fmt[3] = { "X %.2f", "Y %.2f", "Z %.2f" };
+            FloatMultiRow(T("Target"), v, fmt, 3, -50.0f, 50.0f);
+         }
       }
       if (Card(T("Lens")))
       {
@@ -6383,8 +6613,7 @@ namespace
          }
          else
             FloatRow(T("Scale"), &cam->orthoHeight, 0.01f, 100.0f, "%.2f");
-         FloatRow(T("Shift X"), &cam->shiftX, -2.0f, 2.0f, "%.3f");
-         FloatRow(T("Shift Y"), &cam->shiftY, -2.0f, 2.0f, "%.3f");
+         FloatPairRow(T("Shift"), &cam->shiftX, &cam->shiftY, -2.0f, 2.0f, "X %.3f", "Y %.3f");
          FloatRow(T("Clip start"), &cam->nearPlane, 0.001f, 10.0f, "%.3f");
          FloatRow(T("Clip end"), &cam->farPlane, 1.0f, 10000.0f, "%.0f");
       }
@@ -6435,10 +6664,12 @@ namespace
       if (Card(T("Viewport Display")))
       {
          FloatRow(T("Size"), &cam->displaySize, 0.01f, 10.0f, "%.2f");
-         BoolRow(T("Limits"), &cam->showLimits);
-         BoolRow(T("Mist"), &cam->showMist);
-         BoolRow(T("Name"), &cam->showName);
-         BoolRow(T("Sensor"), &cam->showSensor);
+         Checks("##checks4", {
+            { T("Limits"), &cam->showLimits },
+            { T("Mist"), &cam->showMist },
+            { T("Name"), &cam->showName },
+            { T("Sensor"), &cam->showSensor },
+         });
       }
       Scene3DNode::Backdrop& back = item->backdrop;
       bool backShow = back.show;
@@ -6481,8 +6712,7 @@ namespace
                edit = true;
             }
             edit |= ComboRow(T("Frame method"), &back.fit, { T("Stretch"), T("Fit"), T("Crop") });
-            edit |= FloatRow(T("Offset X"), &back.offset[0], -2.0f, 2.0f, "%.3f");
-            edit |= FloatRow(T("Offset Y"), &back.offset[1], -2.0f, 2.0f, "%.3f");
+            edit |= FloatPairRow(T("Offset"), &back.offset[0], &back.offset[1], -2.0f, 2.0f, "X %.3f", "Y %.3f");
             edit |= FloatRow(T("Rotation"), &back.rotation, -180.0f, 180.0f, "%.1f");
             edit |= FloatRow(T("Scale"), &back.scale, 0.01f, 10.0f, "%.3f");
             edit |= BoolRow(T("Flip horizontally"), &back.flipX);
@@ -6546,24 +6776,8 @@ namespace
       scene->motionShown = item->id;
       if (Card(T("Source")))
       {
-         const std::vector<GraphNode*> nodes = SourceChoices(scene, *item);
-         GraphNode* current = FindNodeByUid(item->uid);
          FieldLabel(T("Node"));
-         ImGui::SetNextItemWidth(sFieldW);
-         auto title = [](const GraphNode& gn) { return gn.typeName + " " + std::to_string(gn.index); };
-         if (MenuParts::BeginCombo("##v3dsource", current != nullptr ? title(*current).c_str() : T("source missing")))
-         {
-            for (GraphNode* gn : nodes)
-               if (MenuParts::Choice(title(*gn).c_str(), gn == current) && gn != current)
-                  SetSource(scene, *item, gn->uid);
-            if (nodes.empty())
-               ImGui::TextDisabled("%s", T("No fitting nodes in this patch"));
-            MenuParts::EndCombo();
-         }
-         const bool picking = sPickItem == item->id;
-         if (ActionButton::Draw(picking ? T("Click a node on the canvas...") : current != nullptr ? T("Assign Different Node...") : T("Assign Node..."),
-                                ImVec2(-1.0f, 0.0f), picking ? ActionButton::Kind::Selected : ActionButton::Kind::Plain))
-            sPickItem = picking ? -1 : item->id;
+         CanvasLink::Field("##v3dsource", item->uid, SourceSpec(item->id), false, sFieldW);
       }
       if (Card(T("Transform")))
       {
@@ -6720,44 +6934,37 @@ namespace
       }
       if (Card(T("Lock")))
       {
-         const char* axes[3] = { "X", "Y", "Z" };
          const char* names[3] = { T("Location"), T("Rotation"), T("Scale") };
          for (int row = 0; row < 3; row++)
          {
             FieldLabel(names[row]);
+            const char* axes[3] = { "X", "Y", "Z" };
+            bool on[3];
+            unsigned bits[3];
             for (int a = 0; a < 3; a++)
             {
-               const unsigned bit = (1u << kDisp[a]) << (row * 3);
-               bool on = (item->lock & bit) != 0;
-               const std::string id = std::string("##v3dlock") + std::to_string(row) + axes[a];
-               if (CheckBox::Box(id.c_str(), &on))
-               {
-                  PushUndoCheckpoint("Lock in 3D View");
-                  item->lock = on ? (item->lock | bit) : (item->lock & ~bit);
-                  scene->Commit();
-               }
-               FormParts::Inline(0.0f, tok::space_1);
-               ImGui::AlignTextToFramePadding();
-               ImGui::TextDisabled("%s", axes[a]);
-               if (a < 2)
-                  FormParts::Inline(0.0f, tok::space_3);
+               bits[a] = (1u << kDisp[a]) << (row * 3);
+               on[a] = (item->lock & bits[a]) != 0;
+            }
+            const int hit = PanelKit::CheckGrid((std::string("##v3dlock") + std::to_string(row)).c_str(), axes, on, 3);
+            if (hit >= 0)
+            {
+               PushUndoCheckpoint("Lock in 3D View");
+               item->lock ^= bits[hit];
+               scene->Commit();
             }
          }
       }
       if (Card(T("Visibility")))
       {
-         if (BoolRow(T("Show in renders"), &item->render, "Show in renders"))
-            scene->Commit();
-         if (BoolRow(T("Cast shadows"), &item->castShadow, "Cast shadows"))
-            scene->Commit();
-         if (BoolRow(T("Hide selection"), &item->hideSelect, "Hide selection"))
+         if (Checks("##vis", { { T("Show in renders"), &item->render }, { T("Cast shadows"), &item->castShadow },
+                               { T("Hide selection"), &item->hideSelect } }, 3, "Object visibility"))
             scene->Commit();
       }
-      if (Card(T("Viewport display")))
+      if (Card(T("Viewport Display")))
       {
-         bool changed = BoolRow(T("Name"), &item->showName, "Show name");
-         changed |= BoolRow(T("Axes"), &item->showAxes, "Show axes");
-         changed |= BoolRow(T("Bounds"), &item->showBounds, "Show bounds");
+         bool changed = Checks("##disp", { { T("Name"), &item->showName }, { T("Axes"), &item->showAxes },
+                                          { T("Bounds"), &item->showBounds } }, 3, "Viewport display");
          if (item->showBounds)
             changed |= ComboRow(T("Shape"), &item->boundsType, { T("Box"), T("Sphere"), T("Cylinder"), T("Cone"), T("Capsule") }, "Bounds shape");
          if (changed)
@@ -6768,9 +6975,9 @@ namespace
          if (BoolRow(T("Lit"), &item->pictureLit, "Picture lit"))
             scene->Commit();
       }
-      if (scene->ItemKind(*item) == Kind::Geometry && Card(T("Viewport Display")))
+      if (scene->ItemKind(*item) == Kind::Geometry && Card(T("Viewport Colour")))
       {
-         if (ColorRow(T("Color"), item->color, "Edit in 3D View"))
+         if (ColorRow(T("Colour"), item->color, "Edit in 3D View"))
             scene->Commit();
       }
       if (scene->ItemKind(*item) == Kind::Geometry && Card(T("Pass Index")))
@@ -6835,6 +7042,8 @@ namespace
       GraphNode* gn = FindNodeByUid(item->uid);
       if (scene->ItemKind(*item) == Kind::Geometry || (scene->ItemKind(*item) == Kind::Picture && item->pictureLit))
          DrawLitBy(scene, item);
+      if (scene->ItemKind(*item) == Kind::Geometry && item->castShadow)
+         DrawBlocks(scene, item);
       if (gn != nullptr && ActionButton::Draw(L("Go to node"), ImVec2(availW, 0)))
       {
          gRequestSelectNodeIndex = gn->index;
@@ -6936,6 +7145,7 @@ namespace
       mat->subsurface = was.subsurface;
       std::copy(was.subsurfaceColor, was.subsurfaceColor + 3, mat->subsurfaceColor);
       mat->subsurfaceRadius = was.subsurfaceRadius;
+      mat->translucency = was.translucency;
       item.uid = made->uid;
       scene->Commit();
    }
@@ -7133,7 +7343,7 @@ namespace
          }
          if (mode == 1)
          {
-            if (ColorRow(T("Color"), scene->worldColor, "3D View world"))
+            if (ColorRow(T("Colour"), scene->worldColor, "3D View world"))
                scene->Commit();
             if (FloatRow(T("Strength"), &scene->worldStrength, 0.0f, 10.0f, "%.3f", "3D View world"))
                scene->Commit();
@@ -7151,6 +7361,11 @@ namespace
                sPending.what = Pending::PickHdri;
             FloatRow(T("Rotation"), &env->rotation, -180.0f, 180.0f, "%.0f");
             FloatRow(T("Strength"), &env->intensity, 0.0f, 10.0f, "%.3f");
+            Scene3DNode::Settings& set = scene->settings;
+            if (BoolRow(T("Background colour"), &set.backdropOn))
+               scene->Commit();
+            if (set.backdropOn && ColorRow(T("Colour"), set.backdrop, "3D View world"))
+               scene->Commit();
             FloatRow(T("Sun threshold"), &env->sunThreshold, 0.0f, 100.0f, "%.1f");
             if (env->sunThreshold > 0.0f)
             {
@@ -7230,7 +7445,7 @@ namespace
       OutputNode* out = sStillPath.empty() ? nullptr : FindOutput();
       if (out == nullptr || out->GetOutputWidth() <= 0)
          return;
-      ExportImage(out, sStillPath);
+      ExportImage(out, sStillPath, std::clamp(out->jpegQuality, 1, 100));
       KeepRender(sStillPath);
       sStillPath.clear();
    }
@@ -7285,14 +7500,12 @@ namespace
          if (ImGui::IsItemHovered())
             HelpTip("%s", T("Samples per frame when rendering out."));
       }
-      if (Card(T("Shadows"), &look.shadowsEnabled))
+      if (Card(T("Shadows"), &look.shadowsEnabled) && look.shadowsEnabled)   // off: rows hidden, not greyed (Block 4b)
       {
-         ImGui::BeginDisabled(!look.shadowsEnabled);
          ComboRow(T("Quality"), &look.shadowQuality, Render3DNode::ShadowQualityNames());
          FloatRow(T("Strength"), &look.shadowStrength, 0.0f, 1.0f, "%.2f");
          FloatRow(T("Softness"), &look.shadowSoftness, 0.0f, 4.0f, "%.2f");
          FloatRow(T("Bias"), &look.shadowBias, 0.0002f, 0.02f, "%.4f");
-         ImGui::EndDisabled();
       }
       if (Card(T("Ambient Occlusion")))
       {
@@ -7314,7 +7527,7 @@ namespace
                   FloatRow(T("Rotation"), &look.studioRotation, -180.0f, 180.0f, "%.0f");
                BoolRow(T("Specular"), &look.solidSpecular);
             }
-            ComboRow(T("Color"), &look.solidColor, Render3DNode::SolidColorNames());
+            ComboRow(T("Colour"), &look.solidColor, Render3DNode::SolidColorNames());
             if (look.solidColor == 2)
                ColorRow(T("Single color"), look.solidSingle);
             BoolRow(T("Outline"), &sSet->outline);
@@ -7325,9 +7538,8 @@ namespace
                ColorRow(T("Background color"), sSet->bgColor);
          }
       }
-      if (Card(T("Cavity"), &look.cavity))
+      if (Card(T("Cavity"), &look.cavity) && look.cavity)   // off: rows hidden, not greyed (Block 4b)
       {
-         ImGui::BeginDisabled(!look.cavity);
          ComboRow(T("Type"), &look.cavityType, Render3DNode::CavityTypeNames());
          if (look.cavityType != 1)
          {
@@ -7340,7 +7552,6 @@ namespace
             FloatRow(T("Curvature ridge"), &look.curvatureRidge, 0.0f, 2.0f, "%.2f");
             FloatRow(T("Curvature valley"), &look.curvatureValley, 0.0f, 2.0f, "%.2f");
          }
-         ImGui::EndDisabled();
       }
       if (Card(T("Bloom")))
       {
@@ -7348,13 +7559,11 @@ namespace
          FloatRow(T("Threshold"), &look.bloomThreshold, 0.5f, 8.0f, "%.2f");
          FloatRow(T("Radius"), &look.bloomRadius, 0.0f, 1.0f, "%.2f");
       }
-      if (Card(T("Motion Blur"), &look.motionBlur))
+      if (Card(T("Motion Blur"), &look.motionBlur) && look.motionBlur)   // off: rows hidden, not greyed (Block 4b)
       {
-         ImGui::BeginDisabled(!look.motionBlur);
          ComboRow(T("Position"), &look.motionPosition, Render3DNode::MotionPositionNames());
          FloatRow(T("Shutter"), &look.motionShutter, 0.0f, 2.0f, "%.2f");
          FloatRow(T("Max blur"), &look.motionMax, 1.0f, 256.0f, "%.0f px");
-         ImGui::EndDisabled();
       }
       if (Card(T("Film")))
       {
@@ -7368,14 +7577,12 @@ namespace
          BoolRow(T("Region"), &sSet->border);
          if (sSet->border)
          {
-            FloatRow(T("Min X"), &sSet->borderMin[0], 0.0f, 1.0f, "%.3f");
-            FloatRow(T("Min Y"), &sSet->borderMin[1], 0.0f, 1.0f, "%.3f");
-            FloatRow(T("Max X"), &sSet->borderMax[0], 0.0f, 1.0f, "%.3f");
-            FloatRow(T("Max Y"), &sSet->borderMax[1], 0.0f, 1.0f, "%.3f");
+            FloatPairRow(T("Min"), &sSet->borderMin[0], &sSet->borderMin[1], 0.0f, 1.0f, "X %.3f", "Y %.3f");
+            FloatPairRow(T("Max"), &sSet->borderMax[0], &sSet->borderMax[1], 0.0f, 1.0f, "X %.3f", "Y %.3f");
             BoolRow(T("Crop to region"), &sSet->crop);
          }
       }
-      if (Card(T("Color Management")))
+      if (Card(T("Colour Management")))
       {
          ComboRow(T("View"), &look.tonemap, Render3DNode::TonemapNames());
          FloatRow(T("Exposure"), &look.exposure, 0.1f, 4.0f, "%.2f");
@@ -7391,10 +7598,24 @@ namespace
       if (Card(T("Format")))
       {
          int w = (int)scene->renderW, h = (int)scene->renderH;
-         if (IntInputRow(T("Resolution X"), &w))
-            KeepingLenses(scene, [&] { scene->renderW = (float)std::clamp(w, 16, 8192); });
-         if (IntInputRow(T("Y"), &h))
-            KeepingLenses(scene, [&] { scene->renderH = (float)std::clamp(h, 16, 8192); });
+         {
+            // X | Y on one row (Block 4b pairs).
+            FieldLabel(T("Resolution"));
+            const float half = (sFieldW - tok::space_1) * 0.5f;
+            FieldWell::PushStyle();
+            ImGui::SetNextItemWidth(half);
+            const bool cw = FieldWell::InputInt("##v3dresx", &w);
+            Undoable("Edit in 3D View");
+            FormParts::Inline(0.0f, tok::space_1);
+            ImGui::SetNextItemWidth(sFieldW - half - tok::space_1);
+            const bool ch = FieldWell::InputInt("##v3dresy", &h);
+            Undoable("Edit in 3D View");
+            FieldWell::PopStyle();
+            if (cw)
+               KeepingLenses(scene, [&] { scene->renderW = (float)std::clamp(w, 16, 8192); });
+            if (ch)
+               KeepingLenses(scene, [&] { scene->renderH = (float)std::clamp(h, 16, 8192); });
+         }
          FloatRow(T("Resolution %"), &sSet->percent, 1.0f, 200.0f, "%.0f%%");
          FieldLabel(T("Final size"));
          char finalSize[32];
@@ -7406,8 +7627,7 @@ namespace
          if (ComboRow(T("Frame rate"), &rate, kRateNames))
             sSet->fps = (float)kRates[rate];
          FloatRow(T("Base"), &sSet->fpsBase, 1.0f, 1.01f, "%.3f");
-         FloatRow(T("Pixel aspect X"), &sSet->pixelAspect[0], 0.1f, 10.0f, "%.2f");
-         FloatRow(T("Pixel aspect Y"), &sSet->pixelAspect[1], 0.1f, 10.0f, "%.2f");
+         FloatPairRow(T("Pixel aspect"), &sSet->pixelAspect[0], &sSet->pixelAspect[1], 0.1f, 10.0f, "X %.2f", "Y %.2f");
       }
       if (Card(T("Frame Range")))
       {
@@ -7419,18 +7639,19 @@ namespace
          IntInputRow(T("Step"), &sSet->frameStep);
          sSet->frameStep = std::clamp(sSet->frameStep, 1, 100);
       }
-      if (Card(T("Stamp"), &sSet->stamp))
+      if (Card(T("Stamp"), &sSet->stamp) && sSet->stamp)   // off: rows hidden, not greyed (Block 4b)
       {
-         ImGui::BeginDisabled(!sSet->stamp);
-         BoolRow(T("Date"), &sSet->stampDate);
-         BoolRow(T("Time"), &sSet->stampTime);
-         BoolRow(T("Frame"), &sSet->stampFrame);
-         BoolRow(T("Frame range"), &sSet->stampRange);
-         BoolRow(T("Camera"), &sSet->stampCamera);
-         BoolRow(T("Lens"), &sSet->stampLens);
-         BoolRow(T("Scene"), &sSet->stampScene);
-         BoolRow(T("Render time"), &sSet->stampRender);
-         BoolRow(T("Note"), &sSet->stampNote);
+         Checks("##checks5", {
+            { T("Date"), &sSet->stampDate },
+            { T("Time"), &sSet->stampTime },
+            { T("Frame"), &sSet->stampFrame },
+            { T("Frame range"), &sSet->stampRange },
+            { T("Camera"), &sSet->stampCamera },
+            { T("Lens"), &sSet->stampLens },
+            { T("Scene"), &sSet->stampScene },
+            { T("Render time"), &sSet->stampRender },
+            { T("Note"), &sSet->stampNote },
+         });
          if (sSet->stampNote)
          {
             char buf[128];
@@ -7445,13 +7666,12 @@ namespace
          FloatRow(T("Font size"), &sSet->stampSize, 6.0f, 96.0f, "%.0f");
          ColorRow(T("Text"), sSet->stampFg);
          ColorRow(T("Background"), sSet->stampBg);
-         ImGui::EndDisabled();
       }
       if (Card(T("Output")))
       {
          static const std::vector<std::string> kDepths = { "8", "16" };
          int depth = look.floatOutput ? 1 : 0;
-         if (ComboRow(T("Color depth"), &depth, kDepths))
+         if (ComboRow(T("Colour Depth"), &depth, kDepths))
             look.floatOutput = depth == 1;
          ComboRow(T("Pass"), &look.renderPass, Render3DNode::RenderPassNames());
          if (look.renderPass >= 1 && look.renderPass <= 9)
@@ -7527,19 +7747,6 @@ namespace
             DeleteOrientation();
          ImGui::EndDisabled();
       }
-      if (Card(T("Preferences"), nullptr, false))
-      {
-         ComboRow(T("Mini axes"), &set.miniAxes, std::vector<std::string>{ T("Off"), T("Simple axes"), T("Navigation") });
-         FloatRow(T("Mini axes size"), &set.miniSize, 40.0f, 160.0f, "%.0f");
-         FloatRow(T("Mini axes brightness"), &set.miniBright, 0.0f, 1.0f, "%.2f");
-         FloatRow(T("Navigation gizmo size"), &set.gizmoNavSize, 40.0f, 160.0f, "%.0f");
-         FloatRow(T("Transform gizmo size"), &set.gizmoSize, 40.0f, 160.0f, "%.0f");
-         FloatRow(T("Smooth view"), &set.smoothTime, 0.0f, 1.0f, "%.2f s");
-         FloatRow(T("Rotation step"), &set.rotStep, 1.0f, 90.0f, "%.0f");
-         BoolRow(T("Auto perspective"), &set.autoPerspective);
-         BoolRow(T("Continuous grab"), &set.continuousGrab);
-         FloatRow(T("Orbit sensitivity"), &set.orbitSens, 0.1f, 5.0f, "%.2f");
-      }
       if (Card(T("Units")))
       {
          ComboRow(T("System"), &set.unitSystem, std::vector<std::string>{ T("None"), T("Metric"), T("Imperial") });
@@ -7556,15 +7763,19 @@ namespace
          FloatRow(T("Move"), &set.snapMove, 0.01f, 5.0f, "%.2f");
          FloatRow(T("Rotate"), &set.snapRot, 1.0f, 90.0f, "%.0f");
          FloatRow(T("Scale"), &set.snapScale, 0.01f, 1.0f, "%.2f");
-         BoolRow(T("To other objects"), &set.snapObjects);
-         BoolRow(T("Use for move"), &set.snapTranslate);
-         BoolRow(T("Use for rotate"), &set.snapRotate);
-         BoolRow(T("Use for scale"), &set.snapScaleOn);
-         BoolRow(T("Absolute increment"), &set.snapAbsolute);
+         Checks("##checks7", {
+            { T("To other objects"), &set.snapObjects },
+            { T("Use for move"), &set.snapTranslate },
+            { T("Use for rotate"), &set.snapRotate },
+            { T("Use for scale"), &set.snapScaleOn },
+            { T("Absolute increment"), &set.snapAbsolute },
+         });
          FloatRow(T("Rotate precision"), &set.snapRotFine, 0.1f, 15.0f, "%.1f");
          ComboRow(T("Snap target"), &set.snapTarget, std::vector<std::string>{ T("Closest"), T("Center"), T("Median"), T("Active") });
-         BoolRow(T("Selectable only"), &set.snapSelectable);
-         BoolRow(T("Align rotation to target"), &set.snapAlign);
+         Checks("##checks8", {
+            { T("Selectable only"), &set.snapSelectable },
+            { T("Align rotation to target"), &set.snapAlign },
+         });
       }
       if (Card(T("Proportional Editing")))
       {
@@ -7649,35 +7860,32 @@ namespace
       }
       if (Card(T("Viewport Visibility"), nullptr, false))
       {
-         BoolRow(T("Cameras shown"), &set.showCameras);
-         BoolRow(T("Cameras selectable"), &set.pickCameras);
-         BoolRow(T("Lights shown"), &set.showLights);
-         BoolRow(T("Lights selectable"), &set.pickLights);
-      }
-      if (Card(T("Navigation")))
-      {
-         BoolRow(T("Zoom to mouse"), &set.zoomToMouse);
-         BoolRow(T("Orbit around selection"), &set.orbitSelection);
-         BoolRow(T("Invert zoom direction"), &set.invertZoom);
+         Checks("##checks9", {
+            { T("Cameras shown"), &set.showCameras },
+            { T("Cameras selectable"), &set.pickCameras },
+            { T("Lights shown"), &set.showLights },
+            { T("Lights selectable"), &set.pickLights },
+         });
       }
       if (Card(T("Overlays")))
       {
-         BoolRow(T("Text info"), &set.textInfo);
-         BoolRow(T("Statistics"), &set.stats);
-         BoolRow(T("Origins (all)"), &set.originsAll);
-         BoolRow(T("3D cursor"), &set.showCursor);
-         BoolRow(T("Extras"), &set.showExtras);
-         BoolRow(T("Light colors"), &set.lightColors);
-         BoolRow(T("Outline selected"), &set.outlineSel);
-         BoolRow(T("Wireframe"), &set.wireOver);
-         BoolRow(T("Performance"), &set.showPerf);
+         Checks("##checks11", {
+            { T("Text info"), &set.textInfo },
+            { T("Statistics"), &set.stats },
+            { T("Origins (all)"), &set.originsAll },
+            { T("3D cursor"), &set.showCursor },
+            { T("Extras"), &set.showExtras },
+            { T("Light colors"), &set.lightColors },
+            { T("Outline selected"), &set.outlineSel },
+            { T("Wireframe"), &set.wireOver },
+            { T("Performance"), &set.showPerf },
+         });
       }
       if (Card(T("Grid"), nullptr, false))
       {
          BoolRow(T("Orthographic grid"), &set.orthoGrid);
-         BoolRow(T("Axis X"), &set.axisX);
-         BoolRow(T("Axis Y"), &set.axisY);
-         BoolRow(T("Axis Z"), &set.axisZ);
+         FieldLabel(T("Axes"));
+         Checks("##gridaxes", { { "X", &set.axisX }, { "Y", &set.axisY }, { "Z", &set.axisZ } });
          FloatRow(T("Scale"), &set.gridScale, 0.001f, 1000.0f, "%.3f");
          if (IntInputRow(T("Lines"), &set.gridLines))
             set.gridLines = std::clamp(set.gridLines, 1, 200);
@@ -7686,16 +7894,18 @@ namespace
       }
       if (Card(T("Gizmos")))
       {
-         BoolRow(T("Navigate"), &set.gizmoNav);
-         BoolRow(T("Move, rotate, scale"), &set.gizmoMove);
-         BoolRow(T("Light size"), &set.gizmoLightSize);
-         BoolRow(T("Light look-at"), &set.gizmoLightLook);
-         BoolRow(T("Camera lens"), &set.gizmoCamLens);
-         BoolRow(T("Camera focus distance"), &set.gizmoCamFocus);
+         Checks("##checks12", {
+            { T("Navigate"), &set.gizmoNav },
+            { T("Move, rotate, scale"), &set.gizmoMove },
+            { T("Light size"), &set.gizmoLightSize },
+            { T("Light look-at"), &set.gizmoLightLook },
+            { T("Camera lens"), &set.gizmoCamLens },
+            { T("Camera focus distance"), &set.gizmoCamFocus },
+         });
       }
       if (Card(T("Passepartout")))
          FloatRow(T("Opacity"), &set.passAlpha, 0.0f, 1.0f, "%.2f");
-      if (Card(T("Safe Areas"), &set.safe))
+      if (Card(T("Safe Areas"), &set.safe) && set.safe)
       {
          FloatRow(T("Title"), &set.safeTitle, 0.0f, 0.3f, "%.3f");
          FloatRow(T("Action"), &set.safeAction, 0.0f, 0.3f, "%.3f");
@@ -7704,21 +7914,23 @@ namespace
       if (Card(T("Composition Guides")))
       {
          ColorRow(T("Colour"), set.guideColor);
-         BoolRow(T("Thirds"), &set.thirds);
-         BoolRow(T("Center"), &set.center);
-         BoolRow(T("Diagonal"), &set.diagonal);
-         BoolRow(T("Golden"), &set.golden);
-         BoolRow(T("Golden triangle A"), &set.goldenTriA);
-         BoolRow(T("Golden triangle B"), &set.goldenTriB);
-         BoolRow(T("Harmonious triangle A"), &set.harmonyTriA);
-         BoolRow(T("Harmonious triangle B"), &set.harmonyTriB);
+         Checks("##checks13", {
+            { T("Thirds"), &set.thirds },
+            { T("Center"), &set.center },
+            { T("Diagonal"), &set.diagonal },
+            { T("Golden"), &set.golden },
+            { T("Golden triangle A"), &set.goldenTriA },
+            { T("Golden triangle B"), &set.goldenTriB },
+            { T("Harmonious triangle A"), &set.harmonyTriA },
+            { T("Harmonious triangle B"), &set.harmonyTriB },
+         });
       }
    }
 
    // A child whose first card touches its top and sides, so the card lines up with the rail.
    void BeginCardColumn(const char* id, ImGuiChildFlags flags)
    {
-      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(SectionCard::kPad, 0.0f));
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(SectionCard::Pad(), 0.0f));
       ImGui::BeginChild(id, ImVec2(0, 0), ImGuiChildFlags_AlwaysUseWindowPadding | flags);
       ImGui::PopStyleVar();
       SectionCard::BeginWindow();
@@ -7728,7 +7940,7 @@ namespace
    void EndCardColumn()
    {
       SectionCard::EndWindow();
-      ImGui::EndChild();
+      EndChildSafe();
    }
 
    void DrawSide(Scene3DNode* scene, float panelW)
@@ -7740,6 +7952,7 @@ namespace
                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
       ImGui::GetStyle().WindowPadding = savedPad;
       PopDockedPanelStyle();
+      UiDensity::Compact compact;   // the settings are a compact strip (Photoshop / Affinity Properties size)
       float availW = ImGui::GetContentRegionAvail().x;
       SectionCard::Title(T("3D View"));
       FormParts::Inline(availW - 16.0f + ImGui::GetStyle().WindowPadding.x);
@@ -7787,8 +8000,8 @@ namespace
       ImGui::EndGroup();
       ActionButton::RowNext();
       BeginCardColumn("##v3dprops", ImGuiChildFlags_None);
-      availW = ImGui::GetContentRegionAvail().x;
-      sFieldW = std::max(70.0f, availW - kFieldLabelW);
+      availW = std::floor(ImGui::GetContentRegionAvail().x);
+      sFieldW = std::max(60.0f, availW - FieldLabelW());
       sCard.clear();
       if (sTab == kSceneTab) DrawOutliner(scene, availW, ImGui::GetContentRegionAvail().y);
       else if (sTab == 0) DrawRenderTab(scene);
@@ -7799,7 +8012,8 @@ namespace
       else if (sTab == kMaterialTab) DrawMaterialTab(scene, availW);
       else DrawViewTab(scene, availW);
       EndCardColumn();
-      ImGui::EndChild();
+      compact.End(); // before the child closes: the pushes were made inside it
+      EndChildSafe();
    }
 
    void DrawAddItems(Scene3DNode* scene)
@@ -7842,13 +8056,14 @@ namespace
       MenuParts::Separator();
       if (MenuParts::Item(T("New scene")))
          sPending.what = Pending::Scene;
-      if (MenuParts::Item(T("Duplicate scene"), MODKEY "+D"))
-         sPending.what = Pending::DuplicateScene;
-      if (MenuParts::Item(T("Copy scene"), MODKEY "+C"))
+      if (MenuParts::Item(T("Copy Scene"), MODKEY "+C"))
          sCopiedScene = scene->SceneText();
-      if (MenuParts::Item(T("Paste scene"), MODKEY "+V", false, !sCopiedScene.empty()))
+      if (MenuParts::Item(T("Paste Scene"), MODKEY "+V", false, !sCopiedScene.empty()))
          sPending.what = Pending::PasteScene;
-      if (MenuParts::Item(T("Delete scene")))
+      if (MenuParts::Item(T("Duplicate Scene"), MODKEY "+D"))
+         sPending.what = Pending::DuplicateScene;
+      MenuParts::Separator();
+      if (MenuParts::Item(T("Delete Scene")))
          sPending.what = Pending::DeleteScene;
    }
 
@@ -7888,6 +8103,8 @@ namespace
          DrawAddItems(scene);
          MenuParts::EndPopup();
       }
+      if (MenuParts::TestOpen("##v3dcontext"))
+         ImGui::OpenPopup("##v3dcontext");
       if (MenuParts::BeginPopup("##v3dcontext"))
       {
          // On an object: what to do with it. On empty space: add, select, view.
@@ -7895,12 +8112,11 @@ namespace
          Item* one = sSel.size() == 1 ? scene->FindItem(sSel[0]) : nullptr;
          if (sMenuOnItem && any)
          {
-            if (MenuParts::Item(T("Duplicate"), "Shift+D")) DuplicateSelected(scene, ImGui::GetIO().MousePos);
+            if (one != nullptr && MenuParts::Item(T("Rename"), "F2")) StartRename(*one);
             if (MenuParts::Item(T("Copy"))) sCopiedItems = SelectedItems(scene);
             if (MenuParts::Item(T("Paste"), nullptr, false, !sCopiedItems.empty())) PasteItems(scene);
-            if (one != nullptr && MenuParts::Item(T("Rename"), "F2")) StartRename(*one);
+            if (MenuParts::Item(T("Duplicate"), "Shift+D")) DuplicateSelected(scene, ImGui::GetIO().MousePos);
             if (MenuParts::Item(T("Hide"), "H")) HideSelected(scene);
-            if (MenuParts::Item(T("Remove"), "X")) DeleteSelected(scene);
             MenuParts::Separator();
             if (MenuParts::Item(T("Frame"), "F")) FrameItems(scene, false);
             bool grouped = false;
@@ -7908,7 +8124,7 @@ namespace
                if (const Item* it = scene->FindItem(id); it != nullptr && it->group != 0)
                   grouped = true;
             if (sSel.size() > 1 && MenuParts::Item(T("Group"), MODKEY "+G")) GroupSelected(scene, true);
-            if (grouped && MenuParts::Item(T("Ungroup"), MODKEY "+Alt+G")) GroupSelected(scene, false);
+            if (grouped && MenuParts::Item(T("Ungroup"), MODKEY "+Shift+G")) GroupSelected(scene, false);
             if (one != nullptr && MenuParts::SubMenu(T("Source"), true))
             {
                for (GraphNode* gn : SourceChoices(scene, *one))
@@ -7929,8 +8145,11 @@ namespace
                   {
                      gRequestSelectNodeIndex = gn->index;
                      gRequestFitViewNodeIndex = gn->index;
+                     sGoToNode++;
                   }
             }
+            MenuParts::Separator();
+            if (MenuParts::Item(T("Remove"), "X")) DeleteSelected(scene);
          }
          else
          {
@@ -8178,18 +8397,16 @@ namespace
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ImGui::IsMouseHoveringRect(mn, mx) && !ImGui::IsAnyItemHovered() &&
           ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
          ImGui::OpenPopup("##v3ddockmenu");
+      if (MenuParts::TestOpen("##v3ddockmenu"))
+         ImGui::OpenPopup("##v3ddockmenu");
       if (MenuParts::BeginPopup("##v3ddockmenu"))
       {
          if (MenuParts::SubMenu(T("Dock Position")))
          {
-            const bool atTop = gView3DDock == 3;
-            if (MenuParts::Item(T("3D View at Bottom"), nullptr, !atTop) && atTop)
-               gView3DDock = 0;
-            if (MenuParts::Item(T("3D View at Top"), nullptr, atTop) && !atTop)
-               gView3DDock = 3;
+            DrawViewDockMenuItems(3);
             ImGui::EndMenu();
          }
-         ImGui::Dummy(ImVec2(0.0f, tok::space_1));
+         MenuParts::Separator();
          if (MenuParts::Item(T("Close 3D View")))
             gView3DOpen = false;
          MenuParts::EndPopup();
@@ -8213,6 +8430,24 @@ namespace
             }
       }
       sSet = scene != nullptr ? &scene->settings : &sNoScene;
+      if (scene != nullptr)
+      {
+         // The user's 3D View habits (Settings > 3D View) win over what the patch saved.
+         const View3DPrefs& p = gView3DPrefs;
+         scene->settings.miniAxes = p.miniAxes;
+         scene->settings.miniSize = p.miniSize;
+         scene->settings.miniBright = p.miniBright;
+         scene->settings.gizmoNavSize = p.gizmoNavSize;
+         scene->settings.gizmoSize = p.gizmoSize;
+         scene->settings.smoothTime = p.smoothTime;
+         scene->settings.rotStep = p.rotStep;
+         scene->settings.autoPerspective = p.autoPerspective;
+         scene->settings.continuousGrab = p.continuousGrab;
+         scene->settings.orbitSens = p.orbitSens;
+         scene->settings.zoomToMouse = p.zoomToMouse;
+         scene->settings.orbitSelection = p.orbitSelection;
+         scene->settings.invertZoom = p.invertZoom;
+      }
       if (scene == nullptr)
       {
          gView3DClaimedKeys = false;
@@ -8240,6 +8475,16 @@ namespace
             }
       }
       sPickedUid = 0;
+      // Another scene (a new or opened patch): its item ids are its own, so the old selection and local view go.
+      static uint64_t sLastScene = 0;
+      const GraphNode* sceneGn = SceneGraphNode();
+      const uint64_t sceneUid = sceneGn != nullptr ? sceneGn->uid : 0;
+      if (sceneUid != sLastScene)
+      {
+         sLastScene = sceneUid;
+         sSel.clear();
+         sLocal.clear();
+      }
       sLocal.erase(std::remove_if(sLocal.begin(), sLocal.end(), [&](int id) { return scene->FindItem(id) == nullptr; }), sLocal.end());
       static Scene3DNode::Settings sSeen;
       std::memcpy(&sSeen, sSet, sizeof(sSeen));
@@ -8249,7 +8494,8 @@ namespace
       DrawDockMenu(headTop, ImGui::GetCursorScreenPos().y);
       const ImVec2 avail = ImGui::GetContentRegionAvail();
       const float gapX = ImGui::GetStyle().ItemSpacing.x;
-      const float sideW = sSideOpen ? std::min(kSideW, avail.x * 0.5f) : 0.0f;
+      const float sideBase = std::min(kSideW, avail.x * 0.5f);
+      const float sideW = sSideOpen ? sideBase : 0.0f;
       const float viewW = std::max(120.0f, avail.x - sideW - (sSideOpen ? gapX : 0.0f));
       DrawViewport(scene, ImVec2(viewW, std::max(80.0f, avail.y)));
       if (sSideOpen)
@@ -8294,6 +8540,87 @@ bool View3DNavProbe(float out[18])
                    sNavProbe.hovered ? 1.0f : 0.0f, (float)sNavProbe.active, (float)sSel.size() };
    std::copy(v, v + 18, out);
    return ImGui::GetFrameCount() - sNavProbe.frame <= 2;
+}
+
+// Menu-alive test (MenuAliveTests.cpp): open the right-click menu on the selection or on empty space, and a print of
+// everything a menu item can change (scene, settings, selection, view, tool, modes, copy buffers, rename, requests).
+// Undo depth is left out: an item that only pushes a checkpoint has not done anything.
+void View3DTestOpenMenu(bool onItem)
+{
+   Scene3DNode* scene = FindScene();
+   if (onItem && sSel.empty() && scene != nullptr && !scene->Items().empty())
+      sSel = { scene->Items().front().id };
+   sMenuOnItem = onItem;
+   sOpenMenu = true;
+   // Where a person right-clicked: the middle of the view (Move to Mouse reads it).
+   sViewMouse = ImVec2((sViewMn.x + sViewMx.x) * 0.5f, (sViewMn.y + sViewMx.y) * 0.5f);
+}
+
+void View3DTestPose()
+{
+   Scene3DNode* scene = FindScene();
+   if (scene == nullptr || scene->Items().empty())
+      return;
+   Item& it = scene->Items().front();
+   const float pos[3] = { 1.0f, 0.5f, -0.75f }, rot[3] = { 20.0f, 35.0f, 10.0f }, sc[3] = { 1.5f, 1.25f, 0.8f };
+   std::copy(pos, pos + 3, it.pos);
+   std::copy(rot, rot + 3, it.rot);
+   std::copy(sc, sc + 3, it.scale);
+   // Items 0 and 1 (when there) are grouped; item 2 shows item 0's node, so Select Linked has a duplicate to add.
+   if (scene->Items().size() >= 3)
+   {
+      scene->Items()[0].group = scene->Items()[1].group = 7001;
+      scene->Items()[2].uid = scene->Items()[0].uid;
+      scene->Items()[1].pos[0] = -1.5f;
+      scene->Items()[2].pos[0] = 2.5f;
+   }
+   // The cursor before the commit, so the patch holds it from the first frame (a later write reads as drift).
+   const float cur[3] = { -0.6f, 0.3f, 0.45f };
+   std::copy(cur, cur + 3, sSet->cursor);
+   scene->Commit();
+   // The same start for every click: first item selected, the view off to one side, no mode, no glide.
+   sSel = { it.id };
+   sLocal.clear();
+   sGlide.on = false;
+   sCameraView = false;
+   sOrtho = false;
+   sAz = 0.4f;
+   sEl = 0.3f;
+   sDist = 25.0f;
+   sTarget[0] = 6.0f, sTarget[1] = 2.0f, sTarget[2] = -4.0f;
+   sRoll = 0.0f;
+   sPose = {};
+   sEdit.on = false;
+   sSculpt.on = false;
+   ImGui::SetClipboardText("");   // a copy shows as a change even when an earlier click copied the same text
+}
+
+std::string View3DTestFingerprint()
+{
+   std::string f;
+   char b[512];
+   if (Scene3DNode* scene = FindScene())
+   {
+      f += scene->SceneText();   // kept current by every Commit
+   }
+   for (int id : sSel)
+      f += " sel" + std::to_string(id);
+   for (int id : sLocal)
+      f += " loc" + std::to_string(id);
+   snprintf(b, sizeof b, " sh%d cv%d gr%d or%d tab%d side%d tool%d selm%d ov%d az%.4f el%.4f d%.4f t%.4f,%.4f,%.4f roll%.3f view%d "
+                         "pend%d ren%d copy%zu copyscene%zu buf%zu nodes%zu req%d,%d edit%d pose%d,%d sculpt%d rulers%zu lock%d,%d",
+            (int)sShading, sCameraView, sGrid, sOrtho, sTab, sSideOpen, sTool, sSelMode, sOverlays, sAz, sEl, sDist,
+            sTarget[0], sTarget[1], sTarget[2], sRoll, sViewName, (int)sPending.what, sRename, sCopiedItems.size(),
+            sCopiedScene.size(), sBuffer.size(), gNodes.size(), gRequestSelectNodeIndex, gRequestFitViewNodeIndex,
+            sEdit.on ? 1 : 0, sPose.on ? 1 : 0, sPose.paint ? 1 : 0, sSculpt.on ? 1 : 0, sRulers.size(), sLockCam ? 1 : 0,
+            sLockActive ? 1 : 0);
+   f += b;
+   f += " go" + std::to_string(sGoToNode);
+   snprintf(b, sizeof b, " cur%.4f,%.4f,%.4f", sSet->cursor[0], sSet->cursor[1], sSet->cursor[2]);
+   f += b;
+   if (const char* clip = ImGui::GetClipboardText())
+      f += std::string(" clip:") + clip;
+   return f;
 }
 
 void View3DAddCamera()
@@ -8349,6 +8676,65 @@ bool View3DAuditState(int tab)
    sSideOpen = true;
    sShading = Shading::Solid;
    return want == Kind::Missing || !sSel.empty();
+}
+
+// Journeys (internal/plans/ui-system/journey-tests.md): "3d cube" adds a one-segment Cube node to a fresh scene and selects it;
+// queries read the selected item: "obj.x" / "obj.y" / "obj.z", "obj.count", "edit.on", "mesh.points".
+bool View3DJourneySetup(const std::string& line, std::string* err)
+{
+   std::istringstream in(line);
+   std::string tag, cmd;
+   in >> tag >> cmd;
+   if (cmd == "cube")
+   {
+      GraphNode* gn = SpawnNode("Cube", "3D", 40.0f, 40.0f);
+      if (gn == nullptr)
+         return *err = "no Cube node", false;
+      // One segment per side, Blender's default cube (8 vertices), so the journey's counts match the reference.
+      if (auto* geo = dynamic_cast<GeometryNode*>(gn->node.get()))
+         geo->detail = 8;
+      View3DAddNode(*gn);
+      Scene3DNode* scene = FindScene();
+      if (scene == nullptr || scene->Items().empty())
+         return *err = "no scene", false;
+      sSel = { scene->Items().back().id };
+      sTool = 0;
+      gView3DOpen = true;
+      return true;
+   }
+   return *err = "unknown 3d setup " + cmd, false;
+}
+
+std::string View3DJourneyQuery(const std::string& q)
+{
+   Scene3DNode* scene = FindScene();
+   if (scene == nullptr)
+      return "no scene";
+   if (q == "obj.count")
+      return std::to_string(scene->Items().size());
+   if (q == "edit.on")
+      return sEdit.on ? "1" : "0";
+   const Item* it = sSel.empty() ? nullptr : scene->FindItem(sSel.front());
+   if (it == nullptr)
+      return "none";
+   if (q == "mesh.points")
+   {
+      // Distinct corner positions of the edited mesh, the count Blender reports as vertices.
+      Mat4 world;
+      EditMeshNode* node = EditOf(*it, world);
+      if (node == nullptr)
+         return "no edit mesh";
+      std::set<std::tuple<long, long, long>> pts;
+      for (const Vertex& v : node->GetMesh().vertices)
+         pts.insert({ std::lround(v.px * 1000.0f), std::lround(v.py * 1000.0f), std::lround(v.pz * 1000.0f) });
+      return std::to_string(pts.size());
+   }
+   char b[32];
+   const int axis = q == "obj.x" ? 0 : q == "obj.y" ? 1 : q == "obj.z" ? 2 : -1;
+   if (axis < 0)
+      return "unknown query " + q;
+   std::snprintf(b, sizeof b, "%.3f", it->pos[axis]);
+   return b;
 }
 #endif
 
@@ -8495,40 +8881,9 @@ void View3DAddNode(GraphNode& gn)
 
 void DrawView3DDocked(const char* id, const ImVec2& size)
 {
-   const float kGrip = PanelFrame::kGap;
-   const bool gripFirst = gView3DDock != 3;
-   ImGui::BeginChild(id, size, false);
-   gView3DRectMin = ImGui::GetWindowPos();
-   gView3DRectMax = ImVec2(gView3DRectMin.x + ImGui::GetWindowSize().x, gView3DRectMin.y + ImGui::GetWindowSize().y);
    gView3DClaimedKeys = false;
-   const ImVec2 inner = ImGui::GetContentRegionAvail();
-   auto grip = [&]()
-   {
-      ImGui::InvisibleButton("##view3dgrip", ImVec2(std::max(1.0f, inner.x), kGrip));
-      DrawPanelSeam(false, gripFirst);
-      if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
-      if (ImGui::IsItemActive())
-      {
-         gView3DHeight += gripFirst ? -ImGui::GetIO().MouseDelta.y : ImGui::GetIO().MouseDelta.y;
-         gView3DHeight = std::max(kMinHeight, gView3DHeight);
-      }
-   };
-   if (gripFirst)
-      grip();
-   const ImVec2 gap = ImGui::GetStyle().ItemSpacing;
-   const ImVec2 cardSize(std::max(1.0f, inner.x), std::max(1.0f, inner.y - kGrip - gap.y));
-   PanelFrame::Insets in;
-   if (gripFirst)
-      in.t = 0.0f;
-   else
-      in.b = 0.0f;
-   PanelFrame::BeginCard("##view3dcontent", cardSize, in);
-   DrawPanel();
-   PanelFrame::EndCard();
-   if (!gripFirst)
-      grip();
-   ImGui::EndChild();
+   DrawViewDocked(id, size, gView3DDock, gView3DHeight, gView3DWidth, "##view3dgrip", "##view3dcontent", gView3DRectMin,
+                  gView3DRectMax, [] { DrawPanel(); });
 }
 
 } // namespace app

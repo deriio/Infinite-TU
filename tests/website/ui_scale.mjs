@@ -29,7 +29,7 @@ await new Promise(r => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}/`;
 const problems = [];
 const report = (pg, sz, kind, msg) => problems.push(`${pg} [${sz}] ${kind}: ${msg}`);
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', args: ['--no-sandbox', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader'] });
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: 'new', protocolTimeout: 300000, args: ['--no-sandbox', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader'] });
 const pages = pageList(process.argv.slice(2));
 
 /* in page: text/control boxes that sit over a canvas */
@@ -37,6 +37,7 @@ const OVER_FN = () => {
   const out = [];
   const vis = (e) => { for (let n = e; n && n !== document.body; n = n.parentElement) { const c = getComputedStyle(n); if (c.display === 'none' || c.visibility === 'hidden' || +c.opacity < 0.05) return false; } return true; };
   document.querySelectorAll('canvas').forEach((cv, ci) => {
+    if (cv.id === 'bird') return;   // the perched mascot: decorative, aria-hidden, click-through, sits on text on purpose
     const r = cv.getBoundingClientRect(); if (r.width < 80 || r.height < 80 || !vis(cv)) return;
     if (r.bottom < 0 || r.top > innerHeight) return;
     if (r.width >= innerWidth * 0.95 && r.height >= innerHeight * 0.9) return;   // a full-screen backdrop (home hero) is meant to sit behind the text

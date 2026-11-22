@@ -25,3 +25,22 @@ scripts/fork-sync.sh
 - Тег — semver: `v0.3.0`, `v0.3.1`, `v0.4.0`… (прошлые: `v0.1-fork-1`, `v0.2-fork`).
 - Файл для скачивания: `InfiniteTU-<версия>-windows-x64.zip`, папка внутри — `InfiniteTU-<версия>`; exe внутри остаётся `InfiniteTU.exe`.
 - Заголовок релиза: `Infinite TU <версия>`. Установщик не прикладывать (VST «Infinite FX/Instrument» конфликтуют с официальным Infinite).
+
+## Проверка цели pull request
+
+В GitHub перед отправкой проверьте пару «base repository / base branch».
+Для задач `my/*` выбирайте `deriio/Infinite-TU:my/main`, для задач
+`tu/*` — `deriio/Infinite-TU:tu/main`. В CLI задавайте репозиторий явно:
+
+```bash
+gh pr create --repo deriio/Infinite-TU --base my/main --head my/<задача>
+gh pr create --repo deriio/Infinite-TU --base tu/main --head tu/<задача>
+```
+
+Для вклада в официальный проект создавайте отдельную ветку от свежей
+`upstream/main` и переносите в неё только выбранные изменения. Перед
+отправкой проверьте вкладки Commits и Files changed.
+
+Для обновления форка сначала проверяйте слияние официальной `main` с
+`my/main` в отдельной ветке. После проверки обновлённую `my/main`
+вливайте в `tu/main` обычным merge, сохраняя историю соавтора.

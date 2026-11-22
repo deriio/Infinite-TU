@@ -13,7 +13,7 @@ class OscPortListener
 public:
    virtual ~OscPortListener() = default;
    // Called on the hub's receive thread.
-   virtual void OnOscMessage(const OscMessage::Message& msg) = 0;
+   virtual void OnOscMessage(const OscMessage::PacketMessage& msg) = 0;
 };
 
 namespace OscPortHub

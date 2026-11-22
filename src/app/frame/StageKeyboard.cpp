@@ -1,13 +1,16 @@
 // Split out of main(): see docs/plans/main-split/README.md (Block C)
 #include "app/panels/InspectorPanel.h" // fork: inspector
+#include "app/ui/design/components/MenuParts.h"
 #include "app/frame/FrameCtx.h"
 #include "app/panels/CurveEditorPanel.h"
+#include "app/panels/FieldPatcherPanel.h"
 #include "app/graph/NodeClipboard.h"
 
 namespace app
 {
    static std::string gOwnNodeClipboardText;
 extern int gView3DTestMenuNode;
+extern int gView2DMenuEdit; // Edit menu Copy (1) / Paste (2) handed to the 2D View (View2DPanel.cpp)
 extern bool gShotNodeMenu;
 
 void DrawKeyboard(FrameCtx& fc)
@@ -25,6 +28,27 @@ void DrawKeyboard(FrameCtx& fc)
    auto& clipboardCluster = fc.clipboardCluster;
    auto& typing = fc.typing;
    auto& cmdOrCtrl = fc.cmdOrCtrl;
+
+      // Compute panel focus flags before any key handler runs so a click or
+      // panel close in the previous/current layout step takes effect this frame.
+      if (!gPerfPanelOpen)
+      {
+         gPerfMatrixClaimedKeys = false;
+         gPerfMatrixFocused = false;
+      }
+      else
+      {
+         gPerfMatrixFocused = gPerfMatrixClaimedKeys && gPerfEditMode;
+      }
+
+      if (!gArrangePanelOpen)
+         gArrangeClaimedKeys = false;
+      if (!gSessionPanelOpen)
+         gSessionClaimedKeys = false;
+      gArrangeFocused = gArrangeClaimedKeys || gSessionClaimedKeys || (gSampleStudioOpen && gSampleStudioClaimedKeys) ||
+                        (gPianoRollOpen && gPianoRollClaimedKeys) || (gView3DOpen && (gView3DClaimedKeys || gView3DDock == 4)) || (gView2DOpen && (gView2DClaimedKeys || gView2DDock == 4)) || (gMixerPanelOpen && gMixerClaimedKeys) ||
+                        (gCurveEditorOpen && gCurveEditorClaimedKeys) || (gDrumPanelOpen && gDrumClaimedKeys) ||
+                        (gFieldPatcherOpen && gFieldPatcherClaimedKeys);
 
 
       // "/" drops a comment under the pointer and puts the caret straight into
@@ -61,7 +85,9 @@ void DrawKeyboard(FrameCtx& fc)
       // Space toggles play/pause on the transport, mirroring the Play/Pause
       // button, so the timeline can be started or paused without reaching
       // for the mouse.
-      if (!typing && !cmdOrCtrl && !io.KeyShift &&
+      // The Sample Studio's waveform plays its own edit on Space (TogglePlay there), so the canvas stays out.
+      if (!typing && !cmdOrCtrl && !io.KeyShift && !(gView2DOpen && gView2DClaimedKeys) &&
+          !(gSampleStudioOpen && gSampleStudioClaimedKeys) &&
           ImGui::IsKeyPressed(ImGuiKey_Space, false))
          LaunchRequestTogglePlay();
 
@@ -168,6 +194,10 @@ void DrawKeyboard(FrameCtx& fc)
       if (!typing && shiftOnly && ImGui::IsKeyPressed(ImGuiKey_M, false))
          gModMatrixOpen = !gModMatrixOpen;
 
+      // Shift+L: the Mixer panel
+      if (!typing && shiftOnly && ImGui::IsKeyPressed(ImGuiKey_L, false))
+         gMixerPanelOpen = !gMixerPanelOpen;
+
       // Shift+P: the docked performance matrix
       if (!typing && shiftOnly && ImGui::IsKeyPressed(ImGuiKey_P, false))
          gPerfPanelOpen = !gPerfPanelOpen;
@@ -201,20 +231,36 @@ void DrawKeyboard(FrameCtx& fc)
       if (terminalChord && !(gView3DOpen && gView3DClaimedKeys) && ImGui::IsKeyPressed(ImGuiKey_GraveAccent, false))
          TerminalToggleShortcut();
 
-      // Shift+R: the docked Piano Roll
-      if (!typing && shiftOnly && ImGui::IsKeyPressed(ImGuiKey_R, false))
+      // Shift+R: the docked Piano Roll (the 3D View keeps Shift+R for Repeat Last while it has the pointer)
+      if (!typing && shiftOnly && !(gView3DOpen && gView3DClaimedKeys) && ImGui::IsKeyPressed(ImGuiKey_R, false))
          gPianoRollOpen = !gPianoRollOpen;
+
+      // Shift+J: the docked Drum panel (the Timeline keeps Shift+J for a new track while it has the keys)
+      if (!typing && shiftOnly && (!gArrangeFocused || (gDrumPanelOpen && gDrumClaimedKeys)) && ImGui::IsKeyPressed(ImGuiKey_J, false))
+         gDrumPanelOpen = !gDrumPanelOpen;
 
       // Shift+E: the docked Curve Editor
       if (!typing && shiftOnly && ImGui::IsKeyPressed(ImGuiKey_E, false))
          gCurveEditorOpen = !gCurveEditorOpen;
 
+      // Shift+F: the docked Field Patcher (the 3D View keeps Shift+F for sculpt strength while it has the pointer)
+      if (!typing && shiftOnly && !(gView3DOpen && gView3DClaimedKeys) && ImGui::IsKeyPressed(ImGuiKey_F, false))
+         gFieldPatcherOpen = !gFieldPatcherOpen;
+
       // Shift+3: the 3D View (inside the Curve Editor, Shift+1..5 pick handle types)
-      if (!typing && shiftOnly && !(gCurveEditorOpen && gCurveEditorClaimedKeys) && ImGui::IsKeyPressed(ImGuiKey_3, false))
+      if (!typing && shiftOnly && !(gCurveEditorOpen && gCurveEditorClaimedKeys) &&
+          !(gFieldPatcherOpen && gFieldPatcherClaimedKeys) && ImGui::IsKeyPressed(ImGuiKey_3, false))
          gView3DOpen = !gView3DOpen;
 
+      // Shift+2: the 2D View
+      if (!typing && shiftOnly && !(gCurveEditorOpen && gCurveEditorClaimedKeys) &&
+          !(gFieldPatcherOpen && gFieldPatcherClaimedKeys) && !(gView3DOpen && gView3DClaimedKeys) &&
+          ImGui::IsKeyPressed(ImGuiKey_2, false))
+         gView2DOpen = !gView2DOpen;
+
       // Shift+Y: fit view to content, replacing the old menu-only entry
-      if (!typing && shiftOnly && ImGui::IsKeyPressed(ImGuiKey_Y, false))
+      // Canvas-only keys (Shift+Y, Shift+H) stay off while any docked panel has the keys (gArrangeFocused, last frame).
+      if (!typing && shiftOnly && !gArrangeFocused && ImGui::IsKeyPressed(ImGuiKey_Y, false))
          gRequestFitView = true;
 
       // Shift+N: the type-to-filter node picker, without having to find empty
@@ -228,8 +274,8 @@ void DrawKeyboard(FrameCtx& fc)
       // (DrawArrangePanelContent's own keyboard block), a different action
       // that must not also pop the canvas node picker open underneath it.
       const bool doAddNode = gRequestAddNode ||
-         (!cmdOrCtrl && io.KeyShift && (!typing || searchPopupOpen) && gCommentEdit.target == nullptr &&
-          ImGui::IsKeyPressed(ImGuiKey_N, false));
+         (!cmdOrCtrl && io.KeyShift && (!typing || searchPopupOpen) && (!gArrangeFocused || searchPopupOpen) &&
+          gCommentEdit.target == nullptr && ImGui::IsKeyPressed(ImGuiKey_N, false));
       gRequestAddNode = false;
       if (doAddNode)
       {
@@ -262,7 +308,7 @@ void DrawKeyboard(FrameCtx& fc)
       // "is anything showing?" either, or a canvas of audio nodes would make
       // the first press a no-op.
       // Not over the 3D View: Shift+H there hides the unselected items (View3DPanel HandleKeys).
-      if (!typing && shiftOnly && !(gView3DOpen && gView3DClaimedKeys) && ImGui::IsKeyPressed(ImGuiKey_H, false))
+      if (!typing && shiftOnly && !gArrangeFocused && ImGui::IsKeyPressed(ImGuiKey_H, false))
       {
          std::vector<GraphNode*> targets;
          const int count = ed::GetSelectedObjectCount();
@@ -344,32 +390,6 @@ void DrawKeyboard(FrameCtx& fc)
             }
          }
       }
-
-      // gPerfMatrixFocused: the performance matrix is in edit mode and has
-      // keyboard focus, so these keys belong to its controls, not to the graph.
-      // It is set from the matrix window, which draws later in the frame than
-      // this block, so a closed matrix would otherwise keep the last value it
-      // wrote.
-      if (!gPerfPanelOpen)
-      {
-         gPerfMatrixClaimedKeys = false;
-         gPerfMatrixFocused = false;
-      }
-      else
-      {
-         gPerfMatrixFocused = gPerfMatrixClaimedKeys && gPerfEditMode;
-      }
-
-      // Arrangement Timeline focus guard: when arrangement timeline owns the
-      // keyboard focus, keystrokes (Delete, Backspace, Cmd+C, Cmd+V, Cmd+D)
-      // belong strictly to the timeline clips, not the graph canvas.
-      if (!gArrangePanelOpen)
-         gArrangeClaimedKeys = false;
-      if (!gSessionPanelOpen)
-         gSessionClaimedKeys = false;
-      gArrangeFocused = gArrangeClaimedKeys || gSessionClaimedKeys || (gSampleStudioOpen && gSampleStudioClaimedKeys) ||
-                        (gPianoRollOpen && gPianoRollClaimedKeys) || (gView3DOpen && gView3DClaimedKeys) ||
-                        (gCurveEditorOpen && gCurveEditorClaimedKeys);
 
       bool doDelete = gRequestDelete ||
          (!typing && !gPerfMatrixFocused && !gArrangeFocused && (ImGui::IsKeyPressed(ImGuiKey_Delete, false) ||
@@ -764,7 +784,16 @@ void DrawKeyboard(FrameCtx& fc)
          }
       }
 
-      const bool doCopy = gRequestCopy || (!typing && !gPerfMatrixFocused && !gArrangeFocused && gChatSelectionFrame < ImGui::GetFrameCount() - 1 && cmdOrCtrl && ImGui::IsKeyPressed(ImGuiKey_C, false));
+      // The Edit menu's Copy / Paste act on the 2D View's pixels and layers while it holds the keys.
+      if (gView2DOpen && (gView2DClaimedKeys || gView2DDock == 4) && (gRequestCopy || gRequestPaste))
+      {
+         gView2DMenuEdit = gRequestCopy ? 1 : 2;
+         gRequestCopy = gRequestPaste = false;
+      }
+      const bool canvasKeys = !typing && !gPerfMatrixFocused && !gArrangeFocused && gChatSelectionFrame < ImGui::GetFrameCount() - 1 && cmdOrCtrl;
+      const bool doCut = (gRequestCut || (canvasKeys && ImGui::IsKeyPressed(ImGuiKey_X, false))) && !ShowLockBlocks();
+      gRequestCut = false;
+      const bool doCopy = gRequestCopy || doCut || (canvasKeys && ImGui::IsKeyPressed(ImGuiKey_C, false));
       gRequestCopy = false;
       if (doCopy)
       {
@@ -812,6 +841,16 @@ void DrawKeyboard(FrameCtx& fc)
             gOwnNodeClipboardText = NodeClipboardSerialize(toCopy);
             if (!gOwnNodeClipboardText.empty())
                ImGui::SetClipboardText(gOwnNodeClipboardText.c_str());
+            // Cut: the nodes go next frame, so the paste must come from the text, not from live nodes.
+            if (doCut && !gOwnNodeClipboardText.empty())
+            {
+               clipboard.clear();
+               clipboardSources.clear();
+               clipboardOrigIndex.clear();
+               clipboardOrigGroup.clear();
+               gOwnNodeClipboardText.clear();
+               gRequestDelete = true;
+            }
          }
       }
 
@@ -1076,6 +1115,12 @@ void DrawKeyboard(FrameCtx& fc)
          if (gShotNodeMenu && !gNodes.empty() && ImGui::GetTime() > 5.0 && !ImGui::IsPopupOpen("##nodecontext"))
          {
             gContextMenuNodeIndex = gNodes.front().index;
+            ImGui::OpenPopup("##nodecontext");
+         }
+         if (!gNodes.empty() && MenuParts::TestOpen("##nodecontext"))   // self-test: the first node, as a right-click on it would
+         {
+            gContextMenuNodeIndex = gNodes.front().index;
+            ed::SelectNode(gNodes.front().NodeId(), false);
             ImGui::OpenPopup("##nodecontext");
          }
          if (gView3DTestMenuNode >= 0)

@@ -7,7 +7,7 @@ CHAPTERS_V06 = [
         "num": "Twenty-Seven",
         "n": 27,
         "title": "New Instruments, Effects & Modulators",
-        "intro": "The sound side of v0.6: four new synths, a designed-room reverb, a three-stage saturator, spectral tools, "
+        "intro": "The sound side of the later additions: four new synths, a designed-room reverb, a three-stage saturator, spectral tools, "
                  "and modulators that give every note its own value.",
         "cards": [
             ("FM", "AUDIO · SYNTH",
@@ -79,7 +79,7 @@ CHAPTERS_V06 = [
         "num": "Twenty-Eight",
         "n": 28,
         "title": "New Compositing, 3D & Mesh Tools",
-        "intro": "The visual side of v0.6: motion analysis, fluid and fog, physics, plants from text, and the primitives and mesh operators earlier editions of this guide missed.",
+        "intro": "The visual side of the later additions: motion analysis, fluid and fog, physics, plants from text, and the primitives and mesh operators earlier editions of this guide missed.",
         "cards": [
             ("Optical Flow", "COMPOSITING · IMAGE IN/OUT",
              "How far each part of the picture moved since the last frame, as a vector per pixel (red and green carry x and y, blue is speed). Pyramidal Lucas-Kanade on the GPU. "
@@ -197,3 +197,8 @@ CHAPTERS_V06 = [
         ],
     },
 ]
+
+# Everyday names that had no card of their own (tools/manual/cards_everyday.py), kept with their chapter.
+from cards_everyday import ADDED as _EVERYDAY  # noqa: E402
+for _ch in CHAPTERS_V06:
+    _ch["cards"] = _ch["cards"] + _EVERYDAY.get(_ch["n"], [])

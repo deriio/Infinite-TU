@@ -38,6 +38,7 @@ public:
    float high = 1.0f;
 
    void VisitParams(ParamVisitor& v) override;
+   bool IsLiveInput() const override { return true; } // values arrive over the network at play time
 
    // OSC learn: the next numeric message that arrives on `port` fills `address`.
    void StartLearn() { mLearning = true; }
@@ -46,7 +47,7 @@ public:
    // Empty when listening fine, else why the port could not be opened.
    std::string BindError() const { std::lock_guard<std::mutex> l(mFilterMutex); return mBindError; }
 
-   void OnOscMessage(const OscMessage::Message& msg) override;
+   void OnOscMessage(const OscMessage::PacketMessage& msg) override;
 
 private:
    void RestartListenerIfNeeded();

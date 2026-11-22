@@ -7,7 +7,12 @@
 #include "core/InfiniteCli.h"
 #include "plugin/engine/HostAudio.h"
 
+#include <cstdio>
+#include <cstdlib>
+#include <chrono>
 #include <cstring>
+#include <filesystem>
+#include <string>
 
 namespace app
 {
@@ -16,6 +21,42 @@ namespace app
 }
 
 using namespace app;
+
+// --isolated (anywhere on the command line): the run sees a fresh, empty profile instead of the user's, so a
+// headless render cannot depend on their theme, plugin index, recents or settings. Every profile path goes
+// through AppPaths::HomeDir / XDG_CONFIG_HOME / APPDATA, so pointing those at a temp folder is the whole job.
+static void ApplyIsolated(int& argc, char** argv)
+{
+   int w = 1;
+   bool isolated = false;
+   for (int r = 1; r < argc; ++r)
+   {
+      if (std::strcmp(argv[r], "--isolated") == 0)
+         isolated = true;
+      else
+         argv[w++] = argv[r];
+   }
+   argc = w;
+   argv[argc] = nullptr;
+   if (!isolated)
+      return;
+   std::error_code ec;
+   static std::filesystem::path sDir; // removed at exit: the profile lives only as long as the run
+   const long long stamp = (long long)std::chrono::steady_clock::now().time_since_epoch().count();
+   sDir = std::filesystem::temp_directory_path(ec) / ("infinite-isolated-" + std::to_string(stamp));
+   std::filesystem::create_directories(sDir / "config", ec);
+   std::atexit([] { std::error_code e; std::filesystem::remove_all(sDir, e); });
+   const std::string home = sDir.string();
+#if defined(_WIN32)
+   _putenv_s("HOME", home.c_str());
+   _putenv_s("USERPROFILE", home.c_str());
+   _putenv_s("APPDATA", (home + "\\config").c_str());
+   _putenv_s("LOCALAPPDATA", (home + "\\config").c_str());
+#else
+   setenv("HOME", home.c_str(), 1);
+   setenv("XDG_CONFIG_HOME", (home + "/config").c_str(), 1);
+#endif
+}
 
 
 int main(int argc, char** argv)
@@ -33,9 +74,17 @@ int main(int argc, char** argv)
       argv = utf8Argv.data();
    }
 #endif
+   ApplyIsolated(argc, argv);
    // The Terminal's `infinite` command: answers before any window or GPU work.
    if (argc >= 2 && std::strcmp(argv[1], "--cli") == 0)
       return InfiniteCli::Run(argc - 2, argv + 2);
+   // Line-buffered stdout: a self-test that leaves the app open (INFINITE_NOTEFANOUTTEST, ...)
+   // and is stopped by a timeout used to lose its whole report in the pipe buffer.
+#if defined(_WIN32)
+   setvbuf(stdout, nullptr, _IONBF, 0); // the MSVC CRT treats _IOLBF as full buffering
+#else
+   setvbuf(stdout, nullptr, _IOLBF, 0);
+#endif
    FrameCtx fc;
    {
       const int rc = InitApp(fc, argc, argv);

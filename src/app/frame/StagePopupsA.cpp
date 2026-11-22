@@ -2,7 +2,10 @@
 #include "app/ui/design/components/MenuParts.h"
 #include "app/ui/design/TokenColors.h"
 #include "app/frame/FrameCtx.h"
+#include "app/panels/FieldPatcherPanel.h"
 #include "core/CliSetup.h"
+#include "nodes/AudioNodes.h"
+#include "nodes/DrumSequencerNode.h"
 #include "core/FactoryPresets.h"
 #include "arrange/MidiImport.h"
 
@@ -77,10 +80,13 @@ void DrawPopupsA(FrameCtx& fc)
    // Run after the menu: the first add spawns the 3D View node, which can move
    // gNodes while gn is still in use.
    int view3DAddFrom = -1;
+   int view2DAddFrom = -1;
    auto view3DItems = [&](const GraphNode& gn)
    {
       if (View3DCanAdd(gn) && (MenuParts::Item(L("Add to 3D View")) || gView3DTestMenuNode >= 0))
          view3DAddFrom = gn.index;
+      if (View2DCanAdd(gn) && MenuParts::Item(L("Add to 2D View")))
+         view2DAddFrom = gn.index;
    };
 
       ImGui::SetNextWindowSizeConstraints(ImVec2(0, 0), ImVec2(320.0f, ImMax(120.0f, ImGui::GetMainViewport()->Size.y - 40.0f))); // popups: capped width, scroll past the window
@@ -101,15 +107,25 @@ void DrawPopupsA(FrameCtx& fc)
                g->renaming = true;
                g->renameJustStarted = true;
             }
-            if (MenuParts::Item(L("Ungroup")))
+            if (MenuParts::Item(L("Cut"), MODKEY "+X"))
             {
-               ed::ClearSelection();
-               ed::SelectNode(gn->NodeId());
-               gRequestUngroup = true;
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestCut = true;
             }
-            if (MenuParts::Item(g->on ? L("Turn Group Off") : L("Turn Group On")))
-               g->on = !g->on;
-            view3DItems(*gn);
+            // Copy: the Edit menu's command on this node (or the selection it is part of).
+            if (MenuParts::Item(L("Copy"), MODKEY "+C"))
+            {
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestCopy = true;
+            }
             if (MenuParts::Item(L("Duplicate"), MODKEY "+D"))
             {
                if (!ed::IsNodeSelected(gn->NodeId()))
@@ -119,6 +135,15 @@ void DrawPopupsA(FrameCtx& fc)
                }
                gRequestDuplicate = true;
             }
+            if (MenuParts::Item(g->on ? L("Turn Group Off") : L("Turn Group On")))
+               g->on = !g->on;
+            if (MenuParts::Item(L("Ungroup")))
+            {
+               ed::ClearSelection();
+               ed::SelectNode(gn->NodeId());
+               gRequestUngroup = true;
+            }
+            view3DItems(*gn);
             MenuParts::Separator();
             ImGui::PushStyleColor(ImGuiCol_Text, tok::V4(tok::palf::v_950_350_350_1000));
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered, tok::V4(tok::palf::v_850_200_200_250));
@@ -141,6 +166,34 @@ void DrawPopupsA(FrameCtx& fc)
                PushUndoCheckpoint();
                gCommentEdit.target = c;
                gCommentEdit.justOpened = true;
+            }
+            if (MenuParts::Item(L("Cut"), MODKEY "+X"))
+            {
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestCut = true;
+            }
+            // Copy: the Edit menu's command on this node (or the selection it is part of).
+            if (MenuParts::Item(L("Copy"), MODKEY "+C"))
+            {
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestCopy = true;
+            }
+            if (MenuParts::Item(L("Duplicate"), MODKEY "+D"))
+            {
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestDuplicate = true;
             }
             if (MenuParts::SubMenu(L("Font Size")))
             {
@@ -166,15 +219,6 @@ void DrawPopupsA(FrameCtx& fc)
                gColor.justOpened = true;
             }
             view3DItems(*gn);
-            if (MenuParts::Item(L("Duplicate"), MODKEY "+D"))
-            {
-               if (!ed::IsNodeSelected(gn->NodeId()))
-               {
-                  ed::ClearSelection();
-                  ed::SelectNode(gn->NodeId());
-               }
-               gRequestDuplicate = true;
-            }
             if (GroupNode* owner = GroupOwning(gn->index))
             {
                if (MenuParts::Item(L("Ungroup")))
@@ -211,6 +255,34 @@ void DrawPopupsA(FrameCtx& fc)
          else
          {
             // Primary Actions
+            if (MenuParts::Item(L("Cut"), MODKEY "+X"))
+            {
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestCut = true;
+            }
+            // Copy: the Edit menu's command on this node (or the selection it is part of).
+            if (MenuParts::Item(L("Copy"), MODKEY "+C"))
+            {
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestCopy = true;
+            }
+            if (MenuParts::Item(L("Duplicate"), MODKEY "+D"))
+            {
+               if (!ed::IsNodeSelected(gn->NodeId()))
+               {
+                  ed::ClearSelection();
+                  ed::SelectNode(gn->NodeId());
+               }
+               gRequestDuplicate = true;
+            }
             const char* bypassLabel = gn->node->bypassed ? "Enable Node" : "Bypass Node";
             if (MenuParts::Item(bypassLabel, "B"))
             {
@@ -223,15 +295,6 @@ void DrawPopupsA(FrameCtx& fc)
                }
             }
             view3DItems(*gn);
-            if (MenuParts::Item(L("Duplicate"), MODKEY "+D"))
-            {
-               if (!ed::IsNodeSelected(gn->NodeId()))
-               {
-                  ed::ClearSelection();
-                  ed::SelectNode(gn->NodeId());
-               }
-               gRequestDuplicate = true;
-            }
             if (const std::vector<FactoryPresets::Preset>* presets = FactoryPresets::For(gn->typeName))
             {
                if (MenuParts::SubMenu(L("Presets")))
@@ -286,6 +349,16 @@ void DrawPopupsA(FrameCtx& fc)
                      gViewportPanelNodes.push_back(gn->index);
                   gViewportPanelOpen = true;
                }
+            }
+            if (dynamic_cast<DrumSequencerNode*>(gn->node.get()) != nullptr)
+            {
+               if (MenuParts::Item(L("Open in Drum panel"), "Shift+J"))
+                  DrumPanelShowNode(gn->index);
+            }
+            if (dynamic_cast<MixerNode*>(gn->node.get()) != nullptr)
+            {
+               if (MenuParts::Item(L("Open in Mixer panel"), "Shift+L"))
+                  MixerPanelShowMixer(gn->index);
             }
             if (dynamic_cast<IModulator*>(gn->node.get()) != nullptr)
             {
@@ -416,6 +489,8 @@ void DrawPopupsA(FrameCtx& fc)
             OpenInPianoRoll(from, mf);
       if (GraphNode* from = FindNodeByIndex(view3DAddFrom))
          View3DAddNode(*from);
+      if (GraphNode* from = FindNodeByIndex(view2DAddFrom))
+         View2DAddNode(*from);
 
       // Node "Help" popup, opened via the context menu above. A separate
       // OpenPopup call (rather than nesting it inside "##nodecontext") because
@@ -476,6 +551,7 @@ void DrawPopupsA(FrameCtx& fc)
          const GestureRecorder::Key gestureKey(nodeIndex, paramIndex);
          const bool hasPlayback = rec.Playbacks().count(gestureKey) > 0;
          const bool isRecordingState = !modulated && !hasExpr && (rec.IsArmed(nodeIndex, paramIndex) || hasPlayback);
+         const bool canReset = CanResetParam(nodeIndex, paramIndex);
 
          // The destination's own declared min/max/step, looked up the same
          // way Bind() does - this frame's FrameParams, keyed by (nodeIndex,
@@ -678,6 +754,8 @@ void DrawPopupsA(FrameCtx& fc)
                   mod.SetRange(nodeIndex, paramIndex, src.hi, src.lo);
             }
             MenuParts::Separator();
+            if (MenuParts::Item(L("Reset"), "Alt+Click", false, canReset))
+               ResetParamToDefault(nodeIndex, paramIndex, /*pushUndo=*/true);
             if (MenuParts::Item(L("Unbind")))
             {
                PushUndoCheckpoint();
@@ -722,6 +800,8 @@ void DrawPopupsA(FrameCtx& fc)
                   mod.SetExpressionRange(nodeIndex, paramIndex, hi, lo);
             }
             MenuParts::Separator();
+            if (MenuParts::Item(L("Reset"), "Alt+Click", false, false))
+               ;
             if (MenuParts::Item(L("Unbind")))
             {
                PushUndoCheckpoint();
@@ -781,6 +861,8 @@ void DrawPopupsA(FrameCtx& fc)
                   rec.ArmParam(nodeIndex, paramIndex);
             }
             MenuParts::Separator();
+            if (MenuParts::Item(L("Reset"), "Alt+Click", false, canReset))
+               ResetParamToDefault(nodeIndex, paramIndex, /*pushUndo=*/true);
             if (MenuParts::Item(L("Unbind")))
             {
                rec.CancelArm(nodeIndex, paramIndex);
@@ -819,6 +901,9 @@ void DrawPopupsA(FrameCtx& fc)
                      rec.ArmParam(nodeIndex, paramIndex);
                   }
                }
+               MenuParts::Separator();
+               if (MenuParts::Item(L("Reset"), "Alt+Click", false, canReset))
+                  ResetParamToDefault(nodeIndex, paramIndex, /*pushUndo=*/true);
             }
          }
          MenuParts::EndPopup();
@@ -905,6 +990,13 @@ void DrawPopupsA(FrameCtx& fc)
                // These two panels load a file straight in; each takes only its own kind.
                (overStudioForDrop ? gSampleStudioPendingDrop : gPianoRollPendingDrop) = gSampleDragPath;
             }
+            else if (fileDrag && gView2DOpen && mp.x >= gView2DRectMin.x && mp.x < gView2DRectMax.x &&
+                     mp.y >= gView2DRectMin.y && mp.y < gView2DRectMax.y)
+            {
+               // The 2D View takes a Library file as it takes a dropped one: a source node and a layer at the drop point.
+               gDroppedFiles = { gSampleDragPath };
+               gDropPos = mp;
+            }
             else if (overArrangePanelForDrop &&
                 (gSampleDragKind == LibraryDragKind::Sample || gSampleDragKind == LibraryDragKind::Media) &&
                 !gSampleDragPath.empty())
@@ -915,6 +1007,20 @@ void DrawPopupsA(FrameCtx& fc)
                // Drag-state reset (gSampleDragActive etc.) happens once,
                // unconditionally, right after this whole if/else-if chain -
                // no need to repeat it here.
+            }
+            else if (gSampleDragKind == LibraryDragKind::FieldPreset && gFieldPatcherOpen &&
+                     mp.x >= gFieldPatcherRectMin.x && mp.x < gFieldPatcherRectMax.x &&
+                     mp.y >= gFieldPatcherRectMin.y && mp.y < gFieldPatcherRectMax.y)
+            {
+               // Dropped on the Field Patcher: place the device and open it as a page.
+               FieldSearchEntry entry;
+               entry.name = gFieldDragPresetName;
+               entry.nodeType = gFieldDragNodeType;
+               entry.nodeCategory = gFieldDragNodeCategory;
+               entry.presetIndex = gFieldDragIndex;
+               const ImVec2 at = FindFreeSpawnPosition(gViewCenterCanvas);
+               if (GraphNode* gn = SpawnFieldPresetNode(entry, at.x, at.y))
+                  FieldPatcherOpenNode(gn->uid);
             }
             else if (gSampleDragKind == LibraryDragKind::FieldPreset)
             {

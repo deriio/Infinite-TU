@@ -1,4 +1,5 @@
 // Field self-tests, part 1 (moved verbatim from main.cpp).
+#include "core/field/MaterialRegistry.h"
 #include "app/AppShared.h"
 
 namespace app
@@ -567,7 +568,113 @@ int RunFieldTest()
    }
    printf("SECTION F (Non-finite result): %s\n", secFOk ? "OK" : "FAIL");
 
-   bool allOk = secAOk && secBOk && secCOk && secDOk && secEOk && secFOk;
+   // SECTION G (OPUS_PLAN row 1.2): the Material domain of Field Pixel. Inputs P N UV curvature cavity t are
+   // read-only; outputs base roughness metallic normal height emission opacity mask are written by bare name; an
+   // output the program never writes keeps the Material knob (materialWritten has no bit for it). Writing a name
+   // that is not an output - a typo - is an error on that line.
+   bool secGOk = true;
+   {
+      struct MatCase
+      {
+         const char* code;
+         bool ok;
+         int errLine;          // checked when !ok
+         const char* errHas;   // substring of the error when !ok
+         const char* written;  // space-separated outputs expected written when ok
+      };
+      const MatCase cases[] = {
+         { "base = vec3(0.8, 0.2, 0.1)\nroughness = 0.3 + 0.2 * N.y\nmetallic = 1.0", true, 0, "",
+           "base roughness metallic" },
+         { "base = vec3(1.0)\nrougness = 0.5", false, 2, "rougness", "" },
+         { "base = 0.5", true, 0, "", "base" },
+         { "k = UV.x * 2.0\nbase = vec3(k)", true, 0, "", "base" },
+         { "base = P * 0.5 + N * curvature + vec3(cavity, t, UV.y)\nheight = cavity", true, 0, "", "base height" },
+         { "if (UV.x > 0.5) {\n emission = vec3(1.0)\n}\nopacity = 1.0\nmask = 0.0\nnormal = vec3(0.0, 0.0, 1.0)",
+           true, 0, "", "emission opacity mask normal" },
+         { "base = vec3(1.0)\nP = vec3(0.0)", false, 2, "read-only", "" },
+         { "roughness = vec3(1.0)", false, 1, "cannot assign", "" },
+         { "base = vec3(1.0)\nvec3(0.5)", false, 2, "material output", "" },
+      };
+      for (const MatCase& c : cases)
+      {
+         std::vector<Field::Token> toks;
+         Field::FieldError err;
+         Field::AstNodePtr ast;
+         Field::PixelIRProgram prog;
+         const bool ok = Field::Lex(c.code, toks, err) && Field::ParseProgram(toks, ast, err) &&
+                         Field::LowerPixelProgramToIR(ast, prog, err, Field::PixelProgramKind::Material);
+         bool pass = (ok == c.ok);
+         if (pass && !ok)
+            pass = err.span.line == c.errLine && err.message.find(c.errHas) != std::string::npos;
+         if (pass && ok)
+         {
+            uint32_t want = 0;
+            std::istringstream ws(c.written);
+            for (std::string w; ws >> w;)
+               want |= 1u << Field::MaterialOutputBit(w);
+            pass = prog.kind == Field::PixelProgramKind::Material && prog.materialWritten == want;
+         }
+         if (!pass)
+         {
+            printf("SECTION G (Material domain): FAIL - '%s' ok=%d line=%d err='%s' written=0x%x\n", c.code, (int)ok,
+                   err.span.line, err.message.c_str(), prog.materialWritten);
+            secGOk = false;
+         }
+      }
+      // The Image domain is unchanged: material names stay free locals there.
+      std::vector<Field::Token> toks;
+      Field::FieldError err;
+      Field::AstNodePtr ast;
+      Field::PixelIRProgram prog;
+      if (!(Field::Lex("base = uv.x\ncol = vec3(base)", toks, err) && Field::ParseProgram(toks, ast, err) &&
+            Field::LowerPixelProgramToIR(ast, prog, err)) ||
+          prog.kind != Field::PixelProgramKind::Image)
+      {
+         printf("SECTION G (Material domain): FAIL - image program broke: %s\n", err.message.c_str());
+         secGOk = false;
+      }
+   }
+   printf("SECTION G (Material domain): %s\n", secGOk ? "OK" : "FAIL");
+
+   // SECTION H (row 1.3): material programs register once per (source, params) and build one library per id set.
+   bool secHOk = true;
+   {
+      auto fail = [&](const char* what) { printf("SECTION H (material programs): FAIL - %s\n", what); secHOk = false; };
+      std::string err;
+      const char* src = "param float k = 0.5 [0.0, 1.0];\nbase = vec3(k, 0.2, 0.1)\nroughness = UV.x";
+      const int a = Field::RegisterMaterialProgram(src, {}, err);
+      if (a <= 0) fail(("register: " + err).c_str());
+      if (Field::RegisterMaterialProgram(src, {}, err) != a) fail("same source gave a new id");
+      const int b = Field::RegisterMaterialProgram(src, { 0.75f }, err);
+      // Row 3.4: the first 16 knobs are live (o.prmN), so a new value is the same program, no relink.
+      if (b != a) fail("new knob value gave a new program id");
+      const Field::MaterialProgramEntry* eb = Field::FindMaterialProgram(b);
+      if (!eb || eb->glsl.find("o.prm0.x") == std::string::npos || eb->msl.find("o.prm0.x") == std::string::npos)
+         fail("knob not read live in both languages");
+      if (Field::RegisterMaterialProgram("base = vec3(1.0)\nrougness = 0.5", {}, err) != 0 || err.find("line 2") == std::string::npos)
+         fail("bad source not refused with a line number");
+      if (Field::MaterialProgramSeeThrough(a)) fail("opaque program reads as see-through");
+      const int c = Field::RegisterMaterialProgram("mask = step(0.5, UV.x)", {}, err);
+      if (c <= 0 || !Field::MaterialProgramSeeThrough(c)) fail("mask program not see-through");
+      const int d = Field::RegisterMaterialProgram("emission = vec3(sin(t))", {}, err);
+      if (d <= 0 || !Field::FindMaterialProgram(d)->usesTime || Field::FindMaterialProgram(a)->usesTime)
+         fail("usesTime wrong");
+      unsigned long long k0 = 1, k1 = 0, k2 = 0;
+      if (!Field::BuildMaterialLibrary({}, Field::MaterialLang::Glsl, k0).empty() || k0 != 0) fail("empty set not empty");
+      const std::string g = Field::BuildMaterialLibrary({ b, a, a, 99999 }, Field::MaterialLang::Glsl, k1);
+      const std::string m = Field::BuildMaterialLibrary({ a, b }, Field::MaterialLang::Msl, k2);
+      unsigned long long k3 = 0;
+      Field::BuildMaterialLibrary({ a, b }, Field::MaterialLang::Glsl, k3);
+      if (k1 == 0 || k1 != k3) fail("library key not order-free");
+      if (g.find("#define FLD_MAT_ANY 1") == std::string::npos || g.find("fldMatDispatch") == std::string::npos ||
+          g.find("fldmat_" + std::to_string(a) + "(") == std::string::npos || g.find("fldmat_99999") != std::string::npos)
+         fail("GLSL library content");
+      if (m.find("thread FldMat&") == std::string::npos || m.find("fldmat_" + std::to_string(b) + "(") == std::string::npos)
+         fail("MSL library content");
+   }
+   printf("SECTION H (material programs): %s\n", secHOk ? "OK" : "FAIL");
+
+   bool allOk = secAOk && secBOk && secCOk && secDOk && secEOk && secFOk && secGOk && secHOk;
    printf("INFINITE_FIELDTEST: %s\n", allOk ? "OK" : "FAIL");
    return allOk ? 0 : 1;
 }
@@ -2391,6 +2498,136 @@ int RunFieldParamTest()
 
       if (secOk) printf("SECTION 6b (Param Ids From A Damaged Patch): OK\n");
       else { printf("SECTION 6b (Param Ids From A Damaged Patch): FAIL\n"); allOk = false; }
+      fflush(stdout);
+   }
+
+   // ------------------------------------------------------------
+   // SECTION 7: picking a preset starts every declared param at that
+   // preset's own declared default. Reconcile keeps a same-named param's
+   // value across a recompile (so a code edit never moves the user's knobs),
+   // and LoadPreset used to be just code = ...; Apply(), so a preset that
+   // shared a name with the previous kernel inherited its value: a
+   // FieldSampleNode born on Tube Overdrive (drive = 3.0) kept drive = 3.0
+   // after picking Soft Saturation (drive = 2.5). Every preset of every
+   // ParamTable node is loaded with each knob pushed off its default first.
+   // Field Pixel needs a GL context to Apply, so FIELDPIXELTEST covers it.
+   // ------------------------------------------------------------
+   {
+      bool secOk = true;
+      int sharedNameChecks = 0;
+      auto sweep = [&](auto& node, const char* typeName) {
+         const int count = (int)std::decay_t<decltype(node)>::PresetNames().size();
+         for (int j = 0; j < count; ++j)
+         {
+            // Push every declared knob away from its default, as a user would.
+            std::vector<std::string> before;
+            for (auto& p : node.GetParamTable().Params())
+            {
+               if (!p.isDeclared)
+                  continue;
+               p.value = (p.defaultValue != p.maxValue) ? p.maxValue : p.minValue;
+               before.push_back(p.name);
+            }
+            node.LoadPreset(j);
+            if (!node.LastError().empty())
+            {
+               printf("Section7: NOTE - %s preset %d did not compile headless (%s), skipped\n", typeName, j,
+                      node.LastError().c_str());
+               continue;
+            }
+            for (const auto& p : node.GetParamTable().Params())
+            {
+               if (!p.isDeclared)
+                  continue;
+               if (std::find(before.begin(), before.end(), p.name) != before.end())
+                  ++sharedNameChecks;
+               if (std::abs(p.value - p.defaultValue) > 1e-6f)
+               {
+                  printf("Section7: FAIL - %s preset %d '%s': param '%s' = %g, preset declares %g\n", typeName, j,
+                         node.PresetNames()[j].c_str(), p.name.c_str(), p.value, p.defaultValue);
+                  secOk = false;
+               }
+            }
+         }
+      };
+
+      // The case the alias rig measured, by name.
+      {
+         FieldSampleNode fs; // born on Presets()[0], Tube Overdrive
+         const auto& names = FieldSampleNode::PresetNames();
+         const int soft = (int)(std::find(names.begin(), names.end(), std::string("Soft Saturation")) - names.begin());
+         const auto* drive0 = fs.GetParamTable().Find("drive");
+         if (soft >= (int)names.size() || drive0 == nullptr || std::abs(drive0->value - 3.0f) > 1e-6f)
+         {
+            printf("Section7: FAIL - setup: Soft Saturation preset or Tube Overdrive drive = 3.0 not found\n");
+            secOk = false;
+         }
+         else
+         {
+            fs.LoadPreset(soft);
+            const auto* drive = fs.GetParamTable().Find("drive");
+            if (drive == nullptr || std::abs(drive->value - 2.5f) > 1e-6f)
+            {
+               printf("Section7: FAIL - Tube Overdrive -> Soft Saturation left drive = %g, expected 2.5\n",
+                      drive ? drive->value : -1.0f);
+               secOk = false;
+            }
+         }
+
+         // Editing and recompiling the same kernel still keeps the knob.
+         if (Field::ParamEntry* d = fs.GetParamTable().Find("drive"))
+         {
+            d->value = 5.0f;
+            fs.code += "\n# edited\n";
+            const bool ok = fs.Apply();
+            const auto* d2 = fs.GetParamTable().Find("drive");
+            if (!ok || d2 == nullptr || std::abs(d2->value - 5.0f) > 1e-6f)
+            {
+               printf("Section7: FAIL - a recompile of the same kernel moved drive off the user's 5.0 (got %g)\n",
+                      d2 ? d2->value : -1.0f);
+               secOk = false;
+            }
+         }
+
+         // A device file that omits a declared param starts it at its default.
+         {
+            Field::DeviceFile dev;
+            dev.domain = "sample";
+            dev.code = "param float drive = 2.0 [1.0, 6.0]\nparam float mix = 0.5 [0.0, 1.0]\nout = in * drive * mix\n";
+            dev.params["mix"] = 0.25;
+            if (Field::ParamEntry* d = fs.GetParamTable().Find("drive"))
+               d->value = 6.0f;
+            fs.LoadDeviceFile(dev);
+            const auto* d = fs.GetParamTable().Find("drive");
+            const auto* m = fs.GetParamTable().Find("mix");
+            if (!fs.LastError().empty() || d == nullptr || m == nullptr || std::abs(d->value - 2.0f) > 1e-6f ||
+                std::abs(m->value - 0.25f) > 1e-6f)
+            {
+               printf("Section7: FAIL - device load: drive = %g (want 2.0), mix = %g (want 0.25) %s\n",
+                      d ? d->value : -1.0f, m ? m->value : -1.0f, fs.LastError().c_str());
+               secOk = false;
+            }
+         }
+      }
+
+      { FieldSampleNode n;    sweep(n, "Field Sample"); }
+      { FieldSynthNode n;     sweep(n, "Field Synth"); }
+      { FieldElementNode n;   sweep(n, "Field Element"); }
+      { FieldPrimitiveNode n; sweep(n, "Field Primitive"); }
+      { FieldGraphNode n;     sweep(n, "Field Graph"); }
+      { FieldNotesNode n;     sweep(n, "Field Notes"); }
+      { SpectralFieldNode n;  sweep(n, "Spectral Field"); }
+      { SketchNode n;         sweep(n, "Sketch"); }
+      { Sketch3DNode n;       sweep(n, "Sketch 3D"); }
+
+      if (sharedNameChecks == 0)
+      {
+         printf("Section7: FAIL - no preset shared a param name with the one before it; the sweep proved nothing\n");
+         secOk = false;
+      }
+      printf("Section7: %d same-name param carries checked\n", sharedNameChecks);
+      if (secOk) printf("SECTION 7 (Preset Pick Resets Declared Params): OK\n");
+      else { printf("SECTION 7 (Preset Pick Resets Declared Params): FAIL\n"); allOk = false; }
       fflush(stdout);
    }
 

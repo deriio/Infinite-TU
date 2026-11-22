@@ -21,6 +21,7 @@
 #include "platform/Platform.h"
 
 #include <fontconfig/fontconfig.h>
+#include <fontconfig/fcfreetype.h>
 #include <ft2build.h>
 #include FT_FREETYPE_H
 #include FT_OUTLINE_H
@@ -194,6 +195,9 @@ namespace
       float offsetX = 0.0f;
       float offsetY = 0.0f;
       float scale = 1.0f;
+      Platform::TextCurveBuilder curve { &current.curve };
+      float X(float x) const { return (x + offsetX) * scale; }
+      float Y(float y) const { return (y + offsetY) * scale; }
 
       void Push(float x, float y)
       {
@@ -205,9 +209,11 @@ namespace
 
       void Close()
       {
+         curve.Close();
          if (current.points.size() >= 6)
             contours->push_back(current);
          current.points.clear();
+         current.curve.clear();
       }
    };
 
@@ -217,6 +223,7 @@ namespace
    {
       auto* ctx = (OutlineDecomposeContext*)user;
       ctx->Close();
+      ctx->curve.Move(ctx->X((float)to->x), ctx->Y((float)to->y));
       ctx->Push((float)to->x, (float)to->y);
       return 0;
    }
@@ -224,6 +231,7 @@ namespace
    int OutlineLineTo(const FT_Vector* to, void* user)
    {
       auto* ctx = (OutlineDecomposeContext*)user;
+      ctx->curve.Line(ctx->X((float)to->x), ctx->Y((float)to->y));
       ctx->Push((float)to->x, (float)to->y);
       return 0;
    }
@@ -231,6 +239,7 @@ namespace
    int OutlineConicTo(const FT_Vector* control, const FT_Vector* to, void* user)
    {
       auto* ctx = (OutlineDecomposeContext*)user;
+      ctx->curve.Quad(ctx->X((float)control->x), ctx->Y((float)control->y), ctx->X((float)to->x), ctx->Y((float)to->y));
       const float x0 = ctx->lastX, y0 = ctx->lastY;
       const float x1 = (float)control->x, y1 = (float)control->y;
       const float x2 = (float)to->x, y2 = (float)to->y;
@@ -248,6 +257,8 @@ namespace
    int OutlineCubicTo(const FT_Vector* control1, const FT_Vector* control2, const FT_Vector* to, void* user)
    {
       auto* ctx = (OutlineDecomposeContext*)user;
+      ctx->curve.Cubic(ctx->X((float)control1->x), ctx->Y((float)control1->y), ctx->X((float)control2->x), ctx->Y((float)control2->y),
+                       ctx->X((float)to->x), ctx->Y((float)to->y));
       const float x0 = ctx->lastX, y0 = ctx->lastY;
       const float x1 = (float)control1->x, y1 = (float)control1->y;
       const float x2 = (float)control2->x, y2 = (float)control2->y;
@@ -266,6 +277,29 @@ namespace
 
 namespace Platform
 {
+   std::string FontFileForFamily(const std::string& family)
+   {
+      std::string out;
+      std::lock_guard<std::mutex> lock(gFtMutex);
+      FcConfig* config = SharedFcConfig();
+      if (config == nullptr)
+         return out;
+      FcPattern* pat = FcPatternCreate();
+      FcPatternAddString(pat, FC_FAMILY, (const FcChar8*)family.c_str());
+      FcConfigSubstitute(config, pat, FcMatchPattern);
+      FcDefaultSubstitute(pat);
+      FcResult res = FcResultNoMatch;
+      if (FcPattern* m = FcFontMatch(config, pat, &res))
+      {
+         FcChar8* file = nullptr;
+         if (FcPatternGetString(m, FC_FILE, 0, &file) == FcResultMatch && file)
+            out = (const char*)file;
+         FcPatternDestroy(m);
+      }
+      FcPatternDestroy(pat);
+      return out;
+   }
+
    const std::vector<std::string>& AvailableFontFamilies()
    {
       static std::vector<std::string> sFamilies;
@@ -301,6 +335,32 @@ namespace Platform
       if (sFamilies.empty())
          sFamilies.push_back("DejaVu Sans");
       return sFamilies;
+   }
+
+   bool AddFontFile(const std::string& path, std::string& family)
+   {
+      family.clear();
+      auto& fam = const_cast<std::vector<std::string>&>(AvailableFontFamilies());
+      {
+         std::lock_guard<std::mutex> lock(gFtMutex);
+         int count = 0;
+         FcPattern* p = FcFreeTypeQuery((const FcChar8*)path.c_str(), 0, nullptr, &count);
+         if (p == nullptr)
+            return false;
+         FcChar8* f = nullptr;
+         if (FcPatternGetString(p, FC_FAMILY, 0, &f) == FcResultMatch && f != nullptr)
+            family = (const char*)f;
+         FcPatternDestroy(p);
+         FcConfig* config = SharedFcConfig();
+         if (family.empty() || config == nullptr || !FcConfigAppFontAddFile(config, (const FcChar8*)path.c_str()))
+            return false;
+      }
+      if (std::find(fam.begin(), fam.end(), family) == fam.end())
+      {
+         fam.push_back(family);
+         std::sort(fam.begin(), fam.end());
+      }
+      return true;
    }
 
    bool GetTextOutlines(const std::string& text, const std::string& fontName,
@@ -430,6 +490,11 @@ namespace Platform
             c.points[i] -= cx;
             c.points[i + 1] -= cy;
          }
+         for (size_t i = 0; i + 1 < c.curve.size(); i += 2)
+         {
+            c.curve[i] -= cx;
+            c.curve[i + 1] -= cy;
+         }
       }
 
       return true;
@@ -445,7 +510,8 @@ namespace Platform
       std::lock_guard<std::mutex> lock(gFtMutex);
       if (!EnsureFreeType()) return;
 
-      std::string path = ResolveFontPath(req.fontName);
+      std::string path = ResolveFontPath(req.fontName, req.bold, req.italic);
+      if (path.empty()) path = ResolveFontPath(req.fontName);
       if (path.empty()) path = ResolveFontPath("DejaVu Sans");
       if (path.empty()) path = ResolveFontPath("");
       if (path.empty()) return;
@@ -466,7 +532,7 @@ namespace Platform
          float w = 0.0f;
          std::vector<uint32_t> cps = Utf8ToCodepoints(line);
          FT_UInt prev = 0;
-         bool hasKerning = FT_HAS_KERNING(face);
+         bool hasKerning = FT_HAS_KERNING(face) && req.kerning;
          for (uint32_t cp : cps)
          {
             FT_UInt gIdx = FT_Get_Char_Index(face, cp);
@@ -491,7 +557,11 @@ namespace Platform
          while (start < req.text.size())
          {
             while (start < req.text.size() && (req.text[start] == ' ' || req.text[start] == '\t' || req.text[start] == '\n'))
+            {
+               if (req.text[start] == '\n' && req.wordWrap)
+                  words.push_back("\n");   // a paragraph break
                start++;
+            }
             if (start >= req.text.size()) break;
             size_t end = start;
             while (end < req.text.size() && req.text[end] != ' ' && req.text[end] != '\t' && req.text[end] != '\n')
@@ -503,48 +573,84 @@ namespace Platform
 
       std::vector<std::string> lines;
       std::vector<float> lineWidths;
+      // Per line: does it start / end a paragraph, and where its top sits (paragraph spacing included).
+      std::vector<char> paraStart, paraEnd;
+      std::vector<double> lineTops;
+      const double boxW = std::max(8.0, (double)width * std::max(0.05f, req.wrapWidth) / sx);
+      auto lineRoom = [&](bool first) { return std::max(8.0, boxW - req.indentL - req.indentR - (first ? req.indentFirst : 0.0f)); };
+      auto layoutTops = [&](double lineH)
+      {
+         lineTops.assign(lines.size(), 0.0);
+         double y = 0.0;
+         for (size_t i = 0; i < lines.size(); i++)
+         {
+            const bool ps = i < paraStart.size() && paraStart[i];
+            if (ps && i > 0)
+               y += req.spaceBefore;
+            lineTops[i] = y;
+            y += lineH;
+            if (i < paraEnd.size() && paraEnd[i] && i + 1 < lines.size())
+               y += req.spaceAfter;
+         }
+         return y;
+      };
 
       if (req.wordWrap)
       {
-         const double boxW = std::max(8.0, (double)width * std::max(0.05f, req.wrapWidth) / sx);
          const double boxH = std::max(8.0, (double)height * std::max(0.05f, req.wrapHeight) / sy);
 
          auto wrapLinesAt = [&](float size, std::vector<std::string>& outLines, std::vector<float>& outWidths)
          {
             outLines.clear();
             outWidths.clear();
+            paraStart.clear();
+            paraEnd.clear();
             if (words.empty()) return;
 
             const float spaceW = measureLine(" ", size);
             std::string curLine;
             float curW = 0.0f;
+            bool first = true;
+            auto flush = [&](bool endsPara)
+            {
+               outLines.push_back(curLine);
+               outWidths.push_back(curW);
+               paraStart.push_back(first ? 1 : 0);
+               paraEnd.push_back(endsPara ? 1 : 0);
+               first = endsPara;
+               curLine.clear();
+               curW = 0.0f;
+            };
 
             for (const auto& w : words)
             {
+               if (w == "\n")
+               {
+                  flush(true);
+                  continue;
+               }
                float wW = measureLine(w, size);
                if (curLine.empty())
                {
                   curLine = w;
                   curW = wW;
                }
-               else if (curW + spaceW + wW <= (float)boxW)
+               else if (curW + spaceW + wW <= (float)lineRoom(first))
                {
                   curLine += " " + w;
                   curW += spaceW + wW;
                }
                else
                {
-                  outLines.push_back(curLine);
-                  outWidths.push_back(curW);
+                  flush(false);
                   curLine = w;
                   curW = wW;
                }
             }
-            if (!curLine.empty())
-            {
-               outLines.push_back(curLine);
-               outWidths.push_back(curW);
-            }
+            if (!curLine.empty() || first)
+               flush(true);
+            else if (!paraEnd.empty())
+               paraEnd.back() = 1;
          };
 
          float usedSize = req.fontSize;
@@ -557,7 +663,7 @@ namespace Platform
                const float mid = (lo + hi) * 0.5f;
                wrapLinesAt(mid, lines, lineWidths);
                const double lineH = (double)mid * std::max(0.1f, req.lineSpacing);
-               const double totalH = (double)lines.size() * lineH;
+               const double totalH = layoutTops(lineH);
                float maxW = 0.0f;
                for (float w : lineWidths) if (w > maxW) maxW = w;
                if (totalH <= boxH && (double)maxW <= boxW)
@@ -582,7 +688,7 @@ namespace Platform
       FT_Set_Pixel_Sizes(face, 0, (FT_UInt)std::max(1.0f, renderSize));
 
       const double lineH = (double)renderSize * std::max(0.1f, req.lineSpacing);
-      const double totalH = (double)lines.size() * lineH;
+      const double totalH = layoutTops(lineH) * sy;
       const double top = anchorY - totalH * 0.5;
 
       const uint8_t fillR = (uint8_t)std::clamp(req.color[0] * 255.0f, 0.0f, 255.0f);
@@ -619,20 +725,51 @@ namespace Platform
          outPixelsRGBA[idx + 3] = (uint8_t)std::clamp((float)outPixelsRGBA[idx + 3] * invA + 255.0f * a, 0.0f, 255.0f);
       };
 
+      // A solid band (highlight, underline, strike) in premultiplied RGBA.
+      auto band = [&](double x0, double y0, double x1, double y1, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+      {
+         for (int py = std::max(0, (int)std::floor(y0)); py < std::min(height, (int)std::ceil(y1)); py++)
+            for (int px = std::max(0, (int)std::floor(x0)); px < std::min(width, (int)std::ceil(x1)); px++)
+               blendPixel(px, py, r, g, b, a);
+      };
+      const double asc = (double)face->size->metrics.ascender / 64.0;
+      const double desc = (double)-face->size->metrics.descender / 64.0;
+      const double rule = std::max(1.0, renderSize / 16.0) * sy;
+
       for (size_t l = 0; l < lines.size(); l++)
       {
          double curX = anchorX;
-         if (drawAlign == 1)
+         if (req.wordWrap)
+         {
+            // In the box: the line's room is the box less the indents.
+            const bool ps = l < paraStart.size() && paraStart[l];
+            curX = anchorX + (-boxW * 0.5 + req.indentL + (ps ? req.indentFirst : 0.0f)) * sx;
+            const double room = lineRoom(ps);
+            if (drawAlign == 1)
+               curX += (room - (double)lineWidths[l]) * 0.5 * sx;
+            else if (drawAlign == 2)
+               curX += (room - (double)lineWidths[l]) * sx;
+         }
+         else if (drawAlign == 1)
             curX -= (double)lineWidths[l] * 0.5 * sx;
          else if (drawAlign == 2)
             curX -= (double)lineWidths[l] * sx;
 
-         const double slotTop = top + (double)l * lineH * sy;
-         const double baselineY = slotTop + (double)face->size->metrics.ascender / 64.0 * sy;
+         const double slotTop = top + (l < lineTops.size() ? lineTops[l] : (double)l * lineH) * sy;
+         const double lineBase = slotTop + asc * sy;
+         const double baselineY = lineBase - (double)req.baseShift * sy;
+         const double lineX0 = curX, lineX1 = curX + (double)lineWidths[l] * sx;
+         if (req.highlight)
+         {
+            const float* h = req.highlightColor;
+            band(lineX0, lineBase - asc * sy, lineX1, lineBase + desc * sy, (uint8_t)(std::clamp(h[0], 0.0f, 1.0f) * 255.0f),
+                 (uint8_t)(std::clamp(h[1], 0.0f, 1.0f) * 255.0f), (uint8_t)(std::clamp(h[2], 0.0f, 1.0f) * 255.0f),
+                 (uint8_t)(std::clamp(h[3], 0.0f, 1.0f) * 255.0f));
+         }
 
          std::vector<uint32_t> cps = Utf8ToCodepoints(lines[l]);
          FT_UInt prev = 0;
-         bool hasKerning = FT_HAS_KERNING(face);
+         bool hasKerning = FT_HAS_KERNING(face) && req.kerning;
 
          for (uint32_t cp : cps)
          {
@@ -699,6 +836,20 @@ namespace Platform
 
             curX += ((double)face->glyph->advance.x / 64.0 + (double)req.tracking) * sx;
             prev = gIdx;
+         }
+         auto c8 = [](float v) { return (uint8_t)std::clamp(v * 255.0f, 0.0f, 255.0f); };
+         if (req.underline)
+         {
+            const float* c = req.underlineColor;
+            band(lineX0, baselineY + rule, lineX1, baselineY + rule * 2.0, req.underlineOwn ? c8(c[0]) : fillR,
+                 req.underlineOwn ? c8(c[1]) : fillG, req.underlineOwn ? c8(c[2]) : fillB, req.underlineOwn ? c8(c[3]) : 255);
+         }
+         if (req.strike)
+         {
+            const float* c = req.strikeColor;
+            band(lineX0, baselineY - asc * 0.3 * sy - rule * 0.5, lineX1, baselineY - asc * 0.3 * sy + rule * 0.5,
+                 req.strikeOwn ? c8(c[0]) : fillR, req.strikeOwn ? c8(c[1]) : fillG, req.strikeOwn ? c8(c[2]) : fillB,
+                 req.strikeOwn ? c8(c[3]) : 255);
          }
       }
 

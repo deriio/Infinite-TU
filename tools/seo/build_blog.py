@@ -144,8 +144,8 @@ def head(title, desc, url, image, extra="", kind="website", depth="../"):
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="{depth}brand.css?v=36336012">
-  <link rel="stylesheet" href="{depth}style.css?v=d046c735">
+  <link rel="stylesheet" href="{depth}brand.css?v=7b069b32">
+  <link rel="stylesheet" href="{depth}style.css?v=6aac68de">
   <link rel="stylesheet" href="{depth}glass.css?v=c25dae44">
   <link rel="stylesheet" href="{depth}blog.css?v=823c9183">
   <script>addEventListener('load',function(){{setTimeout(function(){{var s=document.createElement('script');s.async=true;s.src='https://www.googletagmanager.com/gtag/js?id=G-ZC4TYX1WCL';document.head.appendChild(s)}},2500)}})</script>
@@ -226,7 +226,7 @@ def build_index(posts, header, footer):
              "Notes on building and using Infinite, the free open-source DAW for visuals, music and code on one canvas. Tutorials, engineering write-ups and ideas.",
              BASE + "blog/", "assets/og-image.jpg", ld(blog_ld) + ld(crumbs) + ld(item_list_ld))
     s = s.replace('blog.css?v=', 'blog.css?v=', 1)
-    s = re.sub(r'(<link rel="stylesheet" href="\.\./blog\.css\?v=[A-Za-z0-9]+">)', r'\1\n  <link rel="stylesheet" href="../deck.css?v=e7678fc1">', s, count=1)
+    s = re.sub(r'(<link rel="stylesheet" href="\.\./blog\.css\?v=[A-Za-z0-9]+">)', r'\1\n  <link rel="stylesheet" href="../deck.css?v=3d76a15b">', s, count=1)
     s += f"""<body class="blog-page blog-index">
   <!-- Google Tag Manager (noscript) -->
   <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=GTM-P855CS2V"

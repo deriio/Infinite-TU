@@ -3,7 +3,9 @@
 #include "app/ui/design/GlyphDraw.h"
 #include "app/ui/design/Glyphs.gen.h"
 #include "imgui.h"
+#include <algorithm>
 #include <cmath>
+#include <cstring>
 
 namespace glyph
 {
@@ -34,6 +36,38 @@ namespace glyph
       const ImFontGlyph* gl = font->GetFontBaked(size)->FindGlyphNoFallback((ImWchar)cp);
       const float left = gl != nullptr ? center.x - (gl->X0 + gl->X1) * 0.5f : center.x - font->CalcTextSizeA(size, FLT_MAX, 0.0f, g).x * 0.5f;
       dl->AddText(font, size, ImVec2(left, (float)(int)(TopFor(font, center, size) + 0.5f)), col, g);
+   }
+
+   // The box the glyph's ink covers when drawn by Draw at `center` (for the UI audit's centring checks).
+   inline void InkBox(ImVec2 center, float size, const char* g, ImVec2& mn, ImVec2& mx)
+   {
+      ImFont* font = ImGui::GetFont();
+      const unsigned char* u = (const unsigned char*)g;
+      const unsigned int cp = (u[0] & 0xF0) == 0xE0 ? ((u[0] & 0x0Fu) << 12) | ((u[1] & 0x3Fu) << 6) | (u[2] & 0x3Fu) : u[0];
+      const ImFontGlyph* gl = font->GetFontBaked(size)->FindGlyphNoFallback((ImWchar)cp);
+      const float top = (float)(int)(TopFor(font, center, size) + 0.5f);
+      if (gl == nullptr)
+      {
+         mn = mx = center;
+         return;
+      }
+      const float left = center.x - (gl->X0 + gl->X1) * 0.5f;
+      mn = ImVec2(left + gl->X0, top + gl->Y0);
+      mx = ImVec2(left + gl->X1, top + gl->Y1);
+   }
+
+   // The size to draw `g` at so its ink fills 0.9 of `role` (the icon set's usual ink), so a bar of icons reads as one size.
+   // Glyphs that already fill it keep `role`; thin ones grow by at most 1.4x.
+   inline float FitSize(ImVec2 center, float role, const char* g)
+   {
+      // + and x are drawn small in the set on purpose (as in Lucide/SF Symbols): two strokes reaching the box edges read
+      // heavier than a filled icon of the same ink box, so they keep their drawn size instead of being stretched.
+      if (std::strcmp(g, IconsInfinite::Plus) == 0 || std::strcmp(g, IconsInfinite::Close) == 0)
+         return role;
+      ImVec2 mn, mx;
+      InkBox(center, role, g, mn, mx);
+      const float ink = std::max(mx.x - mn.x, mx.y - mn.y), target = 0.9f * role;
+      return ink > 1.0f && ink < target - 1.5f ? std::round(role * std::min(1.4f, target / ink)) : role;
    }
 
    // Call-site wrappers (same argument order the retired glyph:: icons used). A trailing stroke argument is accepted and

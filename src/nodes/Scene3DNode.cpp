@@ -1,11 +1,15 @@
 #include "Scene3DNode.h"
+#include "GLUtil.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <chrono>
+#include <cmath>
+#include "core/Transport.h"
 #include <ctime>
 #include <sstream>
 
@@ -78,6 +82,7 @@ namespace
       f(s.outlineSel);
       f(s.dither); f(s.filterSize); f(s.gamma); f(s.look);
       f(s.xray); f(s.wireOver);
+      f(s.backdropOn); f(s.backdrop[0]); f(s.backdrop[1]); f(s.backdrop[2]);
    }
 
    void Normalize(float v[3])
@@ -118,14 +123,15 @@ class Scene3DNode::Placed : public IGeometrySource
 public:
    IGeometrySource* src = nullptr;
    Mat4 place;
-   unsigned int lightMask = ~0u;
+   unsigned int lightMask = ~0u, shadowMask = ~0u;
    int passIndex = 0;
    float color[3] = { 1.0f, 1.0f, 1.0f };
    bool casts = true;
    std::vector<std::unique_ptr<Placed>> children;
 
-   void Update(IGeometrySource* source, const Mat4& placement, unsigned int mask, int index, const float* rgb, bool castsShadow = true)
+   void Update(IGeometrySource* source, const Mat4& placement, unsigned int mask, int index, const float* rgb, bool castsShadow = true, unsigned int smask = ~0u)
    {
+      shadowMask = smask;
       casts = castsShadow;
       src = source;
       place = placement;
@@ -138,7 +144,7 @@ public:
       {
          if (!children[i])
             children[i] = std::make_unique<Placed>();
-         children[i]->Update(src->GroupChild(i), placement, mask, index, rgb, castsShadow);
+         children[i]->Update(src->GroupChild(i), placement, mask, index, rgb, castsShadow, smask);
       }
    }
 
@@ -156,6 +162,7 @@ public:
    int GroupChildCount() const override { return (int)children.size(); }
    IGeometrySource* GroupChild(int index) const override { return children[index].get(); }
    unsigned int LightMask() const override { return lightMask; }
+   unsigned int ShadowMask() const override { return shadowMask; }
    int PassIndex() const override { return passIndex; }
    void ObjectColor(float c[3]) const override { std::copy(color, color + 3, c); }
    bool CastsShadow() const override { return casts; }
@@ -590,6 +597,12 @@ void Scene3DNode::Serialize()
          o << "label " << it.id << " " << it.name << "\n";
       if (!it.render)
          o << "itemx " << it.id << " 0\n";
+      if (!it.unshadow.empty())
+      {
+         o << "shadowx " << it.id;
+         for (uint64_t u : it.unshadow) o << " " << u;
+         o << "\n";
+      }
       if (it.group != 0)
          o << "group " << it.id << " " << it.group << "\n";
       if (it.lock != 0)
@@ -709,7 +722,7 @@ void Scene3DNode::Parse()
          });
       else if (key == "label" || key == "itemx" || key == "group" || key == "lock" || key == "look" ||
                key == "delta" || key == "pass" || key == "ocolor" || key == "shadowoff" || key == "backdrop" || key == "lookx" || key == "show" ||
-               key == "motion" || key == "follow" || key == "ik" || key == "picturelit")
+               key == "motion" || key == "follow" || key == "ik" || key == "picturelit" || key == "shadowx")
       {
          int id = 0;
          l >> id;
@@ -749,6 +762,12 @@ void Scene3DNode::Parse()
             l >> it->passIndex;
          else if (key == "shadowoff")
             it->castShadow = false;
+         else if (key == "shadowx")
+         {
+            it->unshadow.clear();
+            uint64_t u = 0;
+            while (l >> u) it->unshadow.push_back(u);
+         }
          else if (key == "picturelit")
             it->pictureLit = true;
          else if (key == "ocolor")
@@ -823,6 +842,15 @@ void Scene3DNode::VisitParams(ParamVisitor& v)
    v.Float("dofRatio", mRender.dofRatio);
    v.Color("ambient", mRender.ambientColor);
    v.Float("envIntensity", mRender.envIntensity);
+   // The same look keys Render 3D has, so a scene built in the composer keeps its fog, rim and default light.
+   v.Float("fogDensity", mRender.fogDensity);
+   v.Color("fogColor", mRender.fogColor);
+   v.Float("fogAnisotropy", mRender.fogAnisotropy);
+   v.Float("fogFalloff", mRender.fogFalloff);
+   v.Float("fogMinX", mRender.fogMin[0]); v.Float("fogMinY", mRender.fogMin[1]); v.Float("fogMinZ", mRender.fogMin[2]);
+   v.Float("fogMaxX", mRender.fogMax[0]); v.Float("fogMaxY", mRender.fogMax[1]); v.Float("fogMaxZ", mRender.fogMax[2]);
+   v.Float("rim", mRender.rimIntensity);
+   v.Float("lightIntensity", mRender.lightIntensity);
    v.Bool("floatOutput", mRender.floatOutput);
    v.Int("renderPass", mRender.renderPass);
    v.Float("mistStart", mRender.mistStart);
@@ -1171,18 +1199,23 @@ void Scene3DNode::Sync(int frameId)
       // this scene's own output gets last frame's (the cook is stamped before it syncs), never a loop.
       if (auto it2 = mPictureSources.find(it.id); it2 != mPictureSources.end())
          it2->second->Update(node, it.pictureLit);
-      unsigned int mask = ~0u;
-      for (size_t i = 0; i < lightOrder.size(); i++)
+      unsigned int mask = ~0u, smask = ~0u;
+      for (size_t i = 0; i < lightOrder.size() && i < 32; i++) // per-item unlit lists cover the first 32 lights
+      {
          if (std::find(it.unlit.begin(), it.unlit.end(), lightOrder[i]) != it.unlit.end())
             mask &= ~(1u << i);
+         if (std::find(it.unshadow.begin(), it.unshadow.end(), lightOrder[i]) != it.unshadow.end())
+            smask &= ~(1u << i);
+      }
       std::unique_ptr<Placed>& placed = mPlaced[it.id];
       if (!placed)
          placed = std::make_unique<Placed>();
-      placed->Update(source, Placement(it), mask, it.passIndex, it.color, it.castShadow);
+      placed->Update(source, Placement(it), mask, it.passIndex, it.color, it.castShadow, smask);
       mRoot->draws.push_back(placed.get());
       if (it.render)
          mOutRoot->draws.push_back(placed.get());
       marks.push_back((float)(mask & 0xffffu));
+      marks.push_back((float)(smask & 0xffffu));
    }
    mRender.geometry[0] = mOutRoot.get();
    mRender.camera = nullptr;
@@ -1212,6 +1245,8 @@ void Scene3DNode::Sync(int frameId)
       stamp.push_back((float)l.type);
       stamp.push_back(l.spotAngle); stamp.push_back(l.spotPenumbra);
       stamp.push_back(l.areaW); stamp.push_back(l.areaH);
+      stamp.push_back((float)l.areaShape); stamp.push_back(l.areaSpread);
+      stamp.push_back((float)(std::hash<std::string>{}(l.ies) & 0xffffffu)); // its IES file (row 4.2)
       stamp.insert(stamp.end(), l.aim, l.aim + 3);
       stamp.insert(stamp.end(), { l.intensity, l.diffuse, l.specular, l.transmission, l.falloff,
                                   l.castShadow ? 1.0f : 0.0f, l.shadowSoft, (float)l.shadowRes, l.shadowClip, l.cutoff });
@@ -1292,6 +1327,14 @@ void Scene3DNode::ApplyWorld(Render3DNode& render, bool show, bool background)
       render.envHorizon[k] = colorWorld ? render.bgColor[k] : Render3DNode::kEnvHorizon[k];
       render.envGround[k] = colorWorld ? render.bgColor[k] : Render3DNode::kEnvGround[k];
    }
+   // An environment that lights but is not seen: a flat colour behind the scene instead.
+   if (env != nullptr && show && background && settings.backdropOn)
+   {
+      render.envAsBackground = false;
+      render.bgOpacity = 1.0f;
+      for (int k = 0; k < 3; k++)
+         render.bgColor[k] = settings.backdrop[k];
+   }
 }
 
 // A plain picture as the world: the render, over it, with its own alpha.
@@ -1315,10 +1358,10 @@ unsigned int Scene3DNode::Composite(unsigned int sceneTex, int w, int h, unsigne
    {
       glActiveTexture(GL_TEXTURE1);
       glBindTexture(GL_TEXTURE_2D, backdrop);
-      glUniform1i(glGetUniformLocation(mCompositeProgram, "uBack"), 1);
+      glUniform1i(GLUtil::UniformLoc(mCompositeProgram, "uBack"), 1);
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, sceneTex);
-      glUniform1i(glGetUniformLocation(mCompositeProgram, "uScene"), 0);
+      glUniform1i(GLUtil::UniformLoc(mCompositeProgram, "uScene"), 0);
    });
    return out.tex;
 }
@@ -1351,9 +1394,9 @@ unsigned int Scene3DNode::Border(unsigned int sceneTex, int w, int h)
    {
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, sceneTex);
-      glUniform1i(glGetUniformLocation(mBorderProgram, "uScene"), 0);
-      glUniform4f(glGetUniformLocation(mBorderProgram, "uRegion"), x0, y0, x1, y1);
-      glUniform1i(glGetUniformLocation(mBorderProgram, "uCrop"), settings.crop ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mBorderProgram, "uScene"), 0);
+      glUniform4f(GLUtil::UniformLoc(mBorderProgram, "uRegion"), x0, y0, x1, y1);
+      glUniform1i(GLUtil::UniformLoc(mBorderProgram, "uCrop"), settings.crop ? 1 : 0);
    });
    mOutW = ow;
    mOutH = oh;
@@ -1377,14 +1420,20 @@ unsigned int Scene3DNode::Finish(unsigned int sceneTex, int w, int h, int frameI
       char buf[96];
       std::time_t now = std::time(nullptr);
       std::tm tmv{};
-#ifdef _WIN32
-      localtime_s(&tmv, &now);
-#else
-      localtime_r(&now, &tmv);
-#endif
+      Platform::LocalTime(now, &tmv);
+      // Date is the day the picture was made; Time and Frame are where it sits in the animation (Blender's
+      // stamp), read off the transport so the same frame stamps the same text in every render.
       if (st.stampDate) { std::strftime(buf, sizeof(buf), "%Y-%m-%d", &tmv); add("Date", buf); }
-      if (st.stampTime) { std::strftime(buf, sizeof(buf), "%H:%M:%S", &tmv); add("Time", buf); }
-      if (st.stampFrame) add("Frame", std::to_string(frameId));
+      const double fps = st.fps > 0.0f ? (double)st.fps : 30.0;
+      const long long frameNo = (long long)std::llround(Transport::Instance().Seconds() * fps);
+      if (st.stampTime)
+      {
+         const long long f = std::max(0LL, frameNo), perSec = std::max(1LL, (long long)std::llround(fps));
+         const long long secs = f / perSec;
+         std::snprintf(buf, sizeof(buf), "%02lld:%02lld:%02lld:%02lld", secs / 3600, (secs / 60) % 60, secs % 60, f % perSec);
+         add("Time", buf);
+      }
+      if (st.stampFrame) add("Frame", std::to_string(frameNo));
       if (st.stampRange) add("Range", std::to_string(st.frameStart) + "-" + std::to_string((int)(st.seconds * st.fps)));
       Item* cam = activeCamera != 0 ? FindItem(activeCamera) : nullptr;
       if (st.stampCamera) add("Camera", cam != nullptr && !cam->name.empty() ? cam->name : std::string("Camera"));
@@ -1499,17 +1548,17 @@ unsigned int Scene3DNode::Finish(unsigned int sceneTex, int w, int h, int frameI
    {
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, sceneTex);
-      glUniform1i(glGetUniformLocation(mFinishProgram, "uScene"), 0);
+      glUniform1i(GLUtil::UniformLoc(mFinishProgram, "uScene"), 0);
       glActiveTexture(GL_TEXTURE1);
       glBindTexture(GL_TEXTURE_2D, stamped ? mStampTex : 0);
-      glUniform1i(glGetUniformLocation(mFinishProgram, "uStamp"), 1);
+      glUniform1i(GLUtil::UniformLoc(mFinishProgram, "uStamp"), 1);
       glActiveTexture(GL_TEXTURE0);
-      glUniform2f(glGetUniformLocation(mFinishProgram, "uTexel"), 1.0f / w, 1.0f / h);
-      glUniform1f(glGetUniformLocation(mFinishProgram, "uFilter"), st.filterSize);
-      glUniform1f(glGetUniformLocation(mFinishProgram, "uGamma"), st.gamma);
-      glUniform1f(glGetUniformLocation(mFinishProgram, "uDither"), st.dither);
-      glUniform1i(glGetUniformLocation(mFinishProgram, "uLook"), st.look);
-      glUniform1i(glGetUniformLocation(mFinishProgram, "uStamped"), stamped ? 1 : 0);
+      glUniform2f(GLUtil::UniformLoc(mFinishProgram, "uTexel"), 1.0f / w, 1.0f / h);
+      glUniform1f(GLUtil::UniformLoc(mFinishProgram, "uFilter"), st.filterSize);
+      glUniform1f(GLUtil::UniformLoc(mFinishProgram, "uGamma"), st.gamma);
+      glUniform1f(GLUtil::UniformLoc(mFinishProgram, "uDither"), st.dither);
+      glUniform1i(GLUtil::UniformLoc(mFinishProgram, "uLook"), st.look);
+      glUniform1i(GLUtil::UniformLoc(mFinishProgram, "uStamped"), stamped ? 1 : 0);
    });
    return mFinishFbo.tex;
 }
@@ -1785,44 +1834,44 @@ unsigned int Scene3DNode::GridPass(unsigned int sceneTex, int w, int h, const Vi
          on = back->front ? 2 : 1;
          glActiveTexture(GL_TEXTURE2);
          glBindTexture(GL_TEXTURE_2D, pic.tex);
-         glUniform1i(glGetUniformLocation(mGridProgram, "uPicture"), 2);
-         glUniform4fv(glGetUniformLocation(mGridProgram, "uFrame"), 1, v.frame);
-         glUniform4f(glGetUniformLocation(mGridProgram, "uPictureHalf"), hx, hy, 1.0f / fa, std::clamp(back->alpha, 0.0f, 1.0f));
-         glUniform4f(glGetUniformLocation(mGridProgram, "uPictureMove"), back->offset[0], back->offset[1],
+         glUniform1i(GLUtil::UniformLoc(mGridProgram, "uPicture"), 2);
+         glUniform4fv(GLUtil::UniformLoc(mGridProgram, "uFrame"), 1, v.frame);
+         glUniform4f(GLUtil::UniformLoc(mGridProgram, "uPictureHalf"), hx, hy, 1.0f / fa, std::clamp(back->alpha, 0.0f, 1.0f));
+         glUniform4f(GLUtil::UniformLoc(mGridProgram, "uPictureMove"), back->offset[0], back->offset[1],
                      back->rotation * 3.14159265f / 180.0f, back->scale);
-         glUniform2f(glGetUniformLocation(mGridProgram, "uPictureFlip"), back->flipX ? 1.0f : 0.0f, back->flipY ? 1.0f : 0.0f);
+         glUniform2f(GLUtil::UniformLoc(mGridProgram, "uPictureFlip"), back->flipX ? 1.0f : 0.0f, back->flipY ? 1.0f : 0.0f);
       }
-      glUniform1i(glGetUniformLocation(mGridProgram, "uPictureOn"), on);
-      glUniform1i(glGetUniformLocation(mGridProgram, "uPictureWire"), wire || !mEditor->DepthValid() ? 1 : 0);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uPictureOn"), on);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uPictureWire"), wire || !mEditor->DepthValid() ? 1 : 0);
       glActiveTexture(GL_TEXTURE1);
       glBindTexture(GL_TEXTURE_2D, mEditor->DepthTexture());
-      glUniform1i(glGetUniformLocation(mGridProgram, "uDepth"), 1);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uDepth"), 1);
       glActiveTexture(GL_TEXTURE0);
       glBindTexture(GL_TEXTURE_2D, sceneTex);
-      glUniform1i(glGetUniformLocation(mGridProgram, "uScene"), 0);
-      glUniformMatrix4fv(glGetUniformLocation(mGridProgram, "uInv"), 1, GL_FALSE, inv.m);
-      glUniformMatrix4fv(glGetUniformLocation(mGridProgram, "uViewProj"), 1, GL_FALSE, viewProj.m);
-      glUniform3fv(glGetUniformLocation(mGridProgram, "uEye"), 1, v.eye);
-      glUniform1i(glGetUniformLocation(mGridProgram, "uAxis"), v.gridAxis);
-      glUniform1i(glGetUniformLocation(mGridProgram, "uDraw"), v.grid && mEditor->DepthValid() ? 1 : 0);
-      glUniform1f(glGetUniformLocation(mGridProgram, "uDist"), v.gridDist);
-      glUniform4f(glGetUniformLocation(mGridProgram, "uGridOpt"), std::max(0.001f, settings.gridScale), (float)std::clamp(settings.gridSubdiv, 2, 100),
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uScene"), 0);
+      glUniformMatrix4fv(GLUtil::UniformLoc(mGridProgram, "uInv"), 1, GL_FALSE, inv.m);
+      glUniformMatrix4fv(GLUtil::UniformLoc(mGridProgram, "uViewProj"), 1, GL_FALSE, viewProj.m);
+      glUniform3fv(GLUtil::UniformLoc(mGridProgram, "uEye"), 1, v.eye);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uAxis"), v.gridAxis);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uDraw"), v.grid && mEditor->DepthValid() ? 1 : 0);
+      glUniform1f(GLUtil::UniformLoc(mGridProgram, "uDist"), v.gridDist);
+      glUniform4f(GLUtil::UniformLoc(mGridProgram, "uGridOpt"), std::max(0.001f, settings.gridScale), (float)std::clamp(settings.gridSubdiv, 2, 100),
                   std::clamp(settings.gridLines, 1, 200) / 10.0f, 0.0f);
       // World axes: X, then the vertical one (shown as Z), then depth (shown as Y).
-      glUniform3f(glGetUniformLocation(mGridProgram, "uAxisOn"), settings.axisX ? 1.0f : 0.0f, settings.axisZ ? 1.0f : 0.0f, settings.axisY ? 1.0f : 0.0f);
+      glUniform3f(GLUtil::UniformLoc(mGridProgram, "uAxisOn"), settings.axisX ? 1.0f : 0.0f, settings.axisZ ? 1.0f : 0.0f, settings.axisY ? 1.0f : 0.0f);
       const bool ortho = v.proj.m[15] != 0.0f;
       const float pn = ortho ? 0.0f : v.proj.m[14] / (v.proj.m[10] - 1.0f), pf = ortho ? 1.0f : v.proj.m[14] / (v.proj.m[10] + 1.0f);
-      glUniform3f(glGetUniformLocation(mGridProgram, "uNearFar"), pn, pf, ortho ? 1.0f : 0.0f);
+      glUniform3f(GLUtil::UniformLoc(mGridProgram, "uNearFar"), pn, pf, ortho ? 1.0f : 0.0f);
       const bool outline = settings.outline && v.shading == Shading::Solid && mEditor->DepthValid();
-      glUniform4f(glGetUniformLocation(mGridProgram, "uOutline"), settings.outlineColor[0], settings.outlineColor[1], settings.outlineColor[2], outline ? 1.0f : 0.0f);
+      glUniform4f(GLUtil::UniformLoc(mGridProgram, "uOutline"), settings.outlineColor[0], settings.outlineColor[1], settings.outlineColor[2], outline ? 1.0f : 0.0f);
       const bool wireOn = !wire && mEditorWire != nullptr && mEditorWire->GetOutputTexture() != 0 && (v.xray || v.wireOver);
-      glUniform1i(glGetUniformLocation(mGridProgram, "uWireMode"), !wireOn ? 0 : v.xray && v.shading == Shading::Solid ? 2 : 1);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uWireMode"), !wireOn ? 0 : v.xray && v.shading == Shading::Solid ? 2 : 1);
       glActiveTexture(GL_TEXTURE3);
       glBindTexture(GL_TEXTURE_2D, wireOn ? mEditorWire->GetOutputTexture() : 0);
-      glUniform1i(glGetUniformLocation(mGridProgram, "uWire"), 3);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uWire"), 3);
       glActiveTexture(GL_TEXTURE4);
       glBindTexture(GL_TEXTURE_2D, wireOn && mEditorWire->DepthValid() ? mEditorWire->DepthTexture() : mEditor->DepthTexture());
-      glUniform1i(glGetUniformLocation(mGridProgram, "uWireDepth"), 4);
+      glUniform1i(GLUtil::UniformLoc(mGridProgram, "uWireDepth"), 4);
       glActiveTexture(GL_TEXTURE0);
    });
    return mGridFbo.tex;
@@ -1834,6 +1883,8 @@ unsigned int Scene3DNode::RenderView(int w, int h, const View& v)
    // The cook already ran this frame, so the sources it asks for are no-ops.
    mSyncedFrame = -1;
    Sync(mLastCookFrame);
+   if (!mRoot || !mLocalRoot)
+      return 0;   // not synced yet (a scene made this frame): nothing to draw
    if (!mEditor)
    {
       mEditor = std::make_unique<Render3DNode>();
@@ -1878,7 +1929,8 @@ unsigned int Scene3DNode::RenderView(int w, int h, const View& v)
                                look.shadowSoftness, look.shadowStrength, look.envIntensity, look.ambientColor[0],
                                look.ambientColor[1], look.ambientColor[2], worldColor[0], worldColor[1], worldColor[2],
                                worldColorOn ? 1.0f : 0.0f, worldStrength, (float)look.renderPass,
-                               settings.transparent ? 1.0f : 0.0f });
+                               settings.transparent ? 1.0f : 0.0f, settings.backdropOn ? 1.0f : 0.0f, settings.backdrop[0],
+                               settings.backdrop[1], settings.backdrop[2] });
    if (stamp != mEditorStamp)
    {
       mEditorStamp.swap(stamp);

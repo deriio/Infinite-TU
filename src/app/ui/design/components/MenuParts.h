@@ -4,8 +4,10 @@
 // fill is ours, so hover reads the same as the top bar tiles.
 #pragma once
 #include <algorithm>
+#include <cfloat>
 #include <cstring>
 #include <string>
+#include <vector>
 #include "app/ui/design/components/CheckBox.h"
 #include "app/ui/design/TokenColors.h"
 #include "app/ui/design/UiAnim.h"
@@ -17,8 +19,12 @@ namespace MenuParts
 {
    constexpr float kInset = tok::space_1;   // wash distance from the popup edge
    constexpr float kTextInset = tok::space_2; // text distance from the wash edge
-   constexpr float kRow = 24.0f;              // row pitch of every menu / dropdown / list popup (was tok::tile, 28)
+   constexpr float kRow = tok::row_h;           // row pitch of every menu / dropdown / list popup
    constexpr float kPadY = kInset + 4.0f;     // popup padding: the row wash starts 4 pt above its text
+   constexpr int kMaxListRows = 12;           // a dropdown list shows at most this many rows, then scrolls
+
+   // Height of a dropdown list that shows `rows` rows (padding included).
+   inline float ListMaxH(int rows = kMaxListRows) { return kRow * rows + 2.0f * kPadY; }
 
    // Popups are chrome, not canvas content: constant on-screen size at any canvas zoom (infinite-design-system).
 
@@ -55,11 +61,57 @@ namespace MenuParts
       const float a = (down ? 0.12f : (open ? 0.10f : 0.07f)) * hv;
       w->DrawList->AddRectFilled(ImVec2(w->Pos.x + kInset, ImGui::GetItemRectMin().y + 1.0f),
                                  ImVec2(w->Pos.x + w->Size.x - kInset, ImGui::GetItemRectMax().y - 1.0f),
-                                 ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, a)), tok::radius_tile);
+                                 ImGui::GetColorU32(ImVec4(t.x, t.y, t.z, a)), tok::radius_control);
    }
 
    // A shortcut ends flush with the row's right text inset, mirroring the label's left inset; ImGui still sizes
    // the popup for it. A checked row keeps ImGui's own column so the check never lands on the shortcut.
+   // Self-test probe (MenuAliveTests.cpp, dev builds): every row drawn inside a MenuParts popup, with the popup's id,
+   // its submenu depth and its rect, so a test can open each submenu and click each item.
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+   struct ProbeRow
+   {
+      std::string root, label, hint;
+      int depth = 0;
+      bool sub = false, enabled = true, checked = false;
+      ImVec2 mn, mx;
+      int frame = 0;
+   };
+   inline std::vector<ProbeRow>& ProbeRows() { static std::vector<ProbeRow> v; return v; }
+   inline std::string& ProbeRoot() { static std::string s; return s; }
+   inline int ProbeDepth(ImGuiWindow* w)
+   {
+      int d = 0;
+      for (; w != nullptr && (w->Flags & ImGuiWindowFlags_ChildMenu); w = w->ParentWindow)
+         d++;
+      return d;
+   }
+   inline void ProbeNote(const char* label, bool sub, bool enabled, ImGuiWindow* w, bool checked = false, const char* hint = nullptr)
+   {
+      if (ProbeRoot().empty())
+         return;
+      auto& v = ProbeRows();
+      const int f = ImGui::GetFrameCount();
+      if (!v.empty() && v.back().frame != f)
+         v.erase(std::remove_if(v.begin(), v.end(), [f](const ProbeRow& r) { return r.frame < f - 1; }), v.end());
+      v.push_back({ ProbeRoot(), label, hint != nullptr ? hint : "", ProbeDepth(w), sub, enabled, checked, ImGui::GetItemRectMin(), ImGui::GetItemRectMax(), f });
+   }
+   // MENUALIVETEST asks for one right-click menu by its popup id. The panel's open site calls TestOpen(id) next to
+   // its own right-click check; true (once) means: pick the first fitting target, as a right-click on it would,
+   // and open the menu. Compiled out of shipped builds.
+   inline std::string& TestOpenWant() { static std::string s; return s; }
+   inline bool TestOpen(const char* id)
+   {
+      if (TestOpenWant().empty() || TestOpenWant() != id)
+         return false;
+      TestOpenWant().clear();
+      return true;
+   }
+#else
+   inline void ProbeNote(const char*, bool, bool, ImGuiWindow*, bool = false, const char* = nullptr) {}
+   inline bool TestOpen(const char*) { return false; }
+#endif
+
    inline bool Item(const char* label, const char* shortcut = nullptr, bool selected = false, bool enabled = true)
    {
       const bool ours = shortcut != nullptr && shortcut[0] != 0 && !selected;
@@ -79,13 +131,14 @@ namespace MenuParts
                               ImGui::GetColorU32(dim), shortcut);
       }
       Wash(enabled && ImGui::IsItemHovered(), enabled && ImGui::IsItemActive(), false);
+      ProbeNote(label, false, enabled, ImGui::GetCurrentWindow(), selected, shortcut);
       return r;
    }
 
    // Toggle row: the app checkbox at the left edge, label after it; the menu stays open.
    inline bool Check(const char* label, bool* v)
    {
-      const float boxW = CheckBox::kSize + tok::space_2;
+      const float boxW = CheckBox::Size() + tok::space_2;
       const float rowW = std::max(ImGui::GetContentRegionAvail().x, ImGui::CalcTextSize(label, nullptr, true).x + boxW + tok::space_4);
       const std::string id = std::string("##chk") + label;
       const bool r = ImGui::Selectable(id.c_str(), false, ImGuiSelectableFlags_DontClosePopups, ImVec2(rowW, 0));
@@ -97,7 +150,7 @@ namespace MenuParts
       const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
       const float hv = UiAnim::Hover(gid, ImGui::IsItemHovered(), tok::motion_hover_in, tok::motion_hover_out);
       const float onv = UiAnim::Hover(gid ^ 0x5bd1e995u, *v, tok::motion_on, tok::motion_off);
-      CheckBox::Draw(w->DrawList, ImVec2(mn.x, std::floor((mn.y + mx.y - CheckBox::kSize) * 0.5f)), onv, hv);
+      CheckBox::Draw(w->DrawList, ImVec2(mn.x, std::floor((mn.y + mx.y - CheckBox::Size()) * 0.5f)), onv, hv);
       const char* end = std::strstr(label, "##");
       w->DrawList->AddText(ImVec2(mn.x + boxW, std::floor((mn.y + mx.y - ImGui::GetTextLineHeight()) * 0.5f)),
                            ImGui::GetColorU32(ImGuiCol_Text), label, end);
@@ -124,6 +177,7 @@ namespace MenuParts
       ImGui::PopStyleVar();
       // Item rect is the parent row. An open submenu has become the current window, so the wash goes to the parent's draw list.
       Wash(enabled && (open || ImGui::IsItemHovered()), false, open, parent);
+      ProbeNote(label, true, enabled, parent);
       return open;
    }
 
@@ -146,6 +200,9 @@ namespace MenuParts
       ImGui::PopStyleVar();
       if (open)
       {
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+         ProbeRoot() = id;
+#endif
          BeginContent();
       }
       return open;
@@ -173,6 +230,9 @@ namespace MenuParts
 
    inline void EndPopup()
    {
+#ifdef IMGUI_ENABLE_TEST_ENGINE
+      ProbeRoot().clear();
+#endif
       EndContent();
       ImGui::EndPopup();
    }
@@ -180,6 +240,8 @@ namespace MenuParts
    // A combo whose list is a menu: same padding, row pitch and wash. Pair a true result with EndCombo().
    inline bool BeginCombo(const char* id, const char* preview, ImGuiComboFlags flags = 0)
    {
+      if (!(GImGui->NextWindowData.HasFlags & ImGuiNextWindowDataFlags_HasSizeConstraint))
+         ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, ListMaxH()));
       PushPopupPad();
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(tok::space_3, ImGui::GetStyle().FramePadding.y));
       const bool open = ImGui::BeginCombo(id, preview, flags | ImGuiComboFlags_NoArrowButton); // field well + value, never a chevron

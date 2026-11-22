@@ -9,8 +9,8 @@
 #include <vector>
 #include "app/AppShared.h"
 #include "app/ui/NodeTip.h"
+#include "app/ui/design/UiDensity.h"
 #include "app/ui/design/GlyphDraw.h"
-#include "core/TablerIcons.h"
 #include "app/ui/design/UiType.h"
 #include "app/ui/design/components/CheckBox.h"
 #include "app/ui/design/components/MenuParts.h"
@@ -21,10 +21,10 @@
 
 namespace FormParts
 {
-   constexpr float kLabelW = 200.0f;
+   constexpr float kLabelW = tok::label_w_wide;
    constexpr float kControlW = 150.0f;
    constexpr float kSliderW = kControlW;   // sliders, dropdowns and inputs share one width in Settings
-   constexpr float kRowH = 28.0f;
+   constexpr float kRowH = tok::control_h + tok::row_gap;   // a settings row: one control plus the row gap
 
    // A narrow side column (a panel's inspector) has no room for the Settings columns: inside a Narrow scope the
    // label column shrinks and every control fills the rest of the row.
@@ -33,7 +33,12 @@ namespace FormParts
    struct Narrow
    {
       float savedW; bool savedFill;
-      explicit Narrow(float labelW = 92.0f) : savedW(gLabelW), savedFill(gFill) { gLabelW = labelW; gFill = true; }
+      // labelW < 0: the label column at the current density (tok::label_w regular, SectionCard::LabelW() in a compact strip).
+      explicit Narrow(float labelW = -1.0f) : savedW(gLabelW), savedFill(gFill)
+      {
+         gLabelW = labelW >= 0.0f ? labelW : UiDensity::IsCompact() ? SectionCard::LabelW() : tok::label_w;
+         gFill = true;
+      }
       ~Narrow() { gLabelW = savedW; gFill = savedFill; }
    };
    // The control width after Label(): the Settings column, or what is left of the row in a Narrow scope.
@@ -55,6 +60,8 @@ namespace FormParts
       const ImVec2 c(p.x + d * 0.5f, p.y + h * 0.5f);
       ImDrawList* dl = ImGui::GetWindowDrawList();
       dl->AddCircleFilled(c, d * 0.5f - (hov ? 0.0f : 1.0f), ImGui::GetColorU32(ImVec4(rgb[0], rgb[1], rgb[2], 1.0f)), 48);   // 48 segments: the auto count facets a 9 px circle
+      // Hairline ring: a black or near-background colour still reads as a swatch.
+      dl->AddCircle(c, d * 0.5f - (hov ? 0.0f : 1.0f), ImGui::GetColorU32(ImGuiCol_Border), 48, 1.0f);
       if (click)
          ImGui::OpenPopup(id);
       bool changed = false;
@@ -103,7 +110,7 @@ namespace FormParts
    {
       Label(label);
       // Row height matches the other controls so rows keep one rhythm.
-      const float pad = (ImGui::GetFrameHeight() - CheckBox::kSize) * 0.5f;
+      const float pad = (ImGui::GetFrameHeight() - CheckBox::Size()) * 0.5f;
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + pad);
       const bool r = CheckBox::Box(Id(label).c_str(), v);
       ImGui::SetCursorPosY(ImGui::GetCursorPosY() + pad);
@@ -146,7 +153,7 @@ namespace FormParts
          }
          shown += "...";
       }
-      ImGui::SetNextWindowSizeConstraints(ImVec2(std::max(controlW, listMinW), 0.0f), ImVec2(std::max(kListMaxW, listMinW), FLT_MAX));
+      ImGui::SetNextWindowSizeConstraints(ImVec2(std::max(controlW, listMinW), 0.0f), ImVec2(std::max(kListMaxW, listMinW), MenuParts::ListMaxH()));
       const bool open = ImGui::BeginCombo(Id(label).c_str(), shown.c_str(), ImGuiComboFlags_NoArrowButton);
       ImGui::PopStyleVar(2);
       FieldWell::PopStyle();
@@ -171,6 +178,7 @@ namespace FormParts
       FieldWell::PushStyle(ImGui::GetID(id) ^ 0x9e3779b9u);
       MenuParts::PushPopupPad();
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(tok::space_3, ImGui::GetStyle().FramePadding.y));
+      ImGui::SetNextWindowSizeConstraints(ImVec2(0.0f, 0.0f), ImVec2(FLT_MAX, MenuParts::ListMaxH()));
       const bool open = ImGui::BeginCombo(id, cur, ImGuiComboFlags_NoArrowButton);
       ImGui::PopStyleVar(2);
       FieldWell::PopStyle();
@@ -225,10 +233,10 @@ namespace FormParts
       return FieldWell::Slider(Id(label).c_str(), v, lo, hi, fmt, fl);
    }
 
-   // Action button: a chip, 28 pt tall. A size's x is a width floor.
+   // Action button: a chip, tok::control_h tall. A size's x is a width floor.
    inline bool Button(const char* label, ImVec2 size = ImVec2(0, 0))
    {
-      return ChipButton::Draw(label, false, kRowH, size.x);
+      return ChipButton::Draw(label, false, 0.0f, size.x);
    }
 
    // Frame tint for a tab bar so the tabs read as chips: quiet at rest, a text-tinted well when selected.
@@ -264,7 +272,7 @@ namespace FormParts
       ImGui::PushStyleColor(ImGuiCol_TabDimmed, ImVec4(0, 0, 0, 0));
       ImGui::PushStyleColor(ImGuiCol_TabDimmedSelected, ImVec4(t.x, t.y, t.z, 0.14f));
       ImGui::PushStyleColor(ImGuiCol_TabDimmedSelectedOverline, ImVec4(0, 0, 0, 0));
-      ImGui::PushStyleVar(ImGuiStyleVar_TabRounding, tok::radius_tile);
+      ImGui::PushStyleVar(ImGuiStyleVar_TabRounding, tok::radius_control);
       ImGui::PushStyleVar(ImGuiStyleVar_TabBarBorderSize, 0.0f);
       ImGui::PushStyleVar(ImGuiStyleVar_TabBarOverlineSize, 0.0f);
    }
@@ -275,7 +283,7 @@ namespace FormParts
    }
 
    // Hairline outline on a floating window; call just before ImGui::End().
-   inline void WindowEdge(float rounding = 12.0f)
+   inline void WindowEdge(float rounding = tok::radius_container)
    {
       const ImVec2 p = ImGui::GetWindowPos(), z = ImGui::GetWindowSize();
       ImGui::GetWindowDrawList()->AddRect(ImVec2(p.x + 0.5f, p.y + 0.5f), ImVec2(p.x + z.x - 0.5f, p.y + z.y - 0.5f),
@@ -323,7 +331,7 @@ namespace FormParts
       ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(t.x, t.y, t.z, headerFill ? 0.06f : 0.0f));   // off when a card is the surface
       ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(t.x, t.y, t.z, 0.09f));
       ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(t.x, t.y, t.z, 0.12f));
-      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_tile);
+      ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_control);
    }
    inline void PopReferenceStyle()
    {

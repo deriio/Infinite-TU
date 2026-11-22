@@ -1,14 +1,26 @@
 // Geometry / 3D / material / render parameter bodies (moved verbatim from main.cpp).
 #include "app/panels/InspectorPanel.h" // fork: inspector pin wrappers
+#include <algorithm>
+#include <cmath>
 #include "app/ui/design/components/AudioViz.h"
 #include "app/ui/design/components/PinDot.h"
 #include "app/ui/design/components/FieldWell.h"
 #include "app/ui/design/TokenColors.h"
 #include "app/AppShared.h"
 #include "app/ui/NodeTip.h"
+#include "platform/AppPaths.h"
 
 namespace app
 {
+   // Log taper for controls that span macro (sub-millimetre) to room scale: equal travel per decade.
+   static float LogPosToValue(float pos01, float minV, float maxV)
+   {
+      return minV * std::pow(maxV / minV, std::clamp(pos01, 0.0f, 1.0f));
+   }
+   static float LogValueToPos(float value, float minV, float maxV)
+   {
+      return std::log(std::max(value, minV) / minV) / std::log(maxV / minV);
+   }
    inline const std::vector<std::string> kAxisXYZ = { "x", "y", "z" };
 
    // The pose and IK sections every rigged node shows (Model 3D, Armature):
@@ -360,6 +372,7 @@ namespace app
       NodeSeparator("surface");
       ModSliderInt("resolution", &n->resolution, 8, 300);
       ModSlider("size", &n->size, 0.5f, 20.0f);
+      ModSlider("horizon", &n->horizon, 1.0f, 100.0f);
 
       NodeSeparator("waves");
       ModSlider("amplitude", &n->amplitude, 0.0f, 1.0f);
@@ -458,6 +471,23 @@ namespace app
       // picked from an input rather than authored here, since editing colour
       // and shading now lives on the dedicated Material node.
       ModSliderInt("material from input", &n->materialFrom, 0, JoinGeometryNode::kSlots - 1);
+   }
+
+
+   void DrawGroup3DParams(Group3DNode* n)
+   {
+      ModSlider("move x", &n->offsetX, -3.0f, 3.0f);
+      ModSlider("move y", &n->offsetY, -3.0f, 3.0f);
+      ModSlider("move z", &n->offsetZ, -3.0f, 3.0f);
+      ModSlider("rotate x", &n->rotX, -180.0f, 180.0f, "%.1f\xC2\xB0");
+      ModSlider("rotate y", &n->rotY, -180.0f, 180.0f, "%.1f\xC2\xB0");
+      ModSlider("rotate z", &n->rotZ, -180.0f, 180.0f, "%.1f\xC2\xB0");
+      ModSlider("scale", &n->scale, 0.05f, 4.0f);
+      ImGui::BeginDisabled(n->rotX == 0.0f && n->rotY == 0.0f && n->rotZ == 0.0f && n->scale == 1.0f && !gParamRegisterOnly);
+      ModSlider("pivot x", &n->pivotX, -3.0f, 3.0f);
+      ModSlider("pivot y", &n->pivotY, -3.0f, 3.0f);
+      ModSlider("pivot z", &n->pivotZ, -3.0f, 3.0f);
+      ImGui::EndDisabled();
    }
 
 
@@ -813,7 +843,7 @@ namespace app
       // As Render 3D: both columns draw every row every frame, and a row that does not apply right now
       // is greyed, never dropped, so the body never grows or shifts as a value crosses zero. The rows
       // keep their registration order (the left column, then the right), which is what saved
-      // modulation is keyed on. Left: normal map, surface, emission (17). Right: coat & sheen, optics (18).
+      // modulation is keyed on. Left: normal map, surface, emission, coat & sheen. Right: optics, hair.
       const bool pbrUnused = n->shading != 0 && !gParamRegisterOnly;   // Normals/UV/Flat ignore the lighting model
       // The path tracer has no anisotropy, iridescence, dispersion, subsurface or non-Lit shading.
       const bool ptOnly = !gParamRegisterOnly && FeedsOnlyPathTracer(n);
@@ -825,6 +855,10 @@ namespace app
       ImGui::BeginDisabled(!n->MapInput(kMapNormal).IsConnected());
       ModCheckbox("bump (height map)##matNormalBump", &n->normalBump);
       ModSlider("normal strength", &n->normalStrength, 0.0f, 4.0f, "%.3f", colW);
+      ModSlider("detail scale", &n->detailScale, 0.0f, 32.0f, "%.2f", colW);
+      ImGui::BeginDisabled(n->detailScale <= 0.0f);
+      ModSlider("detail strength", &n->detailStrength, 0.0f, 4.0f, "%.3f", colW);
+      ImGui::EndDisabled();
       ImGui::EndDisabled();
 
       NodeSeparator("surface", colW);
@@ -852,12 +886,6 @@ namespace app
       ModSlider("emission", &n->emission, 0.0f, 8.0f, "%.3f", colW);
       ImGui::EndDisabled();
 
-      ImGui::EndGroup();
-
-      // --- Right Column ---
-      ImGui::SameLine(0.0f, gutter);
-      ImGui::BeginGroup();
-
       ImGui::BeginDisabled(pbrUnused);
       NodeSeparator("coat & sheen", colW);
       ModSlider("clearcoat", &n->clearcoat, 0.0f, 1.0f, "%.3f", colW);
@@ -868,8 +896,17 @@ namespace app
       ImGui::BeginDisabled(!(n->sheen > 0.0f || n->MapInput(kMapSheen).IsConnected()));
       ColorSwatch("sheen tint", n->sheenColor, n);
       ModSlider("sheen roughness", &n->sheenRoughness, 0.01f, 1.0f, "%.3f", colW);
+      ModSlider("sheen direction", &n->sheenDirection, -1.0f, 1.0f, "%.2f", colW);
+      ImGui::EndDisabled();
       ImGui::EndDisabled();
 
+      ImGui::EndGroup();
+
+      // --- Right Column --- (the split sits here so both columns hold about the same rows: 22 left, 21 right)
+      ImGui::SameLine(0.0f, gutter);
+      ImGui::BeginGroup();
+
+      ImGui::BeginDisabled(pbrUnused);
       NodeSeparator("optics", colW);
       ImGui::BeginDisabled(ptOnly);
       ModSlider("anisotropy", &n->anisotropy, -1.0f, 1.0f, "%.3f", colW);
@@ -895,41 +932,33 @@ namespace app
       ColorSwatch("sss colour", n->subsurfaceColor, n);
       ModSlider("sss radius", &n->subsurfaceRadius, 0.0f, 1.0f, "%.3f", colW);
       ImGui::EndDisabled();
+      ModSlider("translucency", &n->translucency, 0.0f, 1.0f, "%.3f", colW);
       ImGui::EndDisabled();
       ImGui::EndDisabled();
+
+      // Hair (Chiang fibre BSDF): last, so the rows above keep their keys. Roughness and ior are the fibre's.
+      static const std::vector<std::string> kModels = { "Principled", "Hair" }, kHairColour = { "Melanin", "Colour" };
+      NodeSeparator("hair", colW);
+      DropdownButton("model", kModels, n->model, [n](int i) { n->model = i; }, colW);
+      ImGui::BeginDisabled(n->model != 1 && !gParamRegisterOnly);
+      DropdownButton("hair colour", kHairColour, n->hairColour, [n](int i) { n->hairColour = i; }, colW);
+      ImGui::BeginDisabled(n->hairColour != 0 && !gParamRegisterOnly);
+      ModSlider("melanin", &n->melanin, 0.0f, 1.0f, "%.3f", colW);
+      ModSlider("redness", &n->melaninRedness, 0.0f, 1.0f, "%.3f", colW);
+      ColorSwatch("hair tint", n->hairTint, n);
+      ImGui::EndDisabled();
+      ModSlider("radial rough", &n->radialRoughness, 0.02f, 1.0f, "%.3f", colW);
+      ModSlider("cuticle shift", &n->hairShift, -10.0f, 10.0f, "%.1f deg", colW);
+      ImGui::EndDisabled();
+      if (n->model == 1 && !gParamRegisterOnly)
+      {
+         // The fibre axis comes from Fur's Tangent normals; any other mesh has its surface normal there.
+         auto* fur = dynamic_cast<GeometryOpNode*>(n->input);
+         if (!(fur && fur->op == GeometryOpNode::kFur && fur->furNormals == 1))
+            ImGui::TextDisabled("needs Fur, Tangent normals");
+      }
 
       ImGui::EndGroup();
-
-      // Load map: pick a free map, then a file; an Image Source lands left of the node, cabled in.
-      // Not a registered param (nothing to modulate) and drawn last, so the rows' keys stay put.
-      if (gParamRegisterOnly)
-         return;
-      std::vector<std::string> names;
-      std::vector<int> maps;
-      for (int m = 0; m < kMapCount; ++m)
-         if (!n->MapInput(m).IsConnected())
-         {
-            names.push_back(n->InputLabel(1 + m));
-            maps.push_back(m);
-         }
-      if (names.empty())
-         return;
-      PushDropdownStyle();
-      if (NodeDropdownField("image##matLoadMap", ImVec2(colW * 2.0f + gutter, 0), "load map"))
-      {
-         gDropdown.options = names;
-         gDropdown.categories.clear();
-         gDropdown.current = -1;
-         gDropdown.justOpened = true;
-         gDropdown.focusSearch = false;
-         gDropdown.onSelect = [n, maps](int i)
-         {
-            const std::string path = Platform::OpenImageDialog();
-            if (!path.empty())
-               gPendingMapLoad = { n, maps[i], path };
-         };
-      }
-      PopDropdownStyle();
    }
 
 
@@ -939,6 +968,7 @@ namespace app
       DropdownButton("space", MappingNode::SpaceNames(), n->space, [n](int i) { n->space = i; });
       if (n->space != kMapSpaceUv)
          ModSlider("blend softness", &n->triplanarBlend, 0.0f, 1.0f);
+      ModSlider("breakup", &n->breakup, 0.0f, 1.0f);
 
       NodeSeparator("translate");
       ModSlider("x", &n->translateX, -4.0f, 4.0f);
@@ -963,6 +993,240 @@ namespace app
       ModSlider("y", &n->scaleY, 0.05f, 8.0f);
       if (n->space != kMapSpaceUv)
          ModSlider("z", &n->scaleZ, 0.05f, 8.0f);
+   }
+
+
+   void DrawShadeCoordParams(ShadeCoordNode* n)
+   {
+      DropdownButton("output", ShadeCoordNode::OutputNames(), n->output, [n](int i) { PushUndoCheckpoint(); n->output = i; });
+   }
+
+
+   void DrawShadeMappingParams(ShadeMappingNode* n)
+   {
+      DropdownButton("type", ShadeMappingNode::KindNames(), n->kind, [n](int i) { PushUndoCheckpoint(); n->kind = i; });
+
+      NodeSeparator("translate");
+      ModSlider("x", &n->translate[0], -4.0f, 4.0f);
+      ModSlider("y", &n->translate[1], -4.0f, 4.0f);
+      ModSlider("z", &n->translate[2], -4.0f, 4.0f);
+
+      NodeSeparator("rotate");
+      ModSlider("x", &n->rotate[0], -180.0f, 180.0f, "%.1f\xC2\xB0");
+      ModSlider("y", &n->rotate[1], -180.0f, 180.0f, "%.1f\xC2\xB0");
+      ModSlider("z", &n->rotate[2], -180.0f, 180.0f, "%.1f\xC2\xB0");
+
+      NodeSeparator("scale");
+      ModSlider("x", &n->scale[0], 0.05f, 8.0f);
+      ModSlider("y", &n->scale[1], 0.05f, 8.0f);
+      ModSlider("z", &n->scale[2], 0.05f, 8.0f);
+   }
+
+
+   void DrawShadeCheckerParams(ShadeCheckerNode* n)
+   {
+      ColorSwatch("colour 1", n->color1, n);
+      ColorSwatch("colour 2", n->color2, n);
+      ModSlider("scale", &n->scale, 0.1f, 32.0f);
+   }
+
+
+   void DrawShadeNoiseParams(ShadeNoiseNode* n)
+   {
+      DropdownButton("output", ShadeNoiseNode::OutputNames(), n->output, [n](int i) { PushUndoCheckpoint(); n->output = i; });
+      ModSlider("scale", &n->scale, 0.1f, 32.0f);
+      ModSlider("detail", &n->detail, 0.0f, 8.0f, "%.0f", kParamWidth, false, 1.0f);
+      ModSlider("roughness", &n->roughness, 0.0f, 1.0f);
+      ModSlider("distortion", &n->distortion, 0.0f, 4.0f);
+   }
+
+
+   void DrawShadeVoronoiParams(ShadeVoronoiNode* n)
+   {
+      DropdownButton("output", ShadeVoronoiNode::OutputNames(), n->output, [n](int i) { PushUndoCheckpoint(); n->output = i; });
+      ModSlider("scale", &n->scale, 0.1f, 32.0f);
+   }
+
+
+   void DrawShadeGradientParams(ShadeGradientNode* n)
+   {
+      DropdownButton("type", ShadeGradientNode::KindNames(), n->kind, [n](int i) { PushUndoCheckpoint(); n->kind = i; });
+      ModSlider("scale", &n->scale, 0.1f, 32.0f);
+   }
+
+
+   void DrawShadeBrickParams(ShadeBrickNode* n)
+   {
+      ColorSwatch("colour 1", n->color1, n);
+      ColorSwatch("colour 2", n->color2, n);
+      ColorSwatch("mortar", n->mortarColor, n);
+      ModSlider("scale", &n->scale, 0.1f, 32.0f);
+      ModSlider("width", &n->width, 0.05f, 2.0f);
+      ModSlider("height", &n->height, 0.05f, 2.0f);
+      ModSlider("offset", &n->offset, 0.0f, 1.0f);
+      ModSlider("mortar size", &n->mortar, 0.0f, 0.125f, "%.3f");
+      ModSlider("tint", &n->tint, 0.0f, 1.0f);
+   }
+
+
+   void DrawShadeImageParams(ShadeImageNode* n)
+   {
+      DropdownButton("projection", ShadeImageNode::ProjectionNames(), n->projection, [n](int i) { PushUndoCheckpoint(); n->projection = i; });
+      DropdownButton("space", ShadeImageNode::SpaceNames(), n->space, [n](int i) { PushUndoCheckpoint(); n->space = i; });
+      if (n->projection == ShadeImageNode::kBox)
+         ModSlider("blend", &n->blend, 0.0f, 1.0f);
+   }
+
+
+   void DrawShadeMathParams(ShadeMathNode* n)
+   {
+      DropdownButton("op", ShadeMathNode::OpNames(), n->op, [n](int i) { PushUndoCheckpoint(); n->op = i; });
+      const int k = ShadeMathNode::Operands(n->op);
+      static const char* kNames[3] = { "a", "b", "c" };
+      for (int i = 0; i < k; i++)
+         ModSlider(kNames[i], &n->value[i], -10.0f, 10.0f);
+      ModCheckbox("clamp", &n->clampResult);
+   }
+
+
+   void DrawShadeVectorMathParams(ShadeVectorMathNode* n)
+   {
+      DropdownButton("op", ShadeVectorMathNode::OpNames(), n->op, [n](int i) { PushUndoCheckpoint(); n->op = i; });
+      const int k = ShadeVectorMathNode::Operands(n->op);
+      float* vecs[3] = { n->a, n->b, n->c };
+      static const char* kLabels[3][3] = { { "a x", "a y", "a z" }, { "b x", "b y", "b z" }, { "c x", "c y", "c z" } };
+      static const char* kParams[3][3] = { { "aX", "aY", "aZ" }, { "bX", "bY", "bZ" }, { "cX", "cY", "cZ" } };
+      for (int v = 0; v < k; v++)
+         for (int c = 0; c < 3; c++)
+            ModSlider(kLabels[v][c], &vecs[v][c], -10.0f, 10.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, kParams[v][c]);
+      if (ShadeVectorMathNode::UsesScale(n->op))
+         ModSlider("scale", &n->scale, -10.0f, 10.0f);
+   }
+
+
+   void DrawShadeMixParams(ShadeMixNode* n)
+   {
+      DropdownButton("type", ShadeMixNode::DataTypeNames(), n->dataType, [n](int i) { PushUndoCheckpoint(); n->dataType = i; });
+      if (n->dataType == ShadeMixNode::kColour)
+         DropdownButton("mode", ShadeMixNode::ModeNames(), n->mode, [n](int i) { PushUndoCheckpoint(); n->mode = i; });
+      ModSlider("factor", &n->factor, 0.0f, 1.0f);
+      if (n->dataType == ShadeMixNode::kFloat)
+      {
+         ModSlider("a", &n->a[0], -10.0f, 10.0f);
+         ModSlider("b", &n->b[0], -10.0f, 10.0f);
+      }
+      else if (n->dataType == ShadeMixNode::kVector)
+      {
+         static const char* kA[3] = { "a x", "a y", "a z" };
+         static const char* kB[3] = { "b x", "b y", "b z" };
+         for (int c = 0; c < 3; c++) ModSlider(kA[c], &n->a[c], -10.0f, 10.0f);
+         for (int c = 0; c < 3; c++) ModSlider(kB[c], &n->b[c], -10.0f, 10.0f);
+      }
+      else
+      {
+         ColorSwatch("a", n->a, n);
+         ColorSwatch("b", n->b, n);
+      }
+      ModCheckbox("clamp factor", &n->clampFactor);
+      ModCheckbox("clamp result", &n->clampResult);
+   }
+
+
+   void DrawShadeRampParams(ShadeRampNode* n)
+   {
+      DropdownButton("interpolation", ShadeRampNode::InterpNames(), n->interp, [n](int i) { PushUndoCheckpoint(); n->interp = i; });
+      ModSlider("factor", &n->factor, 0.0f, 1.0f);
+      ModSliderInt("stops", &n->count, 2, ShadeRampNode::kMaxStops);
+      static const char* kPos[ShadeRampNode::kMaxStops] = { "pos0", "pos1", "pos2", "pos3", "pos4", "pos5", "pos6", "pos7" };
+      for (int i = 0; i < n->count && i < ShadeRampNode::kMaxStops; i++)
+      {
+         ImGui::PushID(i);
+         ModSlider("position", &n->pos[i], 0.0f, 1.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, kPos[i]);
+         ColorSwatch("colour", n->color[i], n);
+         ImGui::PopID();
+      }
+   }
+
+
+   void DrawShadeMapRangeParams(ShadeMapRangeNode* n)
+   {
+      DropdownButton("interpolation", ShadeMapRangeNode::InterpNames(), n->interp, [n](int i) { PushUndoCheckpoint(); n->interp = i; });
+      ModSlider("value", &n->value, -10.0f, 10.0f);
+      ModSlider("from min", &n->fromMin, -10.0f, 10.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, "fromMin");
+      ModSlider("from max", &n->fromMax, -10.0f, 10.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, "fromMax");
+      ModSlider("to min", &n->toMin, -10.0f, 10.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, "toMin");
+      ModSlider("to max", &n->toMax, -10.0f, 10.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, "toMax");
+      if (n->interp == ShadeMapRangeNode::kStepped)
+         ModSlider("steps", &n->steps, 1.0f, 32.0f, "%.0f", kParamWidth, false, 1.0f);
+      if (n->interp == ShadeMapRangeNode::kLinear || n->interp == ShadeMapRangeNode::kStepped)
+         ModCheckbox("clamp", &n->clampResult);
+   }
+
+
+   void DrawShadeSeparateParams(ShadeSeparateNode* n)
+   {
+      DropdownButton("mode", ShadeSeparateNode::ModeNames(), n->mode, [n](int i) { PushUndoCheckpoint(); n->mode = i; n->channel = 0; });
+      DropdownButton("channel", ShadeSeparateNode::ChannelNames(n->mode), n->channel, [n](int i) { PushUndoCheckpoint(); n->channel = i; });
+   }
+
+
+   void DrawShadeCombineParams(ShadeCombineNode* n)
+   {
+      DropdownButton("mode", ShadeSeparateNode::ModeNames(), n->mode, [n](int i) { PushUndoCheckpoint(); n->mode = i; });
+      static const char* kXyz[3] = { "x", "y", "z" };
+      static const char* kHsv[3] = { "hue", "saturation", "value" };
+      const char* const* lab = n->mode == 1 ? kHsv : kXyz;
+      for (int i = 0; i < 3; i++)
+         ModSlider(lab[i], &n->value[i], 0.0f, 1.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, kXyz[i]);
+   }
+
+
+   void DrawShadeCurvesParams(ShadeCurvesNode* n)
+   {
+      ModSlider("factor", &n->factor, 0.0f, 1.0f);
+      ModSliderInt("points", &n->count, 2, ShadeCurvesNode::kMaxPoints);
+      static const char* kX[ShadeCurvesNode::kMaxPoints] = { "x0", "x1", "x2", "x3", "x4", "x5", "x6", "x7" };
+      static const char* kY[ShadeCurvesNode::kMaxPoints] = { "y0", "y1", "y2", "y3", "y4", "y5", "y6", "y7" };
+      for (int i = 0; i < n->count && i < ShadeCurvesNode::kMaxPoints; i++)
+      {
+         ImGui::PushID(i);
+         ModSlider("x", &n->px[i], 0.0f, 1.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, kX[i]);
+         ModSlider("y", &n->py[i], 0.0f, 1.0f, "%.3f", kParamWidth, false, 0.0f, nullptr, nullptr, -1, kY[i]);
+         ImGui::PopID();
+      }
+   }
+
+
+   void DrawShadeBumpParams(ShadeBumpNode* n)
+   {
+      ModSlider("strength", &n->strength, 0.0f, 1.0f);
+      ModSlider("distance", &n->distance, 0.0f, 1.0f);
+      ModCheckbox("invert", &n->invert);
+   }
+
+
+   void DrawShadeNormalMapParams(ShadeNormalMapNode* n)
+   {
+      ModSlider("strength", &n->strength, 0.0f, 2.0f);
+   }
+
+
+   void DrawShadeFresnelParams(ShadeFresnelNode* n)
+   {
+      ModSlider("ior", &n->ior, 1.0f, 3.0f);
+   }
+
+
+   void DrawShadeLayerWeightParams(ShadeLayerWeightNode* n)
+   {
+      DropdownButton("output", ShadeLayerWeightNode::OutputNames(), n->output, [n](int i) { PushUndoCheckpoint(); n->output = i; });
+      ModSlider("blend", &n->blend, 0.0f, 1.0f);
+   }
+
+
+   void DrawShadeGeometryParams(ShadeGeometryNode* n)
+   {
+      DropdownButton("output", ShadeGeometryNode::OutputNames(), n->output, [n](int i) { PushUndoCheckpoint(); n->output = i; });
    }
 
 
@@ -1080,7 +1344,7 @@ namespace app
    void DrawDistributePointsOnFacesParams(DistributePointsOnFacesNode* n)
    {
       ImGui::TextDisabled("%zu points", n->PointCount());
-      ModSlider("density", &n->density, 1.0f, 500.0f);
+      ModSlider("density", &n->density, 1.0f, 20000.0f, "%.0f", kParamWidth, false, 0.0f, LogPosToValue, LogValueToPos);
       DropdownButton("method", DistributePointsOnFacesNode::MethodNames(), n->method,
                      [n](int i) { n->method = i; });
       if (n->method == MeshOps::kDistributePoisson)
@@ -1324,6 +1588,16 @@ namespace app
       ModSlider("depth", &n->depth, 0.0f, 1.5f);
       ModSlider("bevel", &n->bevel, 0.0f, 0.45f);
       ModSlider("tracking", &n->letterSpacing, -0.1f, 0.5f);
+
+      NodeSeparator("transform");
+      ModSlider("pos X", &n->posX, -10.0f, 10.0f);
+      ModSlider("pos Y", &n->posY, -10.0f, 10.0f);
+      ModSlider("pos Z", &n->posZ, -10.0f, 10.0f);
+      ModSlider("rot X", &n->rotX, -3.14159f, 3.14159f);
+      ModSlider("rot Y", &n->rotY, -3.14159f, 3.14159f);
+      ModSlider("rot Z", &n->rotZ, -3.14159f, 3.14159f);
+      ModSlider("scale", &n->uniformScale, 0.05f, 10.0f);
+      ModSlider("spin", &n->spinY, -2.0f, 2.0f);
    }
 
 
@@ -1489,6 +1763,7 @@ namespace app
    {
       switch (op)
       {
+         case GeometryOpNode::kFur:
          case GeometryOpNode::kTransform:
          case GeometryOpNode::kSolidify:
          case GeometryOpNode::kExtrude:
@@ -1605,7 +1880,7 @@ namespace app
             ModSlider("smooth", &n->smooth, 0.0f, 2.0f);
             break;
          case GeometryOpNode::kSolidify:
-            ModSlider("thickness", &n->thickness, 0.001f, 0.5f);
+            ModSlider("thickness", &n->thickness, 0.0001f, 0.5f, "%.4f", kParamWidth, false, 0.0f, LogPosToValue, LogValueToPos);
             ModCheckbox("keep original", &n->keepOriginal);
             break;
          case GeometryOpNode::kExtrude:
@@ -1728,6 +2003,25 @@ namespace app
                ModSlider("margin", &n->uvMargin, 0.0f, 0.2f, "%.3f");
             }
             ModSlider("scale", &n->uvScale, 0.1f, 10.0f);
+            break;
+         }
+         case GeometryOpNode::kFur:
+         {
+            static const std::vector<std::string> kFurNormals = { "Ribbon", "Tangent" };
+            ModSlider("density", &n->furDensity, 1.0f, 400.0f, "%.0f / cm2");
+            ModSliderInt("max strands", &n->furMaxStrands, 1000, 400000);
+            ModSlider("length", &n->furLength, 0.0f, 0.5f, "%.4f");
+            ModSlider("length jitter", &n->furJitter, 0.0f, 1.0f);
+            ModSlider("width", &n->furWidth, 0.00005f, 0.005f, "%.5f");
+            ModSliderInt("segments", &n->furSegments, 1, 32);
+            ModSlider("gravity", &n->furGravity, 0.0f, 1.0f);
+            ModSlider("clump", &n->furClump, 0.0f, 1.0f);
+            ModSlider("curl", &n->furCurl, 0.0f, 1.0f);
+            ModSlider("comb x", &n->furComb[0], -2.0f, 2.0f);
+            ModSlider("comb y", &n->furComb[1], -2.0f, 2.0f);
+            ModSlider("comb z", &n->furComb[2], -2.0f, 2.0f);
+            DropdownButton("normals", kFurNormals, n->furNormals, [n](int i) { PushUndoCheckpoint(); n->furNormals = i; }, kParamWidth, true, true);
+            ModSlider("seed", &n->seed, 0.0f, 100.0f, "%.0f", kParamWidth, false, 1.0f);
             break;
          }
          case GeometryOpNode::kDecimate:
@@ -2106,7 +2400,7 @@ namespace app
       DropdownButton("points from", InstanceOnPointsNode::SourceNames(), n->pointMode,
                      [n](int i) { n->pointMode = i; });
       ModSliderInt("max points", &n->maxPoints, 1, 20000);
-      ModSlider("scale", &n->instanceScale, 0.005f, 1.0f);
+      ModSlider("scale", &n->instanceScale, 0.0005f, 1.0f, "%.4f", kParamWidth, false, 0.0f, LogPosToValue, LogValueToPos);
       ModSlider("scale random", &n->scaleRandom, 0.0f, 1.0f);
       ModSlider("rotation random", &n->rotationRandom, 0.0f, 1.0f);
       ModSlider("normal offset", &n->normalOffset, -0.5f, 0.5f);
@@ -2195,6 +2489,26 @@ namespace app
       ImGui::BeginDisabled(n->type != 5);
       ModSlider("width", &n->areaWidth, 0.05f, 10.0f);
       ModSlider("height", &n->areaHeight, 0.05f, 10.0f);
+      { static const std::vector<std::string> kShapes = { "Rectangle", "Disc" };
+        DropdownButton("shape", kShapes, n->areaShape, [n](int i) { n->areaShape = i; }); }
+      ModSlider("spread", &n->areaSpread, 1.0f, 180.0f, "%.0f\xC2\xB0");
+      ImGui::EndDisabled();
+      // Row 4.2: point and spot take an IES profile; the button names the file once one is set.
+      ImGui::BeginDisabled(!(n->type == 1 || n->type == 4));
+      {
+         const bool has = !n->iesFile.empty();
+         const std::string label = has ? AppPaths::FsPath(n->iesFile).filename().u8string() : std::string("IES profile...");
+         if (ActionButton::Draw(label.c_str(), ImVec2(has ? kPreviewSize * 0.7f : kPreviewSize, 0)))
+         {
+            const std::string path = Platform::OpenIesDialog();
+            if (!path.empty()) { PushUndoCheckpoint(); n->iesFile = path; }
+         }
+         if (has)
+         {
+            ImGui::SameLine();
+            if (ActionButton::Draw("Clear", ImVec2(kPreviewSize * 0.28f, 0))) { PushUndoCheckpoint(); n->iesFile.clear(); }
+         }
+      }
       ImGui::EndDisabled();
       ColorSwatch("colour", n->color, n);
       ModCheckbox("temperature", &n->useTemperature);
@@ -2333,17 +2647,26 @@ namespace app
       const int connected = (int)n->FlattenedGeometry().size();
       ImGui::TextDisabled("%d geometry, %s camera", connected, n->camera ? "patched" : "built-in");
       ImGui::SameLine(0.0f, 16.0f);
-      ImGui::TextDisabled("%zu triangles in %zu draw calls", n->LastTriangleCount(), n->LastDrawCalls());
+      if (n->LastGpuBytes() > 0)
+         ImGui::TextDisabled("%zu triangles in %zu draw calls, %.0f MB GPU", n->LastTriangleCount(), n->LastDrawCalls(), (double)n->LastGpuBytes() / 1048576.0);
+      else
+         ImGui::TextDisabled("%zu triangles in %zu draw calls", n->LastTriangleCount(), n->LastDrawCalls());
       {
          // The count changes every frame; pad to a fixed worst-case width so the node body doesn't resize with the digits.
          const ImVec2 textMin = ImGui::GetItemRectMin();
          const ImVec2 textSize = ImGui::GetItemRectSize();
-         const float fixedW = ImGui::CalcTextSize("00000000 triangles in 000 draw calls").x;
+         const float fixedW = ImGui::CalcTextSize(n->LastGpuBytes() > 0 ? "00000000 triangles in 000 draw calls, 0000 MB GPU" : "00000000 triangles in 000 draw calls").x;
          if (textSize.x < fixedW)
          {
             ImGui::SetCursorScreenPos(ImVec2(textMin.x + textSize.x, textMin.y));
             ImGui::Dummy(ImVec2(fixedW - textSize.x, textSize.y));
          }
+      }
+      if (!n->EngineError().empty())
+      {
+         PushTextWrapWidth(kPreviewSize);
+         ImGui::TextColored(tok::V4(tok::palf::v_1000_600_200_1000), "%s", n->EngineError().c_str());
+         PopTextWrapWidth();
       }
 
       gParamWidthLive = kParamWidthBase;   // two-column body keeps its column width; only single-column bodies stretch to the header (R3)
@@ -2404,6 +2727,12 @@ namespace app
       ImGui::EndDisabled();
       DropdownButton("pass", Render3DNode::RenderPassNames(), n->renderPass,
                      [n](int i) { n->renderPass = i; }, colW);
+      // Row 7.3: depth, normal, albedo, mask and id as extra outputs beside the image.
+      ImGui::BeginDisabled(n->renderPass != 0 || n->PanoActive());
+      ModCheckbox("passes", &n->passes);
+      ImGui::EndDisabled();
+      if (n->passes && n->renderPass == 0)
+         ModSliderInt("mask index", &n->passMask, 0, 255);
       if (n->renderPass >= 1 && n->renderPass <= 9)
          ModSlider("pass alpha threshold", &n->passThreshold, 0.0f, 1.0f, "%.2f", colW);
       if (n->renderPass == 5)
@@ -2604,21 +2933,33 @@ namespace app
       ModSlider("curvature valley", &n->curvatureValley, 0.0f, 2.0f, "%.2f", colW);
       ImGui::EndDisabled();
       hideEnd();
+      ModSlider("fog", &n->fogDensity, 0.0f, 4.0f, "%.3f", colW);
+      if (n->fogDensity > 0.0f)
+      {
+         ColorSwatch("fog colour", n->fogColor, n);
+         ModSlider("fog anisotropy", &n->fogAnisotropy, -0.95f, 0.95f, "%.2f", colW);
+         ModSlider("fog falloff", &n->fogFalloff, 0.0f, 1.0f, "%.2f", colW);
+         ImGui::SetNextItemWidth(colW); ImGui::DragFloat3("fog min", n->fogMin, 0.05f, -1000.0f, 1000.0f, "%.2f");
+         ImGui::SetNextItemWidth(colW); ImGui::DragFloat3("fog max", n->fogMax, 0.05f, -1000.0f, 1000.0f, "%.2f");
+      }
       ImGui::BeginDisabled(n->PanoActive()); // a panorama has no focal plane
-      ModSlider("depth of field", &n->dofAperture, 0.0f, 4.0f, "%.3f", colW);
+      ModSlider("depth of field", &n->dofAperture, 0.0f, 16.0f, "%.3f", colW);   // 16: a 100 mm macro at f/2.8
       ImGui::EndDisabled();
-      hideBegin(5, 0, {});   // focus distance, aperture x3, offline supersample
+      hideBegin(8, 0, {});   // focus distance, aperture x3, cat eye, distortion, CA, offline supersample
       ImGui::BeginDisabled(n->dofAperture <= 0.0f || n->PanoActive());
       ModSlider("focus distance", &n->focusDistance, 0.3f, 30.0f, "%.3f", colW);
       ModSliderInt("aperture blades", &n->dofBlades, 0, 16, colW);
       ModSlider("aperture rotation", &n->dofRotation, -180.0f, 180.0f, "%.0f\xC2\xB0", colW);
       ModSlider("aperture ratio", &n->dofRatio, 0.01f, 2.0f, "%.2f", colW);
+      ModSlider("cat eye", &n->dofCatEye, 0.0f, 1.0f, "%.2f", colW);
       ImGui::EndDisabled();
+      ModSlider("lens distortion", &n->lensDistortion, -0.5f, 0.5f, "%.3f", colW);
+      ModSlider("chromatic aberration", &n->lensCA, 0.0f, 0.05f, "%.4f", colW);
       ImGui::BeginDisabled(pt);   // path trace takes its samples from the path trace section
       ModSliderInt("offline supersample", &n->supersample, 1, 64, colW);
       ImGui::EndDisabled();
       hideEnd();
-      ImGui::BeginDisabled(!n->HdrActive() || pt);
+      ImGui::BeginDisabled(!n->LiveActive() && (!n->HdrActive() || pt)); // the live engine blooms its own picture (row 6.3)
       ModSlider("bloom", &n->bloom, 0.0f, 1.0f, "%.3f", colW);
       hideBegin(2, 0, {});
       ImGui::BeginDisabled(n->bloom <= 0.0f);

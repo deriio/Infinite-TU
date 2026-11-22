@@ -1,6 +1,9 @@
 #pragma once
 
 #include <memory>
+#include "core/SpawnSeed.h"
+#include <cstdio>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -39,7 +42,7 @@ public:
    static INode* Create();
    // S&H seeds come from their own counter, so spawning an LFO never moves
    // the seed the next Random gets (patches without a saved seed rely on it).
-   static float NextSeed() { static int sSpawnCounter = 0; return (float)(++sSpawnCounter) * 5.1f + 0.37f; }
+   static float NextSeed() { return (float)SpawnSeed::Next(SpawnSeed::LFO) * 5.1f + 0.37f; }
    static const std::vector<std::string>& ShapeNames();
    static const std::vector<std::string>& RateModeNames();
    static const std::vector<std::string>& PhaseModeNames();
@@ -140,7 +143,7 @@ class RandomNode : public INode, public IModulator, public VoiceMod::IVoiceModSo
 public:
    // Each spawned Random starts on a different seed. Two of them dropped on the
    // canvas should not march in lockstep, which is what a shared default does.
-   static float NextSeed() { static int sSpawnCounter = 0; return (float)(++sSpawnCounter) * 7.3f; }
+   static float NextSeed() { return (float)SpawnSeed::Next(SpawnSeed::Random) * 7.3f; }
 
    static INode* Create()
    {
@@ -805,6 +808,8 @@ public:
    uint64_t motionGroup = 0;
    int motionChannel = -1;
    int editorOrder = 0;
+   std::string pageName;       // the Curve Editor page name, empty = the node title
+   unsigned int pageColor = 0; // 0xRRGGBB, 0 = none
    bool RefreshExpression() const;
    const std::string& ExpressionError() const { return mExpressionError; }
    void BakeExpression(float tolerance = 0.001f);
@@ -875,6 +880,16 @@ public:
       v.Float("speed", speed); v.Int("play", play); v.Bool("freeRun", freeRun);
       v.Int("source", source); v.Text("expression", expression);
       v.Int("motionChannel", motionChannel); v.Int("editorOrder", editorOrder);
+      {
+         v.Text("pagename", pageName);
+         if (pageName.size() > 48)
+            pageName.resize(48);
+         char hex[16];
+         snprintf(hex, sizeof(hex), "%06X", pageColor & 0xFFFFFFu);
+         std::string col = pageColor ? hex : "";
+         v.Text("pagecolor", col);
+         pageColor = col.empty() ? 0u : (unsigned int)(strtoul(col.c_str(), nullptr, 16) & 0xFFFFFFu);
+      }
       std::string group = std::to_string(motionGroup);
       v.Text("motionGroup", group);
       try { motionGroup = std::stoull(group); } catch (...) { motionGroup = 0; }
@@ -997,4 +1012,116 @@ public:
 private:
    std::unique_ptr<AudioAudioToCVNode> mAudioNode;
    int mLastCookFrame = -1;
+};
+
+// Hysteretic logic automaton for noisy biological & continuous CV signals:
+// Schmitt-trigger hysteresis, dwell-time hold filtering, refractory cooldown,
+// monostable Rising Edge pulses, Toggle (T-FF), SR Latch, 2-input Boolean gates,
+// electrode Presence safety interlock, and Transport beat-grid quantization.
+class LogicGateNode : public INode, public IModulator
+{
+public:
+   enum Op
+   {
+      kOpSchmittGate = 0,
+      kOpRisingEdge,
+      kOpToggle,
+      kOpSRLatch,
+      kOpAnd,
+      kOpOr,
+      kOpXor,
+      kOpNand,
+      kOpNor,
+      kOpNot
+   };
+
+   enum QuantizeDiv
+   {
+      kQuantImmediate = 0,
+      kQuantSixteenth,
+      kQuantEighth,
+      kQuantQuarter,
+      kQuantHalf,
+      kQuantBar
+   };
+
+   static INode* Create() { return new LogicGateNode(); }
+   static const std::vector<std::string>& OpNames();
+   static const std::vector<std::string>& QuantizeNames();
+
+   unsigned int GetOutputTexture() override { return 0; }
+   int GetOutputWidth() const override { return 0; }
+   int GetOutputHeight() const override { return 0; }
+   void CookIfNeeded(int) override {}
+   const char* InputLabel(int slot) const override;
+
+   float Value01() override;
+
+   INode* BypassSource() override { return dynamic_cast<INode*>(inputA); }
+   IModulator* inputA = nullptr;
+   IModulator* inputB = nullptr;
+   IModulator* presenceIn = nullptr;
+   IModulator** ModulatorInputSlot(int slot) override
+   {
+      if (slot == 0) return &inputA;
+      if (slot == 1) return &inputB;
+      if (slot == 2) return &presenceIn;
+      return nullptr;
+   }
+   int ModulatorInputCount() const override { return 3; }
+
+   // Telemetry for DrawLogicGateBody
+   float LastInputA() const { return mLastInA; }
+   float LastInputB() const { return mLastInB; }
+   float LastOutput() const { return mOutVal; }
+   float HoldProgress01() const;
+
+   int op = kOpSchmittGate;
+   int quantize = kQuantImmediate;
+   float constantA = 0.5f;
+   float constantB = 0.5f;
+   float highThresh = 0.65f;
+   float lowThresh = 0.45f;
+   float holdMs = 40.0f;
+   float pulseMs = 45.0f;
+   float refractoryMs = 150.0f;
+   float minPresence = 0.40f;
+
+   void VisitParams(ParamVisitor& v) override
+   {
+      v.Int("op", op);
+      v.Int("quantize", quantize);
+      v.Float("constantA", constantA);
+      v.Float("constantB", constantB);
+      v.Float("highThresh", highThresh);
+      v.Float("lowThresh", lowThresh);
+      v.Float("holdMs", holdMs);
+      v.Float("pulseMs", pulseMs);
+      v.Float("refractoryMs", refractoryMs);
+      v.Float("minPresence", minPresence);
+   }
+
+private:
+   bool StepSchmitt(float val, bool& state, double& dwellSec, double dt, float hi, float lo, double reqHoldSec);
+   double QuantizePeriodBeats() const;
+
+   bool mInit = false;
+   double mLastSec = -1.0;
+   double mLastBeats = -1.0;
+
+   bool mSchmittA = false;
+   bool mSchmittB = false;
+   double mDwellA = 0.0;
+   double mDwellB = 0.0;
+
+   bool mPrevGateA = false;
+   bool mToggleState = false;
+   bool mLatchState = false;
+   bool mArmedEdge = false;
+   double mPulseRemainSec = 0.0;
+   double mRefracRemainSec = 0.0;
+
+   float mLastInA = 0.5f;
+   float mLastInB = 0.5f;
+   float mOutVal = 0.0f;
 };

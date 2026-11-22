@@ -6,7 +6,7 @@ Sources, all in the repository:
   engine   tools/website/data/node_types.json   the engine's own `Infinite --describe` (category, inputs, outputs, controls with ranges).
                                                 Refresh with: python3 tools/website/gen_nodes.py --refresh
   words    tools/manual/cards_base.json, cards.py, cards_v06.py   the Node Field Guide's text: description, try-it, chain.
-           tools/website/data/pdf_cards.json    cards only the PDF has (audio effects, 3D basics), read from assets/The_Node_Field_Guide.pdf.
+           tools/website/data/pdf_cards.json    cards only the PDF has (audio effects, 3D basics), read from assets/Infinite_Node_Reference_Manual.pdf.
   picture  docs/node_screenshots/*.png          zoomed captures of the node in the running app, shrunk to webp.
   list     website/nodes.js                      NODE_LIBRARY, the names in the marquee.
 Each patch is built from the node's own inputs and outputs (a source for every input, a sink for the output) and must pass the engine's
@@ -25,13 +25,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 e = html.escape
 
 CAT_LABEL = {"AudioEffects": "Audio effects", "3D": "3D", "Source": "Source", "Compositing": "Compositing", "Effects": "Effects", "Modulators": "Modulators",
-             "Prediction": "Prediction", "Macros": "Macros", "Utility": "Utility", "Notes": "Notes", "Synths": "Synths"}
+             "Prediction": "Prediction", "Macros": "Macros", "Utility": "Utility", "Notes": "Notes", "Synths": "Synths", "Shader": "Shader"}
 CAT_COLOR = {"Source": "#4ADE80", "3D": "#38BDF8", "Compositing": "#818CF8", "Effects": "#FACC15", "Modulators": "#A3E635", "Prediction": "#22D388",
-             "Macros": "#FC963C", "Utility": "#A3A9BA", "Notes": "#4CD964", "Synths": "#6992F6", "AudioEffects": "#53C7E3"}
+             "Macros": "#FC963C", "Utility": "#A3A9BA", "Notes": "#4CD964", "Synths": "#6992F6", "AudioEffects": "#53C7E3", "Shader": "#F472B6"}
 CAT_BLURB = {
     "Source": "a source node: it makes a picture from nothing, so it sits at the start of a visual chain",
     "3D": "a 3D node: it builds, changes or lights geometry that Render 3D turns into a picture",
     "Compositing": "a compositing node: it layers, masks and routes pictures",
+    "Shader": "a shader node: it works out how a surface looks, from light, normals and textures",
     "Effects": "an image effect: it changes the picture that flows through it",
     "Modulators": "a modulator: it makes a moving value that can drive any control on the canvas",
     "Prediction": "a prediction node: it guesses where a value or a phrase goes next and drifts around that guess",
@@ -107,7 +108,7 @@ def guide_cards():
 
 def refresh_pdf_cards():
     """Cards only the PDF has: a node name on its own line with its description under it (the audio effects and 3D basics chapters)."""
-    txt = subprocess.run(["pdftotext", "-layout", os.path.join(W, "assets/The_Node_Field_Guide.pdf"), "-"], capture_output=True, text=True, check=True).stdout.split("\n")
+    txt = subprocess.run(["pdftotext", "-layout", os.path.join(W, "assets/Infinite_Node_Reference_Manual.pdf"), "-"], capture_output=True, text=True, check=True).stdout.split("\n")
     want = {NORM(n) for n, _ in library()}
     have = set(guide_cards())
     found, chapter = {}, ""
@@ -281,14 +282,37 @@ def title_for(name):
     return name + " node"
 
 
+def fit_desc(s, lo=70, hi=160):
+    """Fit text to a meta description: at most `hi` characters as the HTML attribute is written (escaped), never a
+    mid-word cut. Prefers the longest run of whole sentences; otherwise cuts at a word and ends with a full stop."""
+    s = " ".join(s.split())
+    n = lambda x: len(html.escape(x, quote=True))
+    if n(s) <= hi:
+        return s
+    best = ""
+    for m in re.finditer(r"[.!?](?=\s|$)", s):
+        cand = s[:m.end()]
+        if n(cand) <= hi:
+            best = cand
+    if len(best) >= lo:
+        return best
+    out = ""
+    for w in s.split(" "):
+        cand = (out + " " + w).strip()
+        if n(cand.rstrip(",;:") + ".") > hi:
+            break
+        out = cand
+    return out.rstrip(",;:") + "."
+
+
 def meta_for(name, cat, desc, ncontrols):
     tail = " A free %s node in Infinite, with its controls and an example patch." % CAT_LABEL.get(cat, cat).lower()
     s = first_sentence(desc)
     for c in (s + tail, s + " A free Infinite node with its controls and an example patch.", s + " A free Infinite node with a patch.", s):
-        if 70 <= len(c) <= 160:
+        if 70 <= len(c) and len(html.escape(c, quote=True)) <= 160:
             return c
-    c = (s + " " + tail)[:157].rsplit(" ", 1)[0].rstrip(",;:") + "..."
-    return c if len(c) >= 70 else ("%s is %s in Infinite. Read what it does and download a free example patch." % (name, CAT_BLURB.get(cat, "a node")))[:160]
+    c = fit_desc(s + " " + tail)
+    return c if len(c) >= 70 else fit_desc("%s is %s in Infinite. Read what it does and download a free example patch." % (name, CAT_BLURB.get(cat, "a node")))
 
 
 def fallback_desc(name, t, ctr):
@@ -307,22 +331,27 @@ def fallback_desc(name, t, ctr):
 
 
 def pdf_pages():
-    """{normalised node name: page} for The_Node_Field_Guide.pdf, found by the description text."""
+    """{normalised node name: page} for Infinite_Node_Reference_Manual.pdf, found by the description text."""
     pages = {}
     try:
-        txt = subprocess.run(["pdftotext", "-layout", os.path.join(W, "assets/The_Node_Field_Guide.pdf"), "-"], capture_output=True, text=True, check=True).stdout.split("\f")
+        txt = subprocess.run(["pdftotext", "-layout", os.path.join(W, "assets/Infinite_Node_Reference_Manual.pdf"), "-"], capture_output=True, text=True, check=True).stdout.split("\f")
     except Exception:
         return pages
     return [re.sub(r"\s+", " ", t) for t in txt]
 
 
 def build():
+    # Safety: without a binary every validate() fails and the patch loop below deletes every .inf. Refuse first.
+    if not os.path.exists(BIN):
+        sys.exit("gen_nodes: no binary at %s; refusing to run (it would delete the patches). Pass a built app." % BIN)
     refresh = "--refresh" in sys.argv
     if refresh or not os.path.exists(os.path.join(DATA, "pdf_cards.json")):
         refresh_pdf_cards()
     types, cards = engine(refresh), guide_cards()
     pages_txt = pdf_pages()
-    lib = library() + [(n, types[NORM(n)]["category"]) for n in EXTRA if NORM(n) in types]
+    lib = library()
+    listed = {NORM(n) for n, _ in lib}
+    lib += [(n, types[NORM(n)]["category"]) for n in EXTRA if NORM(n) in types and NORM(n) not in listed]
     items = []
     for name, cat in lib:
         t = types[NORM(name)]
@@ -345,15 +374,18 @@ def build():
     shots_ok = shots(items)
     bad = []
     for it in items:
-        txt = build_patch(it["t"], it["name"])
-        ok, why = validate(txt) if txt else (False, "no patch")
-        it["patch"] = txt if ok else None
-        if ok:
-            open(os.path.join(W, "assets/nodes/patches", it["slug"] + ".inf"), "w", encoding="utf-8").write(txt)
+        p = os.path.join(W, "assets/nodes/patches", it["slug"] + ".inf")
+        if not os.path.exists(BIN) and os.path.exists(p):
+            it["patch"] = open(p, encoding="utf-8").read()
         else:
-            bad.append((it["name"], why))
-            p = os.path.join(W, "assets/nodes/patches", it["slug"] + ".inf")
-            if os.path.exists(p): os.remove(p)
+            txt = build_patch(it["t"], it["name"])
+            ok, why = validate(txt) if txt else (False, "no patch")
+            it["patch"] = txt if ok else None
+            if ok:
+                open(p, "w", encoding="utf-8").write(txt)
+            else:
+                bad.append((it["name"], why))
+                if os.path.exists(p): os.remove(p)
         it["page"] = None
         if pages_txt and it["card"]:
             key = re.sub(r"\s+", " ", it["card"][1])[:50]
@@ -367,6 +399,22 @@ def build():
     open(os.path.join(W, "nodes", "index.html"), "w", encoding="utf-8").write(index_page(items))
     json.dump({"nodes": {it["name"]: {"s": it["slug"], "d": first_sentence(it["desc"]) if len(it["desc"]) > 220 else it["desc"], "p": bool(it["patch"])} for it in items}},
               open(os.path.join(W, "assets/nodes/index.json"), "w"), ensure_ascii=False, separators=(",", ":"))
+    # Orphans: files left by a node that was removed from the list (their pages, patches and pictures would otherwise stay).
+    slugs = {it["slug"] for it in items}
+    shots_kept = {it["shot"][0] for it in items if it.get("shot")}
+    for d, keep in ((os.path.join(W, "nodes"), lambda f: f == "index.html" or f[:-5] in slugs and f.endswith(".html")),
+                    (os.path.join(W, "assets/nodes/patches"), lambda f: f[:-4] in slugs and f.endswith(".inf")),
+                    (os.path.join(W, "assets/nodes/hd"), lambda f: f in shots_kept),
+                    (os.path.join(W, "assets/nodes/ring"), lambda f: f in shots_kept)):
+        for f in os.listdir(d):
+            if not keep(f):
+                os.remove(os.path.join(d, f)); print("  removed orphan", os.path.relpath(os.path.join(d, f), W))
+    # The homepage count is the number of node pages, so it cannot drift from the list.
+    ip = os.path.join(W, "index.html")
+    h = open(ip, encoding="utf-8").read()
+    h2 = re.sub(r'<b id="node-count">\d+</b>', '<b id="node-count">%d</b>' % len(items), h)
+    if h2 != h:
+        open(ip, "w", encoding="utf-8").write(h2)
     print("%d node pages; %d with a Field Guide card; %d patches validated; %d without a patch" % (len(items), sum(i["guide"] for i in items), sum(bool(i["patch"]) for i in items), len(bad)))
     for n, w in bad: print("  no patch:", n, "-", w)
     return items
@@ -379,7 +427,8 @@ def shots(items):
     files = {NORM(f[:-4]): f for f in os.listdir(src) if f.endswith(".png")}
     out = os.path.join(W, "assets/nodes/hd")
     for it in items:
-        f = files.get(NORM(it["type"])) or files.get(NORM(it["name"]))
+        # Category first: Invert (Modulators) and invert (Compositing) are separate pictures; the plain name is for the rest.
+        f = files.get(NORM(f"{it['name']} ({it['cat']})")) or files.get(NORM(it["type"])) or files.get(NORM(it["name"]))
         if not f:
             it["shot"] = None; continue
         fs = re.sub(r"[^a-z0-9]+", "-", f[:-4].lower()).strip("-")
@@ -440,8 +489,8 @@ def head(title, desc, url, image, ld, rel="nodes/x.html", bodyclass="blog-page b
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Caveat:wght@600;700&family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="../brand.css?v=36336012">
-  <link rel="stylesheet" href="../style.css?v=d046c735">
+  <link rel="stylesheet" href="../brand.css?v=7b069b32">
+  <link rel="stylesheet" href="../style.css?v=6aac68de">
   <link rel="stylesheet" href="../glass.css?v=c25dae44">
   <link rel="stylesheet" href="../blog.css?v=823c9183">
   <link rel="stylesheet" href="../nodepage.css?v=d007f6ff">
@@ -449,6 +498,17 @@ def head(title, desc, url, image, ld, rel="nodes/x.html", bodyclass="blog-page b
 </head>
 <body class="{bodyclass}">
 """
+
+
+import build_html as _manual_html  # noqa
+_, _MANUAL_NORM = _manual_html.build_node_registry()
+
+
+def _manual_anchor(it):
+    for cand in (it["name"], it["type"], CARD_ALIAS.get(NORM(it["name"]), ""), CARD_ALIAS.get(NORM(it["type"]), "")):
+        if cand and NORM(cand) in _MANUAL_NORM:
+            return _MANUAL_NORM[NORM(cand)]
+    return "node-" + it["slug"]
 
 
 def page(it, items, bynorm):
@@ -496,8 +556,8 @@ def page(it, items, bynorm):
     actions = []
     if it["patch"]:
         actions.append('<a class="btn btn-primary" href="../assets/nodes/patches/%s.inf" download>Download the patch</a>' % it["slug"])
-    pdf = "../assets/The_Node_Field_Guide.pdf" + ("#page=%d" % it["page"] if it["page"] else "")
-    actions.append('<a class="btn btn-ghost" href="%s" target="_blank" rel="noopener">Read it in the Field Guide</a>' % pdf)
+    manual_href = "../manual/#%s" % _manual_anchor(it)
+    actions.append('<a class="btn btn-ghost" href="%s">Read in the manual</a>' % manual_href)
     ins = "".join('<li><span class="np-kind" data-kind="%s">%s</span> %s</li>' % (e(w), e(w), e(lab)) for w, lab in kind_words(t["inputs"])) or "<li>None. It starts a chain.</li>"
     outs = "".join('<li><span class="np-kind" data-kind="%s">%s</span> %s</li>' % (e(w), e(w), e(lab)) for w, lab in kind_words(t["outputs"])) or "<li>None. It ends a chain.</li>"
     rows = "".join("<tr><th scope=\"row\">%s</th><td>%s</td><td>%s</td></tr>" % (e(a), e(b), e(c)) for a, b, c in it["ctr"])
@@ -578,7 +638,7 @@ def index_page(items):
     url = BASE + "nodes/"
     title = "Every Infinite node: %d nodes with controls and patches" % len(items)
     desc = "All %d nodes in Infinite, the free audiovisual workstation: sources, 3D, effects, synths, notes and modulators, each with its controls and a patch." % len(items)
-    order = ["Source", "Compositing", "Effects", "3D", "Synths", "AudioEffects", "Notes", "Modulators", "Prediction", "Macros", "Utility"]
+    order = ["Source", "Compositing", "Shader", "Effects", "3D", "Synths", "AudioEffects", "Notes", "Modulators", "Prediction", "Macros", "Utility"]
     ld = {"@context": "https://schema.org", "@type": "CollectionPage", "name": "Infinite nodes", "url": url, "description": desc, "isPartOf": {"@type": "WebSite", "url": BASE},
           "mainEntity": {"@type": "ItemList", "numberOfItems": len(items), "itemListElement": [
               {"@type": "ListItem", "position": n + 1, "url": BASE + "nodes/" + i["slug"] + ".html", "name": i["name"]} for n, i in enumerate(items)]}}

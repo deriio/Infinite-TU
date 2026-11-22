@@ -10,15 +10,18 @@
 // the patch (`studio` lines) and has its own undo while the pointer is over the waveform.
 // The engine is a private Generate Samples node (never in the graph, never cooked): a take made here and one made
 // on the node are the same sound for the same recipe. Snap to scale re-renders the take's own seed pinned.
+#include "app/frame/CanvasLink.h"
 #include "app/AppShared.h"
 #include "app/graph/GenerateSamplesNode.h"
 #include "app/graph/LearningLog.h"
 #include "app/graph/NodeClipboard.h"
 #include "app/graph/SampleStyles.h"
+#include "app/ui/design/UiDensity.h"
 #include "app/ui/design/GlyphDraw.h"
 #include "app/ui/design/TokenColors.h"
 #include "app/ui/design/components/TimeRuler.h"
 #include "app/ui/design/components/ToolCursor.h"
+#include "app/ui/design/components/PanelKit.h"
 #include "app/ui/design/components/ActionButton.h"
 #include "app/ui/design/components/ChipButton.h"
 #include "app/ui/design/components/DialogParts.h"
@@ -68,7 +71,7 @@ namespace app
 namespace
 {
    constexpr float kMinHeight = 180.0f;
-   constexpr float kSettingsW = 264.0f;
+   constexpr float kSettingsW = UiDensity::kInspectorW + 2.0f * tok::space_3;   // one compact strip
    constexpr double kRate = GenerateSamplesNode::kLoopRate;
    constexpr int kPaletteSize = 12;
    constexpr size_t kUndoDepth = 64;
@@ -179,6 +182,7 @@ namespace
       double playTempo = 0.0, playTransport = 0.0;    // the tempos the last render was made for
       double renderAt = -1.0;                         // when the last render started (ImGui time)
       std::optional<Clip> clip;
+      int auditions = 0; // slices sent to the preview voice (MENUALIVETEST reads it)
       std::shared_ptr<OnsetJob> onsetJob;
       int onsetMax = 16;
       // An auto-slice that would replace hand-placed slices waits here for the confirm dialog.
@@ -186,7 +190,7 @@ namespace
       bool replaceConfirmed = false, openReplaceConfirm = false;
       // Interaction.
       int tool = 0;      // 0 select, 1 scissors (a click splits)
-      int dragKind = -1; // 0 a slice start, 1 the end marker, 2 a fade in, 3 a fade out, 4 slices moved
+      int dragKind = -1; // 0 a slice start, 1 the end marker, 2 a fade in, 3 a fade out, 4 slices moved, 5 a slice stretched by its border (Shift)
       int dragIndex = -1;
       int dragLast = -1;      // dragKind 4: the last slice of the block moved (dragIndex the first)
       float dragX = 0.0f;     // where the press was
@@ -523,7 +527,7 @@ namespace
          s.job->cancel.store(true);
          return;
       }
-      if (s.dragKind >= 0 && s.dragKind != 2 && s.dragKind != 3)
+      if (s.dragKind >= 0 && s.dragKind != 2 && s.dragKind != 3 && s.dragKind != 5)
          return; // a marker or slices in motion: render once they land
       // While a control is held, at most one render every 120 ms: each one crossfades in, so the sound follows the
       // drag without piling renders up.
@@ -1088,7 +1092,7 @@ namespace
          RenderSlice(*s.src, s.doc, i, false, l, r, body);
          if (l.empty())
             continue;
-         char num[8];
+         char num[16];
          snprintf(num, sizeof(num), "%02d", i + 1);
          const std::string name = base + "-" + num + (s.doc.slices[(size_t)i].name.empty() ? "" : "-" + FileSafe(s.doc.slices[(size_t)i].name));
          const std::string path = folder.empty() ? AudioRecordings::GenerateFilePath(name, "wav") : folder + "/" + name + ".wav";
@@ -1192,9 +1196,8 @@ namespace
       const std::string wav = generator ? std::string() : WriteEdit(std::string(), "wav", AudioFileWriter::Format::Wav, 24, &res);
       if (!generator && wav.empty())
          return nullptr;
-      const ImVec2 at = FindFreeSpawnPosition(gViewCenterCanvas);
       PushUndoCheckpoint("Add sample from studio");
-      GraphNode* gn = SpawnNode(type, "Synths", at.x, at.y);
+      GraphNode* gn = CanvasLink::Add(type, "Synths");
       if (gn == nullptr)
          return nullptr;
       INode* node = gn->node.get();
@@ -1273,10 +1276,19 @@ namespace
    }
 
    // Play: the edit on the transport, with audio handed to the studio the way Timeline audio takes it from the canvas.
+   // Nothing of the Studio is heard: the loop's gain is 0 and a slice preview in flight is cut.
+   void SilenceStudio()
+   {
+      AudioEngine::Instance().StudioLoop().SetGain(0.0f);
+      AudioEngine::Instance().Preview().Stop();
+   }
+
    void SetStudioAudio(bool on)
    {
       if (on == (gAudioMode == AudioMode::Studio))
          return;
+      if (!on)
+         SilenceStudio();
       gAudioMode = on ? AudioMode::Studio : AudioMode::Canvas;
       if (on && AudioEngine::Instance().SampleRate() <= 0.0)
       {
@@ -1306,6 +1318,15 @@ namespace
          LaunchRequestTogglePlay();
    }
 
+   // Moves the playhead. Silent: a stopped edit stays stopped; a playing one carries on from the new place.
+   void PlaceHead(double frame)
+   {
+      Studio& s = S();
+      s.headFrame = frame;
+      if (Transport::Instance().IsPlaying() && gAudioMode == AudioMode::Studio)
+         PlayFrom(frame);
+   }
+
    void TogglePlay()
    {
       if (S().recording)
@@ -1332,10 +1353,12 @@ namespace
       Studio& s = S();
       if (!s.src || i < 0 || i >= s.doc.Count())
          return;
-      if (AudioEngine::Instance().SampleRate() <= 0.0)
+      // The preview voice sits outside the canvas topology, so it sounds whatever the mode: only with the Studio's
+      // own audio on is it allowed to.
+      if (gAudioMode != AudioMode::Studio || AudioEngine::Instance().SampleRate() <= 0.0)
       {
-         gAudioStartError.clear();
-         StartAudioEngine(gAudioStartError);
+         s.status = T("Turn on Sample Audio to hear a slice");
+         return;
       }
       std::vector<float> l, r;
       int64_t body = 0;
@@ -1350,6 +1373,7 @@ namespace
       std::copy(l.begin(), l.end(), buf->channelData.begin());
       std::copy(r.begin(), r.end(), buf->channelData.begin() + (std::ptrdiff_t)l.size());
       AudioEngine::Instance().Preview().Play(buf);
+      s.auditions++;
    }
 
    // ---- slice edits from keys and menus ----
@@ -1413,7 +1437,11 @@ namespace
             src.push_back((double)s.doc.slices[(size_t)i].start);
             warped.push_back(at);
             const auto it = ratio.find(s.doc.slices[(size_t)i].id);
-            at += (double)(s.doc.EndOf(i) - s.doc.slices[(size_t)i].start) * (it != ratio.end() ? std::clamp(it->second, 0.01, 100.0) : 1.0);
+            double rt = it != ratio.end() ? std::clamp(it->second, 0.01, 100.0) : 1.0;
+            const SliceParams& sp = s.doc.slices[(size_t)i].p;
+            if (sp.stretchMode >= 1 && !sp.fitToGrid) // the stretch modes ripple: the border follows the edit at once, not a render later
+               rt = std::clamp((double)sp.lengthRatio, 0.25, 4.0);
+            at += (double)(s.doc.EndOf(i) - s.doc.slices[(size_t)i].start) * rt;
          }
          src.push_back((double)s.doc.endFrame);
          warped.push_back(at);
@@ -1464,10 +1492,8 @@ namespace
          s.scrubFrame = std::clamp((double)GridFrame(axis.Beat(ImGui::GetIO().MousePos.x) * fpb, false), 0.0, (double)Frames());
       else if (s.scrubFrame >= 0.0)
       {
-         s.headFrame = s.scrubFrame;
+         PlaceHead(s.scrubFrame);
          s.scrubFrame = -1.0;
-         if (Transport::Instance().IsPlaying() && gAudioMode == AudioMode::Studio)
-            PlayFrom(s.headFrame);
       }
       TimeRuler::Background(dl, axis, mn.y);
       if (s.ruler == 0)
@@ -1510,8 +1536,8 @@ namespace
          dl->AddLine(ImVec2(mn.x + x + 0.5f, mid - hi * amp), ImVec2(mn.x + x + 0.5f, mid - lo * amp + 1.0f), col);
       }
       const float va = mn.x + (float)(s.viewStart / total) * w, vb = mn.x + (float)((s.viewStart + s.viewLen) / total) * w;
-      dl->AddRectFilled(ImVec2(va, mn.y), ImVec2(std::max(va + 2.0f, vb), mx.y), AccentU32(0.18f), 2.0f);
-      dl->AddRect(ImVec2(va, mn.y), ImVec2(std::max(va + 2.0f, vb), mx.y), AccentU32(0.7f), 2.0f);
+      dl->AddRectFilled(ImVec2(va, mn.y), ImVec2(std::max(va + 2.0f, vb), mx.y), AccentU32(0.18f), tok::radius_cell);
+      dl->AddRect(ImVec2(va, mn.y), ImVec2(std::max(va + 2.0f, vb), mx.y), AccentU32(0.7f), tok::radius_cell);
    }
 
    // The marker under x: kind 0 a slice start (its index), kind 1 the end marker. -1 when none is within reach.
@@ -1688,13 +1714,32 @@ namespace
       s.dirty = true;
    }
 
+   // The playhead as a source frame: where the edit is playing, else where it was placed; -1 when it is at the start.
+   double HeadSourceFrame()
+   {
+      const Studio& s = S();
+      const float u = AudioEngine::Instance().StudioLoop().Phase();
+      if (u >= 0.0f && s.heard && s.heard->laidFrames > 0 && Transport::Instance().IsPlaying() && gAudioMode == AudioMode::Studio)
+      {
+         double k = u;
+         if (s.heard->bounced)
+            k = k < 0.5 ? k * 2.0 : 2.0 - k * 2.0;
+         if (s.doc.wide.reverse)
+            k = 1.0 - k;
+         WaveGeom g;
+         g.Build();
+         return g.Unwarp((double)s.doc.StartFrame() + k * (double)s.heard->laidFrames);
+      }
+      return s.headFrame;
+   }
+
    // The selection from its first slice to its last, audio and settings.
-   void CopySelected()
+   std::optional<Clip> ClipOfSelection()
    {
       Studio& s = S();
       const std::vector<int> idx = SelectedIndices();
       if (!s.src || idx.empty())
-         return;
+         return std::nullopt;
       const int64_t lo = s.doc.slices[(size_t)idx.front()].start, hi = s.doc.EndOf(idx.back());
       Clip c;
       c.l.assign(s.src->l.begin() + lo, s.src->l.begin() + hi);
@@ -1705,39 +1750,64 @@ namespace
          sl.start -= lo;
          c.slices.push_back(sl);
       }
-      s.clip = std::move(c);
+      return c;
    }
 
-   // The copied slices go in right after the selection (or at the end), as audio of their own.
-   void Paste()
+   void CopySelected()
+   {
+      if (auto c = ClipOfSelection())
+         S().clip = std::move(c);
+   }
+
+   // Puts a clip's audio and slices in at source frame `at`. A frame inside a slice cuts it there first (the tail
+   // keeps its settings); a frame within a hair of a cut lands on the cut. The copies become the selection.
+   void InsertClip(const Clip& c, int64_t at)
    {
       Studio& s = S();
-      if (!s.src || !s.clip || s.clip->l.empty() || s.doc.Empty())
-         return;
-      const Clip& c = *s.clip;
-      if (s.doc.Count() + (int)c.slices.size() > SliceSet::kMaxSlices)
+      const int64_t len = (int64_t)c.l.size();
+      at = std::clamp(at, s.doc.StartFrame(), s.doc.endFrame);
+      const int k = s.doc.IndexAt(at);
+      const int64_t k0 = s.doc.slices[(size_t)k].start, k1 = s.doc.EndOf(k);
+      bool cut = at > k0 && at < k1;
+      if (cut && (at - k0 < 64 || k1 - at < 64 || s.doc.Count() + 1 + (int)c.slices.size() > SliceSet::kMaxSlices))
+      {
+         at = at - k0 <= k1 - at ? k0 : k1; // too close to a cut (or no room to split): the nearer cut
+         cut = false;
+      }
+      if (s.doc.Count() + (int)c.slices.size() + (cut ? 1 : 0) > SliceSet::kMaxSlices)
       {
          s.status = T("A sample holds at most 64 slices");
          return;
       }
-      const std::vector<int> idx = SelectedIndices();
-      const int last = idx.empty() ? s.doc.Count() - 1 : idx.back();
-      const int64_t at = s.doc.EndOf(last), len = (int64_t)c.l.size();
       PushUndo();
       auto a = std::make_shared<SourceAudio>(*s.src);
       a->l.insert(a->l.begin() + at, c.l.begin(), c.l.end());
       a->r.insert(a->r.begin() + at, c.r.begin(), c.r.end());
+      if (cut)
+      {
+         // Split before the audio moves: the tail is a slice of its own that sounds as the slice did.
+         const int i = s.doc.SplitAt(at, 1);
+         if (i > 0)
+         {
+            s.doc.slices[(size_t)i].p = s.doc.slices[(size_t)i - 1].p;
+            s.doc.slices[(size_t)i].p.fadeInMs = 0.0f;
+            s.doc.slices[(size_t)i - 1].p.fadeOutMs = 0.0f;
+         }
+      }
+      int pos = 0;
+      while (pos < s.doc.Count() && s.doc.slices[(size_t)pos].start < at)
+         pos++;
       for (Slice& sl : s.doc.slices)
          if (sl.start >= at)
             sl.start += len;
       s.doc.endFrame += len;
       s.sel.clear();
-      for (size_t k = 0; k < c.slices.size(); k++)
+      for (size_t k2 = 0; k2 < c.slices.size(); k2++)
       {
-         Slice sl = c.slices[k];
+         Slice sl = c.slices[k2];
          sl.id = s.doc.nextId++;
          sl.start += at;
-         s.doc.slices.insert(s.doc.slices.begin() + last + 1 + (std::ptrdiff_t)k, sl);
+         s.doc.slices.insert(s.doc.slices.begin() + pos + (std::ptrdiff_t)k2, sl);
          s.sel.push_back(sl.id);
       }
       s.primary = s.sel.front();
@@ -1745,6 +1815,25 @@ namespace
       s.doc.MarkHandEdited(true);
       ClampView();
       s.dirty = true;
+   }
+
+   // The copied slices go in at the playhead (the start of the sample while it sits at the start).
+   void Paste()
+   {
+      Studio& s = S();
+      if (!s.src || !s.clip || s.clip->l.empty() || s.doc.Empty())
+         return;
+      const double head = HeadSourceFrame();
+      InsertClip(*s.clip, head >= 0.0 ? (int64_t)std::llround(head) : s.doc.StartFrame());
+   }
+
+   // Shift+D: the selection again, right after itself. The copies become the selection, so the next press chains.
+   void DuplicateSelected()
+   {
+      Studio& s = S();
+      const std::vector<int> idx = SelectedIndices();
+      if (auto c = ClipOfSelection())
+         InsertClip(*c, s.doc.EndOf(idx.back()));
    }
 
    void HandleWaveInput(const WaveGeom& g)
@@ -1783,7 +1872,9 @@ namespace
       const int curve = fade < 0 && near < 0 && hovered && io.KeyShift ? FadeCurveAt(g, io.MousePos, cidx) : -1;
       const bool inTabs = io.MousePos.y < g.mn.y + kTabH + 2.0f;
       const bool dbl = hovered && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left);
-      if ((near >= 0 && hovered) || s.dragKind == 0 || s.dragKind == 1)
+      // Shift on a cut (not the sample's start) stretches the slice before it instead of moving the cut.
+      const bool stretchHere = near >= 0 && io.KeyShift && (near == 1 || idx > 0);
+      if ((near >= 0 && hovered) || s.dragKind == 0 || s.dragKind == 1 || s.dragKind == 5)
          ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
       else if (curve >= 0 || (s.dragKind >= 2 && s.dragKind <= 3 && (s.dragCurveOnly || io.KeyShift)))
          ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
@@ -1793,10 +1884,12 @@ namespace
          ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
       if (hovered && fade >= 0 && s.dragKind < 0)
          HelpTip("%s", T("Drag: fade length; Shift-drag up or down (or on the curve): its shape"));
+      else if (hovered && stretchHere && s.dragKind < 0)
+         HelpTip("%s", T("Shift-drag: stretch or compact the slice (pitch kept)"));
       else if (hovered && near == 0 && idx > 0 && s.dragKind < 0)
-         HelpTip("%s", T("Drag: move the cut; double-click: remove it"));
+         HelpTip("%s", T("Drag: move the cut; Shift-drag: stretch the slice; double-click: remove it"));
       else if (hovered && inTabs && near < 0 && s.dragKind < 0)
-         HelpTip("%s", T("Click: play from here; double-click: a new slice here"));
+         HelpTip("%s", T("Click: place the playhead; double-click: a new slice here"));
 
       // A press starts a drag; nothing changes (and nothing goes to undo) until the pointer moves.
       const auto beginDrag = [&](int kind, int index)
@@ -1830,6 +1923,14 @@ namespace
                s.dirty = true;
             }
          }
+         else if (near >= 0 && io.KeyShift && (near == 1 || idx > 0))
+         {
+            // Shift on a cut: the slice that ends there is stretched or compacted to the new length.
+            const int j = near == 0 ? idx - 1 : s.doc.Count() - 1;
+            beginDrag(5, j);
+            if (!IsSel(s.doc.slices[(size_t)j].id))
+               SelectOnly(j);
+         }
          else if (near >= 0)
          {
             beginDrag(near, idx);
@@ -1839,7 +1940,7 @@ namespace
          else if (dbl && inTabs)
             Split(GridFrame(mf)); // double-click above the wave: a new slice here
          else if (inTabs)
-            PlayFrom(mf); // a click above the wave: play from there
+            PlaceHead(mf); // a click above the wave: the playhead goes there (silent, like the ruler)
          else if (s.tool == 1)
             Split(GridFrame(mf)); // the scissors
          else if (s.tool == 2)
@@ -1877,9 +1978,7 @@ namespace
                   SelectOnly(i);
                else if (s.sel.size() > 1)
                   s.dragClick = i;
-               // A click plays the slice, as a pad on a sampler does (not while the edit itself is playing).
-               if (!dbl && !(Transport::Instance().IsPlaying() && gAudioMode == AudioMode::Studio))
-                  Audition(i);
+               // A click only selects: sound comes from the transport (or Q), never from the pointer.
                // The block that moves: the selection when it runs unbroken and holds this slice, else this slice.
                const std::vector<int> sel = SelectedIndices();
                int first = i, last = i;
@@ -1900,6 +1999,33 @@ namespace
          if (s.dragKind != 4 && s.dragSnap)
             PushUndo(std::move(*s.dragSnap));
          s.dragSnap.reset();
+      }
+      if (active && s.dragMoved && s.dragKind == 5 && s.dragIndex >= 0 && s.dragIndex < s.doc.Count())
+      {
+         // The cut follows the pointer in time as heard: the slice's new length over its source length is the Length.
+         // The slice's start as heard does not move with this edit, so the ratio never chases the render.
+         const int j = s.dragIndex;
+         const int64_t srcLen = s.doc.EndOf(j) - s.doc.slices[(size_t)j].start;
+         if (srcLen > 0 && (size_t)j < g.warped.size())
+         {
+            SliceParams& p = s.doc.slices[(size_t)j].p;
+            // The border lands on the grid as heard when the magnet is on (Shift is this drag's own key, so it does not flip the snap).
+            const double edge = (double)GridFrame(g.WAt(io.MousePos.x));
+            const double want = (edge - g.warped[(size_t)j]) / (double)srcLen;
+            p.lengthRatio = Mould((float)std::clamp(want, 0.25, 4.0));
+            p.fitToGrid = false;
+            if (p.stretchMode < 2)
+               p.stretchMode = 3; // tonal: the length changes, the pitch does not
+            s.dirty = true;
+            // The playhead rides the border being dragged (as a DAW's warp marker does), so the edge is where it sits.
+            s.headFrame = g.warped[(size_t)j] + (double)srcLen * (double)p.lengthRatio; // the ruler is in heard time
+         }
+      }
+      if (active && s.dragKind == 5 && s.dragIndex >= 0 && s.dragIndex < s.doc.Count())
+      {
+         char buf[24];
+         snprintf(buf, sizeof(buf), "%.2fx", s.doc.slices[(size_t)s.dragIndex].p.lengthRatio);
+         ImGui::GetForegroundDrawList()->AddText(ImVec2(io.MousePos.x + 14.0f, io.MousePos.y - 22.0f), ImGui::GetColorU32(ImGuiCol_Text), buf);
       }
       if (active && s.dragMoved && (s.dragKind == 0 || s.dragKind == 1))
       {
@@ -2010,6 +2136,10 @@ namespace
       }
       else if (cmd && ImGui::IsKeyPressed(ImGuiKey_V, false))
          Paste();
+      else if (ImGui::IsKeyPressed(ImGuiKey_D, false) && (cmd ? !io.KeyShift : io.KeyShift) && !io.KeyAlt)
+         DuplicateSelected(); // Shift+D or Cmd+D, as in the Piano Roll
+      else if (!cmd && !io.KeyShift && !io.KeyAlt && ImGui::IsKeyPressed(ImGuiKey_Space, false))
+         TogglePlay(); // Space plays and stops, as in the Piano Roll and the Timeline
       else if (cmd && ImGui::IsKeyPressed(ImGuiKey_A, false))
       {
          s.sel.clear();
@@ -2097,20 +2227,11 @@ namespace
       if (!MenuParts::BeginPopup("##studioWaveMenu"))
          return;
       const bool any = !s.sel.empty();
-      if (MenuParts::Item(T("Split here"), "Double-click top"))
-         Split(GridFrame(frame));
-      if (MenuParts::Item(T("Join"), "J", false, any && s.doc.Count() > 1))
-         JoinSelected();
-      MenuParts::Separator();
-      if (MenuParts::Item(T("Copy"), "Cmd+C", false, any))
+      if (MenuParts::Item(T("Copy"), MODKEY "+C", false, any))
          CopySelected();
-      if (MenuParts::Item(T("Paste after"), "Cmd+V", false, s.clip.has_value()))
+      if (MenuParts::Item(T("Paste at Playhead"), MODKEY "+V", false, s.clip.has_value()))
          Paste();
-      if (MenuParts::Item(T("Delete"), "Delete", false, any && (int)s.sel.size() < s.doc.Count()))
-         DeleteSelected();
       MenuParts::Separator();
-      if (MenuParts::Item(T("Play slice"), "Q", false, any))
-         Audition(s.doc.IndexOfId(s.primary));
       if (MenuParts::Item(T("Mute"), "M", false, any))
          EditSelected([](SliceParams& p) { p.mute = !p.mute; });
       if (MenuParts::Item(T("Solo"), "S", false, any))
@@ -2123,16 +2244,34 @@ namespace
             ImGui::CloseCurrentPopup();
          ImGui::EndMenu();
       }
-      if (MenuParts::Item(T("Settings"), "Double-click", false, any))
-         s.settingsOpen = true;
       MenuParts::Separator();
+      if (MenuParts::Item(T("Split here"), "Double-click top"))
+         Split(GridFrame(frame));
+      if (MenuParts::Item(T("Join"), "J", false, any && s.doc.Count() > 1))
+         JoinSelected();
+      if (MenuParts::Item(T("Play slice"), "Q", false, any))
+      {
+         SetStudioAudio(true); // asked for by name: the Studio's own audio comes on, as Space does
+         Audition(s.doc.IndexOfId(s.primary));
+      }
       if (MenuParts::Item(T("Convert to node"), nullptr, false, any))
          SelectedToSamplers();
       MenuParts::Separator();
-      if (MenuParts::Item(T("Zoom to selection"), "Z", false, any))
+      const bool showsAll = s.viewStart <= 0.0 && s.viewLen >= (double)std::max<int64_t>(1, Frames());
+      // A selection that is the whole take, already in view, has nowhere to zoom.
+      const std::vector<int> selIdx = SelectedIndices();
+      const bool selIsAll = !selIdx.empty() && s.doc.slices[(size_t)selIdx.front()].start <= 0 && s.doc.EndOf(selIdx.back()) >= Frames();
+      if (MenuParts::Item(T("Zoom to selection"), "Z", false, any && !(selIsAll && showsAll)))
          ZoomToSelection();
-      if (MenuParts::Item(T("Zoom out"), "Shift+Z"))
+      if (MenuParts::Item(T("Zoom out"), "Shift+Z", false, !showsAll))
          ViewAll();
+      MenuParts::Separator();
+      if (MenuParts::Item(T("Delete"), "Backspace", false, any && (int)s.sel.size() < s.doc.Count()))
+         DeleteSelected();
+      MenuParts::Separator();
+      // Shows or hides the settings side, as its toolbar chip does.
+      if (MenuParts::Item(T("Settings"), "Double-click", s.settingsOpen, any))
+         s.settingsOpen = !s.settingsOpen;
       MenuParts::EndPopup();
    }
 
@@ -2218,6 +2357,15 @@ namespace
       static double sMenuFrame = 0.0;
       if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
          sMenuFrame = menuFrame;
+      // MENUALIVETEST: a right-click in the middle of the view, as above.
+      if (s.doc.Count() > 0 && MenuParts::TestOpen("##studioWaveMenu"))
+      {
+         sMenuFrame = s.viewStart + s.viewLen * 0.37;
+         const int i = s.doc.IndexAt((int64_t)sMenuFrame);
+         if (!IsSel(s.doc.slices[(size_t)i].id))
+            SelectOnly(i);
+         ImGui::OpenPopup("##studioWaveMenu");
+      }
       DrawWaveContextMenu(sMenuFrame);
 
       FieldWell::Draw(dl, g.mn, g.mx, false, false);
@@ -2357,7 +2505,7 @@ namespace
          const std::string lab = SliceLabel(s.doc, i);
          const ImVec2 ts = ImGui::CalcTextSize(lab.c_str());
          const float tabW = std::min(ts.x + 8.0f, std::max(14.0f, xn - x - 1.0f));
-         dl->AddRectFilled(ImVec2(x, g.mn.y), ImVec2(x + tabW, g.mn.y + kTabH), SliceColour(s.doc, i, sel ? 0.95f : 0.6f), 2.0f);
+         dl->AddRectFilled(ImVec2(x, g.mn.y), ImVec2(x + tabW, g.mn.y + kTabH), SliceColour(s.doc, i, sel ? 0.95f : 0.6f), tok::radius_cell);
          dl->PushClipRect(ImVec2(x, g.mn.y), ImVec2(x + tabW, g.mn.y + kTabH), true);
          dl->AddText(ImVec2(x + 4.0f, g.mn.y + (kTabH - ts.y) * 0.5f), ImGui::GetColorU32(ImGuiCol_WindowBg), lab.c_str());
          dl->PopClipRect();
@@ -2484,10 +2632,9 @@ namespace
       dl->PopClipRect();
       // Over the ruler too, so it sits on the same mark in all three panels.
       const float rulerTop = mn.y + kOverviewH + 1.0f;
-      if (headX >= g.mn.x && headX <= g.mx.x)
-         TimeRuler::Playhead(dl, headX, rulerTop, g.mx.y);
+      TimeRuler::Playhead(dl, headX, rulerTop, g.mx.y, g.mn.x, g.mx.x);
       if (s.scrubFrame >= 0.0)
-         TimeRuler::Playhead(dl, g.XOfW(s.scrubFrame), rulerTop, g.mx.y, true);
+         TimeRuler::Playhead(dl, g.XOfW(s.scrubFrame), rulerTop, g.mx.y, g.mn.x, g.mx.x, true);
    }
 
    // ---- the inspector ----
@@ -2736,9 +2883,10 @@ namespace
       ImGui::BeginChild("##studiosettings_child", ImVec2(panelW, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding, 0);
       ImGui::GetStyle().WindowPadding = savedPad;
       PopDockedPanelStyle();
+      UiDensity::Compact compact;
       SectionCard::BeginWindow();
       const float availW = ImGui::GetContentRegionAvail().x;
-      const float fieldW = std::max(70.0f, availW - SectionCard::kLabelW);
+      const float fieldW = std::max(60.0f, availW - SectionCard::LabelW());
 
       PruneSelection();
       char title[64];
@@ -2771,11 +2919,12 @@ namespace
          DrawSliceInspector(fieldW);
 
       SectionCard::EndWindow();
-      ImGui::EndChild();
+      compact.End(); // before the child closes: the pushes were made inside it
+      EndChildSafe();
    }
 
    // ---- the toolbar ----
-   // One height (tok::tile) for every item, one gap inside a group (space_1) and one between groups (space_3).
+   // One height (PanelKit::Chip()) for every item, one gap inside a group (space_1) and one between groups (space_3).
 
    void PushToolbarChip(bool on, bool green = false)
    {
@@ -2783,7 +2932,7 @@ namespace
    }
    void PopToolbarChip() { ActionButton::Scoped() = ActionButton::Kind::Plain; }
 
-   constexpr float kIconW = 30.0f;
+   constexpr float kIconW = tok::control_h;
 
    float TextW(const char* label) { return ImGui::CalcTextSize(label, ImGui::FindRenderedTextEnd(label)).x + 2.0f * tok::space_3; }
 
@@ -2791,20 +2940,20 @@ namespace
    bool IconChip(const char* id, const char* glyphStr, bool on, const char* tip, bool green = false)
    {
       PushToolbarChip(on, green);
-      const bool clicked = ActionButton::Draw(id, ImVec2(kIconW, tok::tile));
+      const bool clicked = ActionButton::Draw(id, ImVec2(kIconW, PanelKit::Chip()));
       PopToolbarChip();
       if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
          HelpTip("%s", tip);
       const ImVec2 bmin = ImGui::GetItemRectMin(), bmax = ImGui::GetItemRectMax();
       const ImU32 icol = on ? tok::U32(tok::pal::c_FFFFFFFF) : ImGui::GetColorU32(ImGuiCol_Text);
       if (glyphStr != nullptr)
-         glyph::Draw(ImGui::GetWindowDrawList(), ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tok::icon_md, icol, glyphStr);
+         glyph::Draw(ImGui::GetWindowDrawList(), ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tok::icon_control, icol, glyphStr);
       return clicked;
    }
 
    bool TextChip(const char* label, ActionButton::Kind kind = ActionButton::Kind::Plain)
    {
-      return ActionButton::Draw(label, ImVec2(TextW(label), tok::tile), kind);
+      return ActionButton::Draw(label, ImVec2(TextW(label), PanelKit::Chip()), kind);
    }
 
    // A dropdown chip: the value, clipped to the chip, and the list below. The list fades and settles in
@@ -2814,7 +2963,7 @@ namespace
       static ImGuiID sOpenId = 0;
       static double sOpenedAt = -1.0;
       const ImGuiID pid = ImGui::GetID(id);
-      if (ActionButton::Draw(id, ImVec2(w, tok::tile)))
+      if (ActionButton::Draw(id, ImVec2(w, PanelKit::Chip())))
       {
          ImGui::OpenPopup(id);
          sOpenId = pid;
@@ -2924,7 +3073,7 @@ namespace
          TogglePlay();
       ImGui::EndDisabled();
       FormParts::Inline(0.0f, in);
-      if (IconChip("##studioRewind", IconsInfinite::Rewind, false, T("Return to Start (Enter)")))
+      if (IconChip("##studioRewind", IconsInfinite::Rewind, false, T("Return to Start")))
       {
          s.headFrame = -1.0;
          if (playing)
@@ -2975,7 +3124,7 @@ namespace
          // The tool dropdown, the same as the Timeline's and the Piano Roll's.
          const bool nonDefault = s.tool != 0;
          ActionButton::Scoped() = nonDefault ? ActionButton::Kind::Selected : ActionButton::Kind::Plain;
-         const bool clicked = ActionButton::Draw("##studioToolPicker", ImVec2(tok::tile, tok::tile));
+         const bool clicked = ActionButton::Draw("##studioToolPicker", ImVec2(PanelKit::Chip(), PanelKit::Chip()));
          ActionButton::Scoped() = ActionButton::Kind::Plain;
          if (ImGui::IsItemHovered())
             HelpTip("%s", T("Tool: Select (A), Cut (B), Hand (H) - click to choose a tool. Double-click above the wave cuts with any tool"));
@@ -2983,7 +3132,7 @@ namespace
          const ImU32 col = nonDefault ? tok::U32(tok::pal::c_FFFFFFFF) : ImGui::GetColorU32(ImGuiCol_Text);
          const char* tg = s.tool == 1 ? IconsInfinite::Scissors : s.tool == 2 ? IconsInfinite::Hand : IconsInfinite::Pointer;
          ImDrawList* tdl = ImGui::GetWindowDrawList();
-         glyph::Draw(tdl, ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tok::icon_md, col, tg);
+         glyph::Draw(tdl, ImVec2((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f), tok::icon_control, col, tg);
          if (clicked)
             ImGui::OpenPopup("##studioToolMenu");
          ImGui::SetNextWindowPos(ImVec2(bmin.x, bmax.y + tok::space_1));
@@ -2991,7 +3140,7 @@ namespace
          {
             if (MenuParts::Item(L("Select"), "A", s.tool == 0))
                s.tool = 0;
-            if (MenuParts::Item(L("Cut"), "B", s.tool == 1))
+            if (MenuParts::Item(L("Blade"), "B", s.tool == 1))
                s.tool = 1;
             if (MenuParts::Item(L("Hand"), "H", s.tool == 2))
                s.tool = 2;
@@ -3086,7 +3235,7 @@ namespace
          HelpTip("%s", T("Put the edit on the canvas: the patch that made it, or a node that plays it"));
       ImGui::EndDisabled();
       FormParts::Inline(0.0f, in);
-      if (ChipButton::Draw(audioL, studioMode, tok::tile))
+      if (ChipButton::Draw(audioL, studioMode, PanelKit::Chip()))
          SetStudioAudio(!studioMode);
       if (ImGui::IsItemHovered())
          HelpTip("%s", !gAudioStartError.empty() && AudioEngine::Instance().SampleRate() <= 0.0
@@ -3227,6 +3376,8 @@ namespace
       if (ImGui::IsMouseClicked(ImGuiMouseButton_Right) && ImGui::IsMouseHoveringRect(tbMin, tbMax) && !ImGui::IsAnyItemHovered() &&
           ImGui::IsWindowHovered(ImGuiHoveredFlags_ChildWindows))
          ImGui::OpenPopup("##studioDockMenu");
+      if (MenuParts::TestOpen("##studioDockMenu"))
+         ImGui::OpenPopup("##studioDockMenu");
       if (MenuParts::BeginPopup("##studioDockMenu"))
       {
          if (MenuParts::SubMenu(L("Dock Position")))
@@ -3238,7 +3389,7 @@ namespace
                gSampleStudioDock = 3;
             ImGui::EndMenu();
          }
-         ImGui::Dummy(ImVec2(0.0f, tok::space_1));
+         MenuParts::Separator();
          if (MenuParts::Item(L("Close Sample Studio")))
          {
             StopRecording(false);
@@ -3258,12 +3409,13 @@ namespace
       const ImVec2 avail = ImGui::GetContentRegionAvail();
       const float h = std::max(40.0f, avail.y);
       const float gap = ImGui::GetStyle().ItemSpacing.x;
-      const float settingsW = s.settingsOpen ? kSettingsW + gap : 0.0f;
+      const float panelW = kSettingsW;
+      const float settingsW = s.settingsOpen ? panelW + gap : 0.0f;
       DrawWave(origin, ImVec2(std::max(40.0f, avail.x - settingsW), h));
       if (s.settingsOpen)
       {
-         ImGui::SetCursorScreenPos(ImVec2(origin.x + avail.x - kSettingsW, origin.y));
-         DrawSettings(kSettingsW);
+         ImGui::SetCursorScreenPos(ImVec2(origin.x + avail.x - panelW, origin.y));
+         DrawSettings(panelW);
       }
    }
 
@@ -3276,7 +3428,7 @@ namespace
       {
          if (c == ' ' || c == '%' || c == '=' || c == '\n' || c == '\r' || c == '\t')
          {
-            char b[4];
+            char b[16];
             snprintf(b, sizeof(b), "%%%02X", (unsigned char)c);
             o += b;
          }
@@ -3458,6 +3610,18 @@ void SampleStudioStatus(bool& busy, bool& ready, std::string& name, double& seco
    seconds = s.src ? (double)Frames() / Sr() : 0.0;
 }
 
+// MENUALIVETEST: the Studio's own clipboard and the auditions so far, so Copy and Play slice read as alive.
+std::string SampleStudioTestFingerprint()
+{
+   const Studio& s = S();
+   return "studio clip " + std::to_string(s.clip.has_value()) + " auditions " + std::to_string(s.auditions);
+}
+
+void SampleStudioTestReset()
+{
+   S().clip.reset();
+}
+
 // The edit as heard, as a 24-bit wav at `path` (empty: the Recordings folder). "" when nothing is there.
 std::string SampleStudioExportWav(const std::string& path)
 {
@@ -3485,8 +3649,22 @@ int SampleStudioToNode(const std::string& type, std::string& err)
    return -1;
 }
 
+static bool sStudioDrawn = false;
+
+// Every frame the Studio is closed: however it was closed (rail, key, menu, patch load), its sound goes with it.
+void SampleStudioWhenClosed()
+{
+   if (!sStudioDrawn && gAudioMode != AudioMode::Studio)
+      return;
+   sStudioDrawn = false;
+   if (gAudioMode == AudioMode::Studio)
+      SetStudioAudio(false);
+   SilenceStudio();
+}
+
 void DrawSampleStudioDocked(const char* id, const ImVec2& size)
 {
+   sStudioDrawn = true;
    const float kGrip = PanelFrame::kGap;
    const bool gripFirst = gSampleStudioDock != 3; // bottom: the grip sits on top
    ImGui::BeginChild(id, size, false);
@@ -3522,7 +3700,7 @@ void DrawSampleStudioDocked(const char* id, const ImVec2& size)
       grip();
    const ImVec2 savedSpacing = ImGui::GetStyle().ItemSpacing;
    ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, 0.0f);
-   ImGui::EndChild();
+   EndChildSafe();
    ImGui::GetStyle().ItemSpacing = savedSpacing;
 }
 }

@@ -96,6 +96,10 @@ class INode;
 //   streamnote <streamIndex> <noteNodeUid> <scaleSnap> [drumRows]
 //     MIDI lane (stream type 2): the Piano Roll node it is linked to. Only
 //     written for a MIDI stream with a link or scale snap on.
+//   streampage <streamIndex> <pageOrder>
+//     MIDI lane: its place in the Piano Roll's page strip. Only written when non-zero.
+//   streamcolor <streamIndex> <r> <g> <b>
+//     Lane colour (Timeline lane, Piano Roll page), 0..1. Only written when not 0,0,0 (no colour).
 //   clipmidi <streamIndex> <clipId> <nextNoteId> <contentOffset> <loop>
 //            <loopStart> <loopLength> <transpose> <velScale> <swing>
 //     A MIDI clip's content window and clip-wide note settings. Every MIDI
@@ -318,6 +322,7 @@ namespace Patch
       int cellSize = 76;
       int pageCount = 1;
       std::vector<std::string> pageNames;
+      std::vector<unsigned int> pageColors; // per page, 0xRRGGBB, 0 = none
    };
 
    // Global transport state (docs/plans/audio/P3c-P3a2-design.md §0.2/§0.3) -
@@ -491,6 +496,7 @@ namespace Patch
       uint64_t noteNodeUid = 0; // MIDI only: the linked Piano Roll node (`streamnote`)
       bool  scaleSnap = false;  // MIDI only
       bool  drumRows = false;   // MIDI only
+      int   pageOrder = 0;      // MIDI only: Piano Roll page order (`streampage`)
       std::vector<ClipRecord> clips;
    };
 
@@ -570,6 +576,9 @@ namespace Patch
       // The Sample Studio's work (its source and slices), one `studio` line per line of its own text; empty: none.
       // Not part of undo: the Studio keeps its own history.
       std::string studio;
+      // Field Patcher scratch pages, pins and tab names, one `fieldpage` line per line of
+      // FieldPatcherSaveState (which escapes its own newlines and tabs). Empty: none.
+      std::string fieldPages;
       ArrangeSettingsRecord arrangeSettings;
       ViewportRecord viewport;
       // True when the file used an `id` line or a word where an index goes, so

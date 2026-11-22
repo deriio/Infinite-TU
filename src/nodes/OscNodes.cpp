@@ -42,7 +42,7 @@ void OscReceiveNode::RestartListenerIfNeeded()
    mRetryCountdown = 120;
 }
 
-void OscReceiveNode::OnOscMessage(const OscMessage::Message& msg)
+void OscReceiveNode::OnOscMessage(const OscMessage::PacketMessage& msg)
 {
    std::string filter;
    int idx;

@@ -256,18 +256,18 @@ sha_check() {
 
 declare -A LINUXDEPLOY_SHA256=(
   [x86_64]="c20cd71e3a4e3b80c3483cef793cda3f4e990aca14014d23c544ca3ce1270b4d"
-  [aarch64]="__NOT_PINNED__"
+  [aarch64]="620095110d693282b8ebeb244a95b5e911cf8f65f76c88b4b47d16ae6346fcff"
 )
 declare -A APPIMAGETOOL_SHA256=(
   [x86_64]="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
-  [aarch64]="__NOT_PINNED__"
+  [aarch64]="f0837e7448a0c1e4e650a93bb3e85802546e60654ef287576f46c71c126a9158"
 )
 
 LINUXDEPLOY="$WORK/linuxdeploy-${TOOL_ARCH}.AppImage"
 APPIMAGETOOL="$WORK/appimagetool-${TOOL_ARCH}.AppImage"
 
 echo "==> Downloading linuxdeploy ($TOOL_ARCH)"
-curl -fSL -o "$LINUXDEPLOY" \
+curl -fSL --retry 4 --retry-delay 10 --retry-all-errors -o "$LINUXDEPLOY" \
   "https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20251107-1/linuxdeploy-${TOOL_ARCH}.AppImage"
 if [ "${LINUXDEPLOY_SHA256[$TOOL_ARCH]}" != "__NOT_PINNED__" ]; then
   sha_check "$LINUXDEPLOY" "${LINUXDEPLOY_SHA256[$TOOL_ARCH]}"
@@ -277,7 +277,7 @@ fi
 chmod +x "$LINUXDEPLOY"
 
 echo "==> Downloading appimagetool ($TOOL_ARCH)"
-curl -fSL -o "$APPIMAGETOOL" \
+curl -fSL --retry 4 --retry-delay 10 --retry-all-errors -o "$APPIMAGETOOL" \
   "https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-${TOOL_ARCH}.AppImage"
 if [ "${APPIMAGETOOL_SHA256[$TOOL_ARCH]}" != "__NOT_PINNED__" ]; then
   sha_check "$APPIMAGETOOL" "${APPIMAGETOOL_SHA256[$TOOL_ARCH]}"

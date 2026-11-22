@@ -108,7 +108,7 @@ void DrawCookOverlay()
    const bool light = CategoryColors::IsThemeLight();
    // A fixed size: the current font size here still carries the canvas zoom, so the number grew and shrank with it.
    ImFont* font = ImGui::GetFont();
-   constexpr float kPillText = tok::type_body;
+   constexpr float kPillText = tok::type_caption;
    const ImU32 amber = tok::U32(tok::action_learn, light), red = tok::U32(tok::action_record, light);   // same roles as the node issue badge
    static std::unordered_map<const INode*, int> sLevel;   // last level per node, for the hold; rebuilt each frame
    std::unordered_map<const INode*, int> nextLevel;
@@ -131,7 +131,7 @@ void DrawCookOverlay()
       const ImVec2 ts = font->CalcTextSizeA(kPillText, FLT_MAX, 0.0f, buf);
       const ImVec2 q0(p2.x - ts.x - 10.0f, p.y - ts.y - 8.0f), q1(p2.x, p.y - 2.0f);
       if (CoveredByWindow(ImVec2((q0.x + q1.x) * 0.5f, (q0.y + q1.y) * 0.5f))) continue;   // pill sits above the node, may be under a window the node is not
-      dl->AddRectFilled(q0, q1, pillBg, 4.0f);
+      dl->AddRectFilled(q0, q1, pillBg, tok::radius_control);
       dl->AddText(font, kPillText, ImVec2(q0.x + 5.0f, q0.y + 3.0f), level == 0 ? pillText : (level == 2 ? red : amber), buf);
    }
    dl->PopClipRect();

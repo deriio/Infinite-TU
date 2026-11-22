@@ -1,0 +1,27 @@
+{
+ "id": "02_text_erase_rasterize",
+ "title": "Eraser on a text layer paints its mask; the text stays live",
+ "ref": "Photoshop: paint a mask instead of rasterizing type",
+ "ref_steps": 4,
+ "setup": [
+  "doc 400 300",
+  "layer text T"
+ ],
+ "steps": [
+  {
+   "click": "##v2derase"
+  },
+  {
+   "drag": [
+    150,
+    150,
+    250,
+    150
+   ]
+  }
+ ],
+ "expect": [
+  "active.kind == text",
+  "rasterask == 0"
+ ]
+}

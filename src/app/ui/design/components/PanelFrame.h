@@ -21,7 +21,7 @@ namespace PanelFrame
    {
       const CategoryColors::UiTheme& t = CategoryColors::CurrentUiTheme();
       ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(tok::space_2, tok::space_2));
-      ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, tok::radius_group);
+      ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, tok::radius_container);
       ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
       ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(t.panelBg.r, t.panelBg.g, t.panelBg.b, 1.0f));
       ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(t.border.r, t.border.g, t.border.b, 0.9f));
@@ -55,15 +55,26 @@ namespace PanelFrame
       ImDrawList* dl = ImGui::GetWindowDrawList();
       for (int i = 6; i >= 1; --i)   // soft shadow: stacked, widening, fainter rings
          dl->AddRectFilled(ImVec2(c0.x - i, c0.y - i + 2.0f), ImVec2(c1.x + i, c1.y + i + 2.0f),
-                           ImGui::GetColorU32(ImVec4(0, 0, 0, 7 / 255.0f)), tok::radius_group + i);
-      dl->AddRectFilled(c0, c1, ImGui::GetColorU32(ImGuiCol_ChildBg), tok::radius_group);
+                           ImGui::GetColorU32(ImVec4(0, 0, 0, 7 / 255.0f)), tok::radius_container + i);
+      dl->AddRectFilled(c0, c1, ImGui::GetColorU32(ImGuiCol_ChildBg), tok::radius_container);
    }
 
    // Call after PushDockedPanelStyle(true) so ChildBg carries the panel fill the surface samples. `size` is the
    // outer size (both axes > 0); the child is the card rect itself, so content sits space_2 inside the card edge
    // on every side, whichever insets are 0.
+   //
+   // in.t == 0 means a resize grip sits right above the card: the grip is the whole gap, so the card starts
+   // without the item spacing under the grip and its content starts space_1 down. A top bar then sits as far
+   // from the seam (grip + space_1) as from the hairline under it.
    inline void BeginCard(const char* id, ImVec2 size, Insets in = {}, ImGuiWindowFlags flags = 0)
    {
+      const bool gripAbove = in.t == 0.0f;
+      if (gripAbove)
+      {
+         const float sp = ImGui::GetStyle().ItemSpacing.y;
+         ImGui::SetCursorPosY(ImGui::GetCursorPosY() - sp);
+         size.y += sp;
+      }
       DrawSurface(size, in);
       const ImVec2 p0 = ImGui::GetCursorScreenPos();
       ImGui::SetCursorScreenPos(ImVec2(p0.x + in.l, p0.y + in.t));
@@ -72,6 +83,8 @@ namespace PanelFrame
       ImGui::BeginChild(id, ImVec2(size.x - in.l - in.r, size.y - in.t - in.b), ImGuiChildFlags_AlwaysUseWindowPadding, flags);
       ImGui::PopStyleVar();
       ImGui::PopStyleColor();
+      if (gripAbove)
+         ImGui::SetCursorPosY(tok::space_1);
    }
-   inline void EndCard() { ImGui::EndChild(); }
+   inline void EndCard() { EndChildSafe(); }
 }

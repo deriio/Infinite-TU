@@ -2,12 +2,34 @@
 
 Render pictures, video and sound from a text file, with no window and no mouse. The headless engine is the same Infinite you already have, driven from the command line. Anything a patch can do in the app (3D, Field kernels, modulation, synths, effects) works here, and the output is deterministic: the same patch gives the same frames and the same samples.
 
+Who this guide is for:
+
+| You are | Use |
+|---|---|
+| Writing scripts, batch jobs or a render pipeline | The command line (section 4) |
+| Working in Infinite's Terminal panel | The `infinite` command (section 4.5) |
+| Connecting an AI agent (Claude Desktop, Cursor, Windsurf) | The MCP server from npm (section 4.6) |
+
+All three drive the same engine and read the same `.inf` files.
+
+New in 2.0:
+
+| Change | What it means |
+|---|---|
+| `--render --timeline` | Export the Timeline arrangement headless, not only the canvas graph |
+| `--frame --batch jobs.json` | Many frame renders in one process |
+| `--size` keeps alpha | Resized frames keep their transparency |
+| Isolated jobs | Each headless job runs on its own and gives the same result every time |
+| Sample analysis | Headless runs wait until samples are analysed before rendering |
+| New `infinite` verbs | `view2d-add`, Timeline clip copy, paste, split, duplicate and inspect, marker colour, `node drum`, `node mixer` |
+| MCP picture tools | `infinite_compare_frames`, `infinite_find_knob`, `infinite_node_effects` |
+
 ## 1. What you need
 
 | Need | Detail |
 |---|---|
 | The Infinite app | There is no separate package. The executable inside the app is the command-line tool. |
-| A graphics driver | Frames are drawn by the real GPU pipeline, so a machine with working OpenGL is required. |
+| A graphics driver | Frames are drawn by the real GPU pipeline, so a working GPU driver is required. |
 | Linux only: a virtual display | Run every render as `xvfb-run -a Infinite ...`. Without it you get `E_NO_DISPLAY`. |
 | A text editor | Patches are plain text files ending in `.inf`. |
 
@@ -94,6 +116,8 @@ A patch can validate and still be the wrong patch, which is why step 4 exists.
 | `--validate patch.inf [--for-render] [--lenient] [--json file]` | Check the file loads; report every problem |
 | `--explain patch.inf [--json] [--all] [--lenient]` | Print the built graph: nodes, non-default controls, wires, modulation ranges, world bounding boxes of geometry. `--all` lists every control |
 | `--frame patch.inf T[,T...] out.png or dir/` | Still images at the given times in seconds. Several times need a folder |
+| `--frame patch.inf T out/ --batch list.txt` | More frame renders in one process: one `patch<TAB>out/` line per job (absolute paths); each job also writes `<out>.json` |
+| `--frame ... --batch queue.txt --serve` | A warm session: keeps reading lines appended to the queue and renders each in the same process; a `quit` line ends it, 10 idle minutes too. `tools/warm.py` drives it |
 | `--frames-dir patch.inf out_dir --duration S` | A numbered PNG sequence. Options: `--start S`, `--fps N`, `--alpha`, `--depth 8 or 16` |
 | `--render patch.inf out.mp4 or out.mov` | A video with audio |
 | `--audio-summary patch.inf out.json` | The sound as numbers: loudness, peaks, clipping, silence, spectrum, tempo guess |
@@ -113,13 +137,18 @@ A patch can validate and still be the wrong patch, which is why step 4 exists.
 | `--codec h264 or prores4444` | render | Video codec. Use `prores4444` (in a `.mov`) when you need transparency |
 | `--no-audio` | render | Write a silent video |
 | `--node index[:output]` | frame, frames-dir, render | Render this node instead of the Output. Great for checking one stage |
+| `--geometry node` | frame, frames-dir | Also report world bounding-box stats for a geometry node |
 | `--set node.param=value` | frame, frames-dir, render | Override one control for this run without editing the file |
 | `--output node` | audio-summary | Measure one Audio Out or Output instead of the whole mix |
 | `--wav out.wav` | audio-summary | Also write the audio as a WAV |
 | `--stems id,id --stems-dir dir` | audio-summary | Write one WAV per named node |
 | `--notes events.json --note-map map.json` | audio-summary | Play your own note events into the patch |
-| `--timeline` | audio-summary | Play the arrangement's audio lanes instead of the node graph alone |
+| `--timeline` | render, audio-summary | Render or measure the Timeline arrangement instead of the canvas graph alone |
 | `--plugin-params` | render, audio-summary | List every loaded plugin's parameters (address, name, real range, default) in the `plugins` block of the result |
+| `--plugin-state` | render, audio-summary | Include plugin state blobs in the result |
+| `--batch list.txt` | frame, audio-summary | More jobs in one process, one tab-separated `patch<TAB>out[<TAB>out.wav]` line each |
+| `--serve` | frame with --batch | Keep the process up and render lines appended to the list; `--timeout` applies to each job |
+| `--repeat 1-8` | frame | Repeat the frame render N times (determinism / warmup check) |
 | `--contact-sheet sheet.png` | frame | One image holding every requested frame |
 | `--png-level 0-9` | frame, frames-dir | PNG compression |
 | `--lenient` | all | Treat unknown keys and removed nodes as warnings, not errors |
@@ -141,7 +170,7 @@ The **last line printed** is always one JSON object with these fields: `ok`, `mo
 | 5 | Rendering failed |
 | 6 | Timeout. Raise `--timeout` |
 
-## 4.5 The `infinite` command
+### 4.5 The `infinite` command
 
 Inside Infinite's Terminal panel, `infinite` is on the PATH. A verb goes to the running app, or to the
 headless flags above when you give it a `.inf` file. `infinite` alone lists every verb; `infinite context`
@@ -150,20 +179,22 @@ prints the open patch, the selection and any code errors in one answer.
 | Group | Verbs |
 |---|---|
 | Look | `graph`, `explain`, `params`, `selection`, `status`, `nodes`, `describe` |
-| Edit | `add`, `remove`, `connect`, `disconnect`, `set`, `mod`, `expr`, `bypass`, `batch`, `undo`, `redo` |
-| Patch | `new`, `open`, `save`, `validate`, `canonicalize`, `apply` |
+| Edit | `add`, `remove`, `connect`, `disconnect`, `set`, `reset`, `mod`, `mod clear`, `mod curve`, `expr`, `bypass`, `batch`, `undo`, `redo`, `select`, `focus`, `copy`, `paste`, `duplicate`, `group`, `ungroup`, `view3d-add`, `view2d-add`, `view2d` |
+| Patch | `new`, `recent`, `open`, `save`, `import`, `files`, `reveal`, `validate`, `canonicalize`, `apply` |
 | Play | `play`, `stop`, `rewind`, `seek`, `tempo` |
-| Timeline | `timeline` prints it all; `timeline track`, `clip`, `marker`, `group`, `loop`, `snap`, `render`. Times are in beats; `key=value` words set fields |
+| Timeline | `timeline` prints it all; `timeline track`, `clip` (`copy`, `paste`, `duplicate ... selection=true`, `split <id> playhead`, `inspect`), `marker` (`color <id> RRGGBB`), `group`, `loop`, `snap`, `render`. Times are in beats; `key=value` words set fields |
 | Session | `session scene`, `launch`, `launchrow`, `stop`, `add`, `insert`, `duplicatescene`, `deletescene`, `send`, `sceneset`, `slot`, `place`, `duplicate`, `clear`, `copy`, `paste`, `cut`, `quantize` |
-| Notes | `notes get`, `add <clip> beat:pitch[:length[:velocity]]`, `set`, `delete`, `move`, `quantize`, `transform <track> <name>` |
+| Notes | `notes get`, `add <clip> beat:pitch[:length[:velocity]]`, `set`, `delete`, `move`, `quantize`, `transform <track> <name>`, `export <clip>`, `generate <type> [key=value]` |
 | Performance Matrix | `perf get`, `add <kind> [label]`, `remove`, `assign`, `clear`, `unmidi`, `set`, `edit`, `page add|go|rename|delete|duplicate` |
-| Nodes and files | `node <node> rename|params|viewport|panel|window|timeline|session|preset`, `library`, `mod curve`, `studio get|set` |
+| Make | `studio generate <part> [bars=n]`, `studio status|export|node <type>|get|set` |
+| Nodes and files | `node <node> rename|params|viewport|panel|window|timeline|session|preset|drum|mixer`, `library list|add|remove|refresh` (`drum open|close|dock|lanes|fill|grooves|groove|folder`) |
 | See and hear | `shot`, `frame`, `render`, `audio` |
 | Code | `code kinds`, `new`, `check`, `push`, `pull`, `watch`, `errors`, `docs`, `examples` |
 | Generate | `patch recipes`, `new`, `check`, `layout`, `apply` |
-| Learn | `context`, `guide` |
+| App | `panel [name|settings/<place>] [open|close] [bottom|right|left|top|fill]`, `settings [key [value]]`, `settings devices\|midi\|apply\|updates\|reset\|logs\|gpu [n]\|global [name [expr]]\|extension <file>`, `show list\|next\|prev\|go <n>\|lock\|panic\|check\|add\|remove <n>\|clear\|open\|save\|fade <ms>\|quantize <n>\|launch <n>`, `view fit\|params on\|off\|clearcards\|metronome [on\|off]`, `quit` |
+| Learn | `context`, `attention`, `guide`, `docs [topic [name]]`, `find <words>`, `version` |
 | Watch | `watch` prints a JSON line for each change |
-| Terminal | `term list`, `read`, `send`, `run` |
+| Terminal | `term open`, `list`, `read`, `send`, `run` |
 
 A `<node>` is an index, `selected`, or a title or type only one node has. Exit codes match 4.4, plus 7: no
 running app answered. Each terminal is tied to its own app, so two running apps do not cross.
@@ -175,6 +206,45 @@ and the node keeps its last good code.
 
 `patch check file.inf` runs loads, reachable, picture and sound in order and stops at the first failure. Add
 `--want moving-picture,sound` to fail a still picture, or a silent or clipping patch.
+
+### 4.6 AI agents: the MCP server
+
+The npm package `infinite-engine` connects Infinite to AI apps through the Model Context Protocol. It needs the Infinite app
+installed; it finds it through `INFINITE_BIN`, the usual install folders, or `PATH`.
+
+```
+npx -y infinite-engine init
+```
+
+`init` adds Infinite to Claude Desktop, Cursor and Windsurf if they are installed, keeps other servers in each config,
+and saves the old file next to it as `.infinite-backup`. Use `--dry-run` to see the plan, `--only claude|cursor|windsurf`
+to pick one app, and `npx -y infinite-engine status` to check the install. Restart the app afterwards.
+
+To configure by hand, add this to the app's `mcp.json` (on Windows, Claude Desktop needs
+`"command": "cmd", "args": ["/c", "npx", "-y", "infinite-engine", "serve"]`):
+
+```
+{ "mcpServers": { "infinite": { "command": "npx", "args": ["-y", "infinite-engine", "serve"] } } }
+```
+
+| Tool | What it does |
+|---|---|
+| `infinite_validate_patch` | Validate a patch with the real compiler: code, line, node and hint per issue |
+| `infinite_render_video` | Export an mp4 from a patch |
+| `infinite_render_field_pixel` | Render a Field pixel kernel to frames |
+| `infinite_render_field_primitive` | Render a parametric surface written as Field equations |
+| `infinite_render_field_modifier` | Deform a mesh with a Field displacement expression |
+| `infinite_render_sketch3d` | Render 3D geometry written in JavaScript to a PNG |
+| `infinite_synthesize_field_synth` | Make a WAV from a per-sample Field synth kernel |
+| `infinite_synthesize_field_notes` | Generate note sequences and Euclidean rhythms into audio |
+| `infinite_process_field_effect` | Run audio through a Field filter, reverb or distortion kernel |
+| `infinite_compare_frames` | Say in plain words whether two pictures match |
+| `infinite_find_knob` | Find which node and control give a wanted picture change, from measured renders |
+| `infinite_node_effects` | Measured table of what each effect and colour node, and each of its controls, does |
+
+Every result carries a credit line in an `attribution` field; nothing is written into your files. A second, Python MCP
+server (`tools/mcp` in the source, with tools such as `infinite_render_frame` and `infinite_audio_summary`) maps one tool
+to each headless command above. Both call the same engine; the developers page on infinitedevices.org covers it.
 
 ## 5. The patch file format
 
@@ -248,10 +318,14 @@ Three ways, from simplest to most flexible.
 | UV Project | `i uvMode` Smart, Cube, Cylinder, Sphere | Same engine as Transform's UV Project operation |
 | Model 3D | `s path file.glb`, `i clip`, `pose0..` | Skinned glTF clips, morphs and poses animate with the clock |
 | Cloth, Rigid Bodies | `geo` input, Cloth also `collider` | Cloth `colliderFriction`, `colliderDistance`; Rigid Bodies `collider` Box, Sphere, Convex hull. Both simulate from time 0, so ask `--frame` for a later second to see motion |
-| Render 3D | `i engine` Raster or Path trace | `ptSamples`, `ptBounces` for the path tracer; `renderPass` and cavity, AO, depth of field controls for passes |
+| Render 3D | `i engine` Raster, Path trace, Live or Live + settle (Live: macOS) | `ptSamples`, `ptBounces` for the path tracer; `renderPass` and cavity, AO, depth of field controls for passes |
 | Light, HDRI, Camera | `geo r3 5 light`, `geo r3 4 camera`, `cable r3 8 hdri` | An HDRI is an environment: it uses a `cable` line, not `geo`. Light `useTemperature`, `useCutoff`; Camera `shiftX`, `sensorFit` |
 
 Write each control with its real tag; `--describe "<type>"` shows it, and `--validate` warns `W_TYPE_MISMATCH` when you guess wrong.
+
+Rotations come in two units: primitives (Plane, Cube, ...) take radians (`f rotX -1.5708`), Transform and Camera take degrees (`f rotX -90`). `--validate` says which when a value is out of range, and warns `W_ROTATION_UNITS` for a radian-looking value on a degrees control.
+
+To look at a 3D patch quickly, `python3 tools/look.py` renders sheets in one process: `passes` (colour, normals, albedo, light = colour / albedo, object id), `crop X Y W H --scale S` (renders only that region, sharper, by narrowing the camera; `--verify` compares it with the full frame), `sweep node.key V1 V2 ...` and `ab`.
 
 Not reachable from the CLI: selecting elements with the mouse in Edit Mode, drawing sculpt strokes, and the 3D View editor's scene items, gizmos and overlays (a bare 3D View node renders its empty stage). The re-runnable check for everything in this section is `python3 tools/headless-docs/check_release_areas.py`.
 
@@ -272,6 +346,7 @@ Not reachable from the CLI: selecting elements with the mouse in Edit Mode, draw
 | `E_NO_DISPLAY` (Linux) | Run under `xvfb-run -a` |
 | It validates but looks wrong | Run `--explain` and compare to what you meant |
 | Something moves too far or too little | A `mod` range is absolute. Check `lo` and `hi` |
+| A Prediction node (Drift, Moves, Predictive Notes, Rhythm, Quantize, Coloring, Velocity) sounds plainer than in the app | Headless runs do not load learned profiles; `--describe` marks these nodes `profile_dependent` |
 
 ## 9. Good practice
 
@@ -282,23 +357,13 @@ Not reachable from the CLI: selecting elements with the mouse in Edit Mode, draw
 - Quote the command line when a patch lives in a folder with spaces.
 - The output is deterministic, so a patch that renders correctly once renders the same way again. Frame renders hold the clock at zero from the first tick, so history nodes such as Time Machine render the same every run, and headless runs never read or write the learned prediction profiles. One known exception: a patch with Field Notes and any modulation cable can differ slightly between audio runs (about 0.1 dB in loudness in the case we measured).
 
-## 10. Documentation screenshots
-
-Headless renders pictures of a patch, but the nodes themselves (their panels, knobs and dropdowns) can only be photographed in the real app. Infinite ships a screenshot tool for that, so the manuals always match the build. It launches the app, drives it over the local control port, and saves one PNG per node at 2x.
-
-| Want | Run |
-|---|---|
-| One node | `python3 scripts/node_screenshot.py "Wavetable"` |
-| Every node type | `python3 scripts/screenshot_all_nodes.py --out docs/node_screenshots --settle-seconds 0.6` |
-
-Both need a Mac that is unlocked and awake, because the app must have a real window; they write the control token to `~/Library/Application Support/Infinite/control_token`. The Node Field Guide pulls its pictures from `docs/node_screenshots/`, and the brand screenshot standard (2x, real values, no personal paths) is in `docs/brand/BRAND.md` section 10.1.
-
-## 11. Where to go next
+## 10. Where to go next
 
 | Want | Look at |
 |---|---|
 | Every node and its controls | `Infinite --describe`, and the Node Reference Manual PDF |
-| The exact file format | `docs/reference/patch-format.md` |
-| What can be wired to what | `docs/reference/connection-rules.md` |
-| Starter patches | `assets/examples/authoring/` |
-| Field (the expression language) | The Field language skill documents under `.claude/skills/field-language/` |
+| The exact file format | [patch-format.md](https://github.com/n1m21n/Infinite/blob/main/docs/reference/patch-format.md) on GitHub |
+| What can be wired to what | [connection-rules.md](https://github.com/n1m21n/Infinite/blob/main/docs/reference/connection-rules.md) on GitHub |
+| Starter patches | [assets/examples/authoring](https://github.com/n1m21n/Infinite/tree/main/assets/examples/authoring) on GitHub |
+| Field (the expression language) | The Field Language Manual (PDF, infinitedevices.org) |
+| AI agents | `npx -y infinite-engine init`, and the developers page on infinitedevices.org |

@@ -134,7 +134,7 @@
   },
   {
    "category": "Pills and tags",
-   "what": "Headless, Python SDK, 9 MCP tools, ticker",
+   "what": "Headless, Python SDK, 12 MCP tools, ticker",
    "where": "style.css, audience.css, dev.css",
    "central": false
   },
@@ -239,6 +239,8 @@
   ".reel-card",
   ".nd-card",
   ".lib-card",
+  ".mi-card",
+  ".sw-card",
   ".ax-bento-t",
   ".ax-shot",
   ".bench"

@@ -40,11 +40,11 @@ One owner per topic: if two files seem to disagree, the skill named in this tabl
 | `geometry-transform-sweep` | Sweep | Transform propagation for geometry nodes |
 | `modulation-sweep` | Sweep | Modulation sources/destinations/bindings end to end |
 | `node-ui-sweep` | Sweep | Node UI regression sweep |
+| (no skill) `tools/design/keys_gate.py` | Sweep | Keyboard shortcuts checks; replaces the retired `shortcuts-sweep` skill (commit B1) |
 | `output-projection-sweep` | Sweep | Output/projection node checks |
 | `panels-sweep` | Sweep | Panels subsystem checks |
 | `rate-analysis-sweep` | Sweep | Sample/frame rate analysis |
 | `render-pipeline-sweep` | Sweep | Render pipeline checks |
-| `shortcuts-sweep` | Sweep | Keyboard shortcuts checks |
 | `audio-node-ui` | UI | Layout/widget grammar for audio node UI |
 | `node-ui-pillars` | UI | Symmetry/contrast rules for all node UI (load before any node UI edit) |
 | `infinite-design-system` | UI | How every element looks/moves: tokens, components, icons, motion, CI ratchet (load before any style/icon/chrome change) |
@@ -62,7 +62,6 @@ One owner per topic: if two files seem to disagree, the skill named in this tabl
 | `write-fix-brief` | Process | Turn a bug report / findings / idea into a verified implementation prompt |
 | `invariant-interaction-audit` | Process | Before shipping any guarantee: can a sibling control or call site undo it |
 | `infinite-code-review` | Process | Review code against Infinite's four standards |
-| `semi-brain` | Process | Query the distilled brain before non-trivial architecture calls |
 | `prior-art-scout` | Process | Search peer repos and public fixes for platform/audio/packaging problems |
 | `infinite-lifecycle` | Process | The map: product/build/rule loops, 12 stages + gates, lanes with done checks, who decides, rule precedence |
 | `git-branch-workflow` | Process | Branch-per-feature workflow for this repo |
@@ -91,7 +90,7 @@ One owner per topic: if two files seem to disagree, the skill named in this tabl
 
 ## Core Invariants & Rules
 
-1. **Clean Room / Licensing**: Infinite is MIT licensed. Never open, read, grep, or reference GPL/AGPL source code (e.g. Kronos, Cmajor, SuperCollider, BespokeSynth). Citing open academic papers (e.g. Kronos paper Norilo 2015) is permitted. Owner exception (2026-11-02): Blender's source (GPL) may be opened and read to understand how a feature works and take inspiration for the 3D View; describe the behaviour in your own words and write the code fresh, never copy or paste any of it, and keep the clone outside the repo (`~/blender-ref`, delete when finished). The one exception for other projects is `prior-art-scout`: it may read a copyleft project's *discussions* (issues, PR threads, commit messages, docs), but never its source or diffs. Licence tags are in `prior-art-scout/peers.md`.
+1. **Clean Room / Licensing**: Infinite is MIT licensed. Owner decision (2026-11-15): open-source code of any licence, GPL/AGPL included, may be opened and read to understand how a technique works (this includes the daily perf hunt, `docs/release/auto-perfhunt/`). Never copy, paste or transcribe any of it: describe the behaviour in your own words in notes first, close the source, then write the code fresh in Infinite's style. Keep clones outside the repo (`~/Infinite/perfhunt-state/ref/` or `~/blender-ref`, delete when finished). Permissive code (MIT/BSD/ISC/Apache-2.0/zlib) may be ported only with its licence notice kept. `prior-art-scout` still reads discussions, not source, by default. Citing open academic papers is always permitted. (Earlier rule banned GPL source except Blender; superseded.)
 2. **Syntax Rules**: Bare names, no sigils (e.g. `P.y += bass * 2`, never `@P.y += bass * 2`).
 3. **Three platforms**: every `Platform::` function has macOS, Windows and Linux sides (`windows-parity`, `linux-parity`).
 4. **Brand book**: anything on a brand surface (website, films, thumbnails, social, docs) follows `docs/brand/BRAND.md`; values come from `docs/brand/brand.json`, visual version `docs/brand/brand-book.html` (rebuild with `python3 tools/brand/build_brand_book.py`); every brand file is made by a tool in `tools/brand/` (table at the top of BRAND.md), and `tools/brand/brand_lint.py` checks a surface before it ships. The app's own UI follows `infinite-design-system`. If they disagree on a brand surface, the brand book wins.

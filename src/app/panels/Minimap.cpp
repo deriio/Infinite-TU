@@ -67,18 +67,20 @@ namespace app
       const CategoryColors::UiTheme& t = CategoryColors::CurrentUiTheme();
       const bool isLight = (0.2126f * t.windowBg.r + 0.7152f * t.windowBg.g + 0.0722f * t.windowBg.b > 0.5f);
 
-      ImDrawList* dl = ImGui::GetForegroundDrawList();
+      // The graph window's own list (drawn while the editor is suspended): above the nodes, under every popup and
+      // panel. The foreground list painted it over the Field Patcher's page menu.
+      ImDrawList* dl = ImGui::GetWindowDrawList();
       dl->AddRectFilled(origin, ImVec2(origin.x + w, origin.y + h),
-                        IM_COL32((int)(t.panelBg.r * 255), (int)(t.panelBg.g * 255), (int)(t.panelBg.b * 255), (int)(gMinimapOpacity * 255)), tok::radius_tile);
+                        IM_COL32((int)(t.panelBg.r * 255), (int)(t.panelBg.g * 255), (int)(t.panelBg.b * 255), (int)(gMinimapOpacity * 255)), tok::radius_control);
       dl->AddRect(origin, ImVec2(origin.x + w, origin.y + h),
-                  IM_COL32((int)(t.border.r * 255), (int)(t.border.g * 255), (int)(t.border.b * 255), 200), tok::radius_tile, 0, 1.0f);
+                  IM_COL32((int)(t.border.r * 255), (int)(t.border.g * 255), (int)(t.border.b * 255), 200), tok::radius_control, 0, 1.0f);
 
       for (const GraphNode& gn : gNodes)
       {
          const ImVec2 a = toMinimap(ImVec2(gn.liveX, gn.liveY));
          const ImVec2 b = toMinimap(ImVec2(gn.liveX + kNodeW, gn.liveY + kNodeH));
          const bool selected = ed::IsNodeSelected(gn.NodeId());
-         dl->AddRectFilled(a, b, selected ? tok::U32(tok::pal::c_FFBE5AE6) : tok::U32(tok::pal::c_6E96D2C8), 2.0f);
+         dl->AddRectFilled(a, b, selected ? tok::U32(tok::pal::c_FFBE5AE6) : tok::U32(tok::pal::c_6E96D2C8), tok::radius_cell);
          if (FindIsMatch(gn.index))
             dl->AddRect(ImVec2(a.x - 1.5f, a.y - 1.5f), ImVec2(b.x + 1.5f, b.y + 1.5f),
                         ImGui::GetColorU32(AccentEmphasisSelected()), 2.0f, 0, 2.0f);

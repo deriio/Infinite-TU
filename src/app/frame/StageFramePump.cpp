@@ -133,6 +133,7 @@ void DrawFramePump(FrameCtx& fc)
       // the whole take is done) so glfwPollEvents/ImGui still run often
       // enough for the progress window to repaint and the Cancel button to
       // stay clickable during a long render.
+      MixerRenderTick(); // Mixer panel takes: armed start, timed stop, the fast (offline) pump
       if (gOfflineRender.active)
       {
          OutputNode* on = gOfflineRender.node;

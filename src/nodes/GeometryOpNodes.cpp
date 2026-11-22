@@ -19,7 +19,7 @@ namespace
       // still named here so a saved index still has a label, just not spawned
       // or offered in the operation dropdown (GeometryOpNode::IsSpawnable).
       "Select", "Delete Selected", "Transform Selected", "Extrude Selected",
-      "Delete", "Decimate", "Bevel", "Inset", "UV Project"
+      "Delete", "Decimate", "Bevel", "Inset", "UV Project", "Fur"
    };
    const std::vector<std::string> kSourceNames = { "Vertices", "Edges", "Faces" };
    const std::vector<std::string> kWrapModeNames = { "Cylindrical", "Spherical", "Nearest Surface" };
@@ -207,6 +207,12 @@ GeometryOpNode::Signature GeometryOpNode::CurrentSignature() const
    s.bevelWidth = bevelWidth; s.bevelSegments = bevelSegments; s.bevelAngle = bevelAngle;
    s.insetWidth = insetWidth; s.insetDepth = insetDepth;
    s.uvMode = uvMode; s.uvAngle = uvAngle; s.uvMargin = uvMargin; s.uvScale = uvScale;
+   if (op == kFur)
+   {
+      s.fur = FurParams();
+      s.guide = guide;
+      s.guideStamp = guide ? guide->CurveStamp() : 0;
+   }
    s.upstream = input;
    // The upstream's own revision stamp, not its triangle count: Select and
    // other mask-only operators leave the vertex/index count unchanged, so a
@@ -215,6 +221,17 @@ GeometryOpNode::Signature GeometryOpNode::CurrentSignature() const
    if (InstanceOnPointsNode* instancer = FindInstancer(input))
       s.upstreamInstanceRevision = instancer->InstanceRevision();
    return s;
+}
+
+MeshOps::FurParams GeometryOpNode::FurParams() const
+{
+   MeshOps::FurParams p;
+   p.density = furDensity; p.maxStrands = furMaxStrands;
+   p.length = furLength; p.lengthJitter = furJitter; p.width = furWidth;
+   p.segments = furSegments; p.gravity = furGravity; p.clump = furClump; p.curl = furCurl;
+   for (int i = 0; i < 3; i++) p.comb[i] = furComb[i];
+   p.seed = (int)seed; p.normals = furNormals;
+   return p;
 }
 
 const Mesh& GeometryOpNode::GetMesh()
@@ -383,6 +400,13 @@ const Mesh& GeometryOpNode::GetMesh()
          mCache = MeshOps::UVProject(src, uvMode, uvAngle, uvMargin, uvScale, &mUVFrom);
          mUVInputIndices = src.indices;
          mUVInputVerts = src.vertices.size();
+         break;
+      }
+      case kFur:
+      {
+         // With selectionOnly, strands grow only on the selected faces.
+         const Polyline* g = guide ? guide->GetCurve() : nullptr;
+         mCache = MeshOps::Fur(selectionOnly ? src : MeshOps::ClearSelection(src), FurParams(), g);
          break;
       }
       case kScrew:
@@ -767,8 +791,8 @@ const GpuPoints* GeometryOpNode::GetGpuPoints()
       mGpuBuiltRevision = mPointCloudRevision;
       mGpuBuiltValid = GpuPointsGL::RunPointPass(mGpuTarget, mGpuPoints, *src, mTwistProgram, [&]()
       {
-         glUniform1f(glGetUniformLocation(mTwistProgram, "uAngle"), angle);
-         glUniform1i(glGetUniformLocation(mTwistProgram, "uAxis"), ax);
+         glUniform1f(GLUtil::UniformLoc(mTwistProgram, "uAngle"), angle);
+         glUniform1i(GLUtil::UniformLoc(mTwistProgram, "uAxis"), ax);
       }, "Twist_GpuPoints");
       if (!mGpuBuiltValid)
          return nullptr;
@@ -1248,22 +1272,22 @@ const GpuPoints* DisplacementNode::GetGpuPoints()
       {
          glActiveTexture(GL_TEXTURE2);
          glBindTexture(GL_TEXTURE_2D, hasTex ? mTexTex : 0);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uTex"), 2);
-         glUniform2i(glGetUniformLocation(mGpuProgram, "uTexSize"), mTexTexW, mTexTexH);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uHasTex"), hasTex ? 1 : 0);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uMode"), mode);
-         glUniform1f(glGetUniformLocation(mGpuProgram, "uStrength"), strength);
-         glUniform1f(glGetUniformLocation(mGpuProgram, "uMidlevel"), midlevel);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uSource"), source == kNoise ? 1 : 0);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uDnType"), noiseType);
-         glUniform1f(glGetUniformLocation(mGpuProgram, "uDnFreq"), frequency);
-         glUniform1f(glGetUniformLocation(mGpuProgram, "uDnW"), mNoiseW);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uDnOctaves"), octaves);
-         glUniform1f(glGetUniformLocation(mGpuProgram, "uDnRough"), noiseRoughness);
-         glUniform1ui(glGetUniformLocation(mGpuProgram, "uDnSeed"), (unsigned int)seed);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uDnMode"), mode);
-         glUniform1f(glGetUniformLocation(mGpuProgram, "uDnStrength"), strength);
-         glUniform1i(glGetUniformLocation(mGpuProgram, "uDnAffects"), affects);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uTex"), 2);
+         glUniform2i(GLUtil::UniformLoc(mGpuProgram, "uTexSize"), mTexTexW, mTexTexH);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uHasTex"), hasTex ? 1 : 0);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uMode"), mode);
+         glUniform1f(GLUtil::UniformLoc(mGpuProgram, "uStrength"), strength);
+         glUniform1f(GLUtil::UniformLoc(mGpuProgram, "uMidlevel"), midlevel);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uSource"), source == kNoise ? 1 : 0);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uDnType"), noiseType);
+         glUniform1f(GLUtil::UniformLoc(mGpuProgram, "uDnFreq"), frequency);
+         glUniform1f(GLUtil::UniformLoc(mGpuProgram, "uDnW"), mNoiseW);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uDnOctaves"), octaves);
+         glUniform1f(GLUtil::UniformLoc(mGpuProgram, "uDnRough"), noiseRoughness);
+         glUniform1ui(GLUtil::UniformLoc(mGpuProgram, "uDnSeed"), (unsigned int)seed);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uDnMode"), mode);
+         glUniform1f(GLUtil::UniformLoc(mGpuProgram, "uDnStrength"), strength);
+         glUniform1i(GLUtil::UniformLoc(mGpuProgram, "uDnAffects"), affects);
       }, "Displacement_GpuPoints");
       glActiveTexture(GL_TEXTURE2);
       glBindTexture(GL_TEXTURE_2D, 0);
@@ -1389,20 +1413,74 @@ void InstanceOnPointsNode::BuildCloudTransforms() const
    const std::vector<Particle>* cloud = cloudSource ? cloudSource->GetPointCloud() : nullptr;
    if (cloud == nullptr)
       return;
+   // A scatter's cloud is in its surface's local space (Distribute Points on
+   // Faces reports the plane's model matrix), so it is placed like the mesh
+   // path places sampled points: through the source's model matrix.
+   const Mat4 cm = cloudSource->GetModelMatrix();
+   const bool ident = (cm == Mat4::Identity());
+   float nm[9];
+   cm.NormalMatrix(nm);
    mTransforms.reserve(cloud->size());
    mColors.reserve(cloud->size() * 3);
+   int i = 0;
    for (const Particle& p : *cloud)
    {
       if (!p.alive)
          continue;
-      const float s = instanceScale * p.scale;
-      Mat4 m = Mat4::Scale(s, s, s);
-      m = Mat4::Multiply(Mat4::Translation(p.px, p.py, p.pz), m);
+      float wp[3] = { p.px, p.py, p.pz };
+      float wn[3] = { p.nx, p.ny, p.nz };
+      if (!ident)
+      {
+         wp[0] = cm.m[0]*p.px + cm.m[4]*p.py + cm.m[8]*p.pz + cm.m[12];
+         wp[1] = cm.m[1]*p.px + cm.m[5]*p.py + cm.m[9]*p.pz + cm.m[13];
+         wp[2] = cm.m[2]*p.px + cm.m[6]*p.py + cm.m[10]*p.pz + cm.m[14];
+         wn[0] = nm[0]*p.nx + nm[3]*p.ny + nm[6]*p.nz;
+         wn[1] = nm[1]*p.nx + nm[4]*p.ny + nm[7]*p.nz;
+         wn[2] = nm[2]*p.nx + nm[5]*p.ny + nm[8]*p.nz;
+      }
+      const float s = instanceScale * p.scale * (1.0f + (Rand01(seed, i * 3) - 0.5f) * 2.0f * scaleRandom);
+      const Mat4 m = Mat4::Multiply(PointPose(wp, wn, i), Mat4::Scale(s, s, s));
       mTransforms.push_back(Mat4::Multiply(m, mBuiltShapeModel));
       mColors.push_back(p.r);
       mColors.push_back(p.g);
       mColors.push_back(p.b);
+      i++;
    }
+}
+
+Mat4 InstanceOnPointsNode::PointPose(const float pt[3], const float nIn[3], int i) const
+{
+   Mat4 m = Mat4::Identity();
+   if (rotationRandom > 0.0f)
+   {
+      const float r1 = Rand01(seed, i * 3 + 1);
+      const float r2 = Rand01(seed, i * 3 + 2);
+      m = Mat4::Multiply(Mat4::RotationY(r1 * 6.28318530f * rotationRandom), m);
+      m = Mat4::Multiply(Mat4::RotationX(r2 * 6.28318530f * rotationRandom), m);
+   }
+   float n[3] = { nIn[0], nIn[1], nIn[2] };
+   const float len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
+   if (len > 1e-6f) { n[0] /= len; n[1] /= len; n[2] /= len; }
+   if (alignToNormal && len > 1e-6f)
+   {
+      // Build a basis whose Y axis is the point normal, so instances stand
+      // up off the surface instead of all facing the same way.
+      float up[3] = { 0, 1, 0 };
+      if (std::fabs(n[1]) > 0.99f) { up[0] = 1; up[1] = 0; }
+      float t[3] = { up[1]*n[2] - up[2]*n[1], up[2]*n[0] - up[0]*n[2], up[0]*n[1] - up[1]*n[0] };
+      const float tl = std::sqrt(t[0]*t[0] + t[1]*t[1] + t[2]*t[2]);
+      if (tl > 1e-6f) { t[0] /= tl; t[1] /= tl; t[2] /= tl; }
+      // t x n, so the basis (t, n, b) is right-handed; n x t would mirror every instance and turn its winding inside out.
+      const float b[3] = { t[1]*n[2] - t[2]*n[1], t[2]*n[0] - t[0]*n[2], t[0]*n[1] - t[1]*n[0] };
+      Mat4 basis;
+      basis.m[0] = t[0]; basis.m[1] = t[1]; basis.m[2] = t[2];
+      basis.m[4] = n[0]; basis.m[5] = n[1]; basis.m[6] = n[2];
+      basis.m[8] = b[0]; basis.m[9] = b[1]; basis.m[10] = b[2];
+      m = Mat4::Multiply(basis, m);
+   }
+   return Mat4::Multiply(Mat4::Translation(pt[0] + n[0] * normalOffset,
+                                           pt[1] + n[1] * normalOffset,
+                                           pt[2] + n[2] * normalOffset), m);
 }
 
 Material InstanceOnPointsNode::GetMaterial() const
@@ -1452,8 +1530,12 @@ void InstanceOnPointsNode::Rebuild()
    mScaleJitter.clear();
    mPosesValid = false;
 
+   // A scatter (Distribute Points, a Transform of one) wired into `points` is used as it is: its cloud stands in
+   // for vertices, so no Points to Vertices is needed in between.
+   const bool pointsAreCloud = cloudSource == nullptr && pointSource != nullptr && !pointSource->GetMesh().HasGeometry() &&
+                               pointSource->GetPointCloud() != nullptr;
    mCookWarning = DescribeGeometryMismatch(cloudSource, GeometryRequirement::kCloud);
-   if (mCookWarning.empty() && cloudSource == nullptr)
+   if (mCookWarning.empty() && cloudSource == nullptr && !pointsAreCloud)
       mCookWarning = DescribeGeometryMismatch(
          pointSource, pointMode == 0 ? GeometryRequirement::kMeshVertices : GeometryRequirement::kMeshSurface);
 
@@ -1482,20 +1564,50 @@ void InstanceOnPointsNode::Rebuild()
       return;
 
    const Mesh& srcLocal = pointSource->GetMesh();
-   // HasGeometry(), not Empty(): a vertices-only mesh (Points to Vertices'
-   // output) has no faces/edges to sample in modes 1/2, but pointMode 0
-   // (vertices) works directly off vertex positions and doesn't touch
-   // indices at all - see MeshOps::ToPoints.
-   if (!srcLocal.HasGeometry())
-      return;
-
    // Points are sampled from the source's own space, so its object-level
    // transform (move/rotate/scale the Helix, say) has to be applied before
    // sampling or it never reaches the instances scattered on it.
    const Mat4 pointModel = pointSource->GetModelMatrix();
-   const Mesh src = MeshOps::Transform(srcLocal, pointModel);
-
-   const std::vector<MeshPoint> points = MeshOps::ToPoints(src, pointMode, maxPoints);
+   std::vector<MeshPoint> points;
+   if (pointsAreCloud)
+   {
+      // Every live particle is a point, whatever pointMode says: a cloud has no edges or faces to sample.
+      const std::vector<Particle>& cloud = *pointSource->GetPointCloud();
+      float nm[9];
+      pointModel.NormalMatrix(nm);
+      const Mat4& m = pointModel;
+      for (const Particle& q : cloud)
+      {
+         if (!q.alive)
+            continue;
+         if (maxPoints > 0 && (int)points.size() >= maxPoints)
+            break;
+         MeshPoint mp;
+         mp.px = m.m[0] * q.px + m.m[4] * q.py + m.m[8] * q.pz + m.m[12];
+         mp.py = m.m[1] * q.px + m.m[5] * q.py + m.m[9] * q.pz + m.m[13];
+         mp.pz = m.m[2] * q.px + m.m[6] * q.py + m.m[10] * q.pz + m.m[14];
+         float nx = nm[0] * q.nx + nm[3] * q.ny + nm[6] * q.nz, ny = nm[1] * q.nx + nm[4] * q.ny + nm[7] * q.nz,
+               nz = nm[2] * q.nx + nm[5] * q.ny + nm[8] * q.nz;
+         const float len = std::sqrt(nx * nx + ny * ny + nz * nz);
+         if (len > 1e-6f) { nx /= len; ny /= len; nz /= len; }
+         mp.nx = nx; mp.ny = ny; mp.nz = nz;
+         mp.scale = q.scale;
+         mp.index = (int)points.size();
+         mp.r = q.r; mp.g = q.g; mp.b = q.b;
+         points.push_back(mp);
+      }
+   }
+   else
+   {
+      // HasGeometry(), not Empty(): a vertices-only mesh (Points to Vertices'
+      // output) has no faces/edges to sample in modes 1/2, but pointMode 0
+      // (vertices) works directly off vertex positions and doesn't touch
+      // indices at all - see MeshOps::ToPoints.
+      if (!srcLocal.HasGeometry())
+         return;
+      const Mesh src = MeshOps::Transform(srcLocal, pointModel);
+      points = MeshOps::ToPoints(src, pointMode, maxPoints);
+   }
    mPoses.reserve(points.size());
    mScaleJitter.reserve(points.size());
    mColors.reserve(points.size() * 3);
@@ -1504,43 +1616,10 @@ void InstanceOnPointsNode::Rebuild()
    {
       const MeshPoint& p = points[i];
       const float r0 = Rand01(seed, (int)i * 3 + 0);
-      const float r1 = Rand01(seed, (int)i * 3 + 1);
-      const float r2 = Rand01(seed, (int)i * 3 + 2);
-
       mScaleJitter.push_back(1.0f + (r0 - 0.5f) * 2.0f * scaleRandom);
-      Mat4 m = Mat4::Identity();
-
-      if (rotationRandom > 0.0f)
-      {
-         m = Mat4::Multiply(Mat4::RotationY(r1 * 6.28318530f * rotationRandom), m);
-         m = Mat4::Multiply(Mat4::RotationX(r2 * 6.28318530f * rotationRandom), m);
-      }
-
-      if (alignToNormal)
-      {
-         // Build a basis whose Y axis is the point normal, so instances stand
-         // up off the surface instead of all facing the same way.
-         float n[3] = { p.nx, p.ny, p.nz };
-         const float len = std::sqrt(n[0]*n[0] + n[1]*n[1] + n[2]*n[2]);
-         if (len > 1e-6f) { n[0] /= len; n[1] /= len; n[2] /= len; }
-         float up[3] = { 0, 1, 0 };
-         if (std::fabs(n[1]) > 0.99f) { up[0] = 1; up[1] = 0; }
-         float t[3] = { up[1]*n[2] - up[2]*n[1], up[2]*n[0] - up[0]*n[2], up[0]*n[1] - up[1]*n[0] };
-         const float tl = std::sqrt(t[0]*t[0] + t[1]*t[1] + t[2]*t[2]);
-         if (tl > 1e-6f) { t[0] /= tl; t[1] /= tl; t[2] /= tl; }
-         // t x n, so the basis (t, n, b) is right-handed; n x t would mirror every instance and turn its winding inside out.
-         const float b[3] = { t[1]*n[2] - t[2]*n[1], t[2]*n[0] - t[0]*n[2], t[0]*n[1] - t[1]*n[0] };
-
-         Mat4 basis;
-         basis.m[0] = t[0]; basis.m[1] = t[1]; basis.m[2] = t[2];
-         basis.m[4] = n[0]; basis.m[5] = n[1]; basis.m[6] = n[2];
-         basis.m[8] = b[0]; basis.m[9] = b[1]; basis.m[10] = b[2];
-         m = Mat4::Multiply(basis, m);
-      }
-
-      m = Mat4::Multiply(Mat4::Translation(p.px + p.nx * normalOffset,
-                                           p.py + p.ny * normalOffset,
-                                           p.pz + p.nz * normalOffset), m);
+      const float pt[3] = { p.px, p.py, p.pz };
+      const float nn[3] = { p.nx, p.ny, p.nz };
+      const Mat4 m = PointPose(pt, nn, (int)i);
       mPoses.push_back(m);
       mColors.push_back(p.r);
       mColors.push_back(p.g);
@@ -1581,13 +1660,16 @@ void InstanceOnPointsNode::CookIfNeeded(int frameId)
    // Select or Transform Selected upstream can change which vertices move,
    // or where they end up, without changing how many there are.
    const unsigned long long cloudRevision = cloudSource ? cloudSource->PointCloudRevision() : 0;
-   const unsigned long long pointRevision = pointSource ? pointSource->MeshRevision() : 0;
+   // A cloud wired into `points` moves with no mesh revision (a Transform upstream), so its own stamp counts too.
+   const unsigned long long pointRevision =
+      pointSource ? pointSource->MeshRevision() ^ (pointSource->PointCloudRevision() * 0x9E3779B97F4A7C15ull) : 0;
    const unsigned long long shapeRevision = instanceShape ? instanceShape->MeshRevision() : 0;
    // Neither source bumps a revision for a pure transform edit (GetModelMatrix
    // is evaluated live, including per-frame animation like spin/beat), so the
    // matrices baked into Rebuild() have to be compared directly to catch that.
    const Mat4 pointModel = pointSource ? pointSource->GetModelMatrix() : Mat4::Identity();
    const Mat4 shapeModel = instanceShape ? instanceShape->GetModelMatrix() : Mat4::Identity();
+   const Mat4 cloudModel = cloudSource ? cloudSource->GetModelMatrix() : Mat4::Identity();
    // Whether the cloud is on the GPU can change with no revision (its first
    // cook, INFINITE_GPU_POINTS), and decides which list Rebuild() keeps.
    const bool gpuCloud = cloudSource != nullptr && GpuPointsGL::Enabled() && cloudSource->GetGpuPoints() != nullptr;
@@ -1596,7 +1678,7 @@ void InstanceOnPointsNode::CookIfNeeded(int frameId)
       mBuiltCloud != (const void*)cloudSource || mBuiltCloudRevision != cloudRevision ||
       mBuiltPointRevision != pointRevision || mBuiltShapeRevision != shapeRevision ||
       !(mBuiltPointModel == pointModel) || !(mBuiltShapeModel == shapeModel) ||
-      mBuiltMode != pointMode || mBuiltMax != maxPoints ||
+      !(mBuiltCloudModel == cloudModel) || mBuiltMode != pointMode || mBuiltMax != maxPoints ||
       mBuiltScaleRand != scaleRandom ||
       mBuiltRotRand != rotationRandom || mBuiltSeed != seed ||
       mBuiltOffset != normalOffset || mBuiltAlign != alignToNormal;
@@ -1619,6 +1701,7 @@ void InstanceOnPointsNode::CookIfNeeded(int frameId)
    mBuiltShapeRevision = shapeRevision;
    mBuiltPointModel = pointModel;
    mBuiltShapeModel = shapeModel;
+   mBuiltCloudModel = cloudModel;
    mBuiltMode = pointMode;
    mBuiltMax = maxPoints;
    mBuiltScale = instanceScale;

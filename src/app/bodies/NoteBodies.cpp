@@ -221,7 +221,8 @@ namespace app
          FormParts::Inline(0.0f, gap);
          if (ActionButton::Draw("+##mixCh", ImVec2(btnH * 1.4f, btnH)))
             next = ch + 1;
-         next = std::clamp(next, 0, (int)MixerNode::kMaxSlots);
+         // The body's "+" stops at kBodySlots; a console the panel widened past it keeps its count.
+         next = std::clamp(next, 0, std::max(ch, (int)MixerNode::kBodySlots));
          if (next != ch)
          {
             PushUndoCheckpoint();
@@ -249,7 +250,7 @@ namespace app
             AudioKnobRow row(count, faderH);
             for (int i = 0; i < count; i++)
             {
-               char label[8];
+               char label[16];
                snprintf(label, sizeof(label), "%d", i + 1);
                row.Fader(label, &n->gainDb[i], -60.0f, 12.0f, "%.1f dB", faderH, /*dbTaper=*/true);
             }
@@ -298,7 +299,7 @@ namespace app
             AudioKnobRow row(count, panDia);
             for (int i = 0; i < count; i++)
             {
-               char label[8];
+               char label[16];
                snprintf(label, sizeof(label), "pan %d", i + 1);
                row.Knob(label, &n->pan[i], -1.0f, 1.0f, "%.2f", panDia);
             }
@@ -410,7 +411,7 @@ namespace app
             const ImU32 whiteCol = on ? (isLight ? tok::U32(tok::pal::c_3282F5FF) : tok::U32(tok::pal::c_78C8FFF5))
                                       : (isLight ? tok::U32(tok::pal::c_FAFAFFFF) : tok::U32(tok::pal::c_CED2DEFF));
             dl->AddRectFilled(ImVec2(x + 0.5f, origin.y + 3.0f), ImVec2(x + keyW - 0.5f, br.y - 3.0f),
-                              whiteCol, 2.0f);
+                              whiteCol, tok::radius_cell);
             if (note == ringNote)
                dl->AddRect(ImVec2(x + 1.0f, origin.y + 4.0f), ImVec2(x + keyW - 1.0f, br.y - 4.0f),
                           ringCol, 2.0f, 0, 2.0f);
@@ -426,7 +427,7 @@ namespace app
             const ImU32 blackCol = on ? (isLight ? tok::U32(tok::pal::c_1E64E6FF) : tok::U32(tok::pal::c_5AAAEBFF))
                                       : (isLight ? tok::U32(tok::pal::c_3C4150FF) : tok::U32(tok::pal::c_1A1C24FF));
             dl->AddRectFilled(ImVec2(x, origin.y + 3.0f), ImVec2(x + keyW * 0.6f, origin.y + h * 0.62f),
-                              blackCol, 2.0f);
+                              blackCol, tok::radius_cell);
             if (note == ringNote)
                dl->AddRect(ImVec2(x, origin.y + 3.0f), ImVec2(x + keyW * 0.6f, origin.y + h * 0.62f),
                           ringCol, 2.0f, 0, 2.0f);
@@ -619,7 +620,7 @@ namespace app
             const ImU32 whiteCol = on ? (isLight ? tok::U32(tok::pal::c_3282F5FF) : tok::U32(tok::pal::c_78C8FFF5))
                                       : (isLight ? tok::U32(tok::pal::c_FAFAFFFF) : tok::U32(tok::pal::c_CED2DEFF));
             dl->AddRectFilled(ImVec2(x + 0.5f, origin.y + 3.0f), ImVec2(x + keyW - 0.5f, br.y - 3.0f),
-                              whiteCol, 2.0f);
+                              whiteCol, tok::radius_cell);
          }
       }
       for (int o = 0; o < octaves; o++)
@@ -632,7 +633,7 @@ namespace app
             const ImU32 blackCol = on ? (isLight ? tok::U32(tok::pal::c_1E64E6FF) : tok::U32(tok::pal::c_5AAAEBFF))
                                       : (isLight ? tok::U32(tok::pal::c_3C4150FF) : tok::U32(tok::pal::c_1A1C24FF));
             dl->AddRectFilled(ImVec2(x, origin.y + 3.0f), ImVec2(x + keyW * 0.6f, origin.y + h * 0.62f),
-                              blackCol, 2.0f);
+                              blackCol, tok::radius_cell);
          }
       }
 
@@ -1438,7 +1439,7 @@ namespace app
    void DrawPredictiveNotesBody(GraphNode& gn, PredictiveNotesNode* n)
    {
       const float conf = n->Confidence01();
-      char stat[64];
+      char stat[128];
       if (n->IsLearning() && n->Dropped() > 0)
          snprintf(stat, sizeof(stat), "learning  -  %d notes, %d bars (%d dropped)", n->NotesCaptured(), n->BarsCaptured(), n->Dropped());
       else if (n->IsLearning())
@@ -1828,7 +1829,7 @@ namespace app
          };
 
          // ---- 1) Container chassis ----
-         dl->AddRectFilled(origin, br, isLight ? tok::U32(tok::pal::c_ECF0F8FF) : tok::U32(tok::pal::c_101016FF), 4.0f);
+         dl->AddRectFilled(origin, br, isLight ? tok::U32(tok::pal::c_ECF0F8FF) : tok::U32(tok::pal::c_101016FF), tok::radius_control);
 
          // ---- 2) Octave guide lines across pitch area ----
          const int octaveNotes[] = { 48, 60, 72 }; // C3, C4, C5
@@ -1859,7 +1860,7 @@ namespace app
             const ImU32 trackCol = isLight
                ? (isGroupStart ? tok::U32(tok::pal::c_D6DCE8FF) : tok::U32(tok::pal::c_E2E6F0FF))
                : (isGroupStart ? tok::U32(tok::pal::c_20232EFF) : tok::U32(tok::pal::c_161820FF));
-            dl->AddRectFilled(ImVec2(x0, origin.y), ImVec2(x1, origin.y + pitchH), trackCol, 2.0f);
+            dl->AddRectFilled(ImVec2(x0, origin.y), ImVec2(x1, origin.y + pitchH), trackCol, tok::radius_cell);
 
             // ---- Pitch interactive area ----
             ImGui::SetCursorScreenPos(ImVec2(x0, origin.y));
@@ -1905,7 +1906,7 @@ namespace app
             if (pitchHovered)
             {
                dl->AddRectFilled(ImVec2(x0, origin.y), ImVec2(x1, origin.y + pitchH),
-                                 isLight ? tok::U32(tok::pal::c_0000000A) : tok::U32(tok::pal::c_FFFFFF0C), 2.0f);
+                                 isLight ? tok::U32(tok::pal::c_0000000A) : tok::U32(tok::pal::c_FFFFFF0C), tok::radius_cell);
             }
 
             // Pitch bar stem (from cap to bottom of pitch area)
@@ -1915,7 +1916,7 @@ namespace app
                   ? (isLight ? tok::U32(tok::pal::c_2D7DE696) : tok::U32(tok::pal::c_3C8CEB8C))
                   : (isLight ? tok::U32(tok::pal::c_C3C8D25A) : tok::U32(tok::pal::c_262A365A));
                dl->AddRectFilled(ImVec2(x0 + 1.0f, capBot), ImVec2(x1 - 1.0f, origin.y + pitchH),
-                                 stemCol, 2.0f);
+                                 stemCol, tok::radius_cell);
             }
 
             // Note pill cap
@@ -1984,7 +1985,7 @@ namespace app
 
             // Velocity track background
             const ImU32 velTrackCol = isLight ? tok::U32(tok::pal::c_DCE1ECFF) : tok::U32(tok::pal::c_12141AFF);
-            dl->AddRectFilled(ImVec2(x0 + 1.0f, vy0 + 1.0f), ImVec2(x1 - 1.0f, vy1 - 1.0f), velTrackCol, 2.0f);
+            dl->AddRectFilled(ImVec2(x0 + 1.0f, vy0 + 1.0f), ImVec2(x1 - 1.0f, vy1 - 1.0f), velTrackCol, tok::radius_cell);
 
             const float fontVelSz = steps <= 8 ? 9.5f : 8.5f;
             if (n->stepEnabled[i])
@@ -1993,7 +1994,7 @@ namespace app
                const ImU32 vCol = isCurrent
                   ? (isLight ? tok::U32(tok::pal::c_F59B19FF) : tok::U32(tok::pal::c_FFC850FF))
                   : (isLight ? tok::U32(tok::pal::c_2378EBFF) : tok::U32(tok::pal::c_50AAFFFF));
-               dl->AddRectFilled(ImVec2(x0 + 1.0f, vFillTop), ImVec2(x1 - 1.0f, vy1 - 1.0f), vCol, 2.0f);
+               dl->AddRectFilled(ImVec2(x0 + 1.0f, vFillTop), ImVec2(x1 - 1.0f, vy1 - 1.0f), vCol, tok::radius_cell);
 
                char vStr[16];
                snprintf(vStr, sizeof(vStr), "%.0f", n->stepVelocity[i] * 100.0f);
@@ -2013,7 +2014,7 @@ namespace app
             }
 
             // ---- Step number label below each column (Pattern-style) ----
-            char label[8];
+            char label[16];
             snprintf(label, sizeof(label), "%d", i + 1);
             // Cap at the ambient UI font size and only shrink below it once a
             // column gets too narrow to fit a number at that size - the old
@@ -2080,7 +2081,7 @@ namespace app
    // the lane's span, the transport playhead, and the node's four controls.
    void DrawPianoRollBody(GraphNode& gn, PianoRollNode* n)
    {
-      const Arrange::NoteSchedule* s = n->Schedule();
+      const Arrange::NoteSchedule* s = n->DisplaySchedule();
       char stat[96];
       if (n->laneId == 0)
          snprintf(stat, sizeof(stat), "no page linked");
@@ -2095,7 +2096,7 @@ namespace app
          const ImVec2 br(origin.x + w, origin.y + h);
          ImDrawList* dl = ImGui::GetWindowDrawList();
          const bool isLight = IsThemeLight();
-         dl->AddRectFilled(origin, br, isLight ? tok::U32(tok::pal::c_ECF0F8FF) : tok::U32(tok::pal::c_101016FF), 4.0f);
+         dl->AddRectFilled(origin, br, isLight ? tok::U32(tok::pal::c_ECF0F8FF) : tok::U32(tok::pal::c_101016FF), tok::radius_control);
          if (s && !s->notes.empty())
          {
             // Span: whole bars from the first note to the last off.
@@ -2160,7 +2161,7 @@ namespace app
          row.Skip();
          row.End();
       }
-      if (ChipButton::Draw("Open##pianoOpen", false, ChipButton::kHeight, gAudioBodyW))
+      if (ChipButton::Draw("Open##pianoOpen", false, ChipButton::Height(), gAudioBodyW))
          PianoRollOpenPage(n->laneId);
 
       EndAudioBody();
@@ -2203,7 +2204,7 @@ namespace app
          const ImVec2 br(origin.x + w, origin.y + h);
          ImDrawList* dl = ImGui::GetWindowDrawList();
          const bool isLight = IsThemeLight();
-         dl->AddRectFilled(origin, br, isLight ? tok::U32(tok::pal::c_ECF0F8FF) : tok::U32(tok::pal::c_101016FF), 4.0f);
+         dl->AddRectFilled(origin, br, isLight ? tok::U32(tok::pal::c_ECF0F8FF) : tok::U32(tok::pal::c_101016FF), tok::radius_control);
          if (song && !song->events.empty())
          {
             const double len = n->LoopBeats();
@@ -2351,7 +2352,7 @@ namespace app
       const ImU32 litText = tok::U32(tok::pal::c_0B0C10FF);
       static const char* const kTypeLabels[NoteTheory::kNumChordTypes] = { "\xC2\xB7", "7", "sus2", "sus4" };
 
-      ImGui::SetWindowFontScale(tok::type_body / ImGui::GetFontSize());
+      UiType::Push(UiType::Size::Caption);
       for (int c = 0; c < kCells; c++)
       {
          const float x0 = origin.x + (float)c * (cellW + gap);
@@ -2413,7 +2414,7 @@ namespace app
 
          ImGui::PopID();
       }
-      ImGui::SetWindowFontScale(1.0f);
+      UiType::Pop();
       (void)light;
       ImGui::SetCursorScreenPos(origin);
       ImGui::Dummy(ImVec2(w, chordH + gap + typeH + 4.0f));
@@ -2520,14 +2521,14 @@ namespace app
       const float y0 = ImGui::GetCursorScreenPos().y;
       const float cellW = gAudioContentW / 4.0f;
       const float btnW = 36.0f;
-      ImGui::SetWindowFontScale(tok::type_body / ImGui::GetFontSize());
+      UiType::Push(UiType::Size::Caption);
       const float btnH = ImGui::GetFrameHeight();
       for (int i = 0; i < 4; i++)
       {
          const int v = startVoice + i;
          const float cx = x0 + (float)i * cellW + cellW * 0.5f;
          ImGui::SetCursorScreenPos(ImVec2(cx - btnW * 0.5f, y0));
-         char label[24];
+         char label[32];
          snprintf(label, sizeof(label), "%d##stackEn%d", v + 1, v);
          bool en = n->enabled[v];
          if (AudioToggleButton(label, &en, btnW))
@@ -2536,7 +2537,7 @@ namespace app
             n->enabled[v] = en;
          }
       }
-      ImGui::SetWindowFontScale(1.0f);
+      UiType::Pop();
       ImGui::SetCursorScreenPos(ImVec2(x0, y0 + btnH + 6.0f));
       ImGui::Dummy(ImVec2(0.0f, 0.0f)); // the moved cursor must end on an item or ImGui flags the window growing
    }

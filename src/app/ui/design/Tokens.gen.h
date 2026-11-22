@@ -9,16 +9,9 @@ namespace tok
    constexpr float space_4 = 16.0f;
    constexpr float space_5 = 24.0f;
    constexpr float radius_cell = 2.0f;
-   constexpr float radius_field = 4.0f;
-   constexpr float radius_tile = 6.0f;
-   constexpr float radius_pill = 8.0f;
-   constexpr float radius_group = 10.0f;
-   constexpr float type_caption = 11.0f;
+   constexpr float type_caption = 12.0f;
    constexpr float type_body = 13.0f;
-   constexpr float type_title = 15.0f;
    constexpr float type_display = 22.0f;
-   constexpr float icon_sm = 14.0f;
-   constexpr float icon_md = 18.0f;
    constexpr float icon_lg = 20.0f;
    constexpr float pin_r_cable = 7.0f;
    constexpr float pin_r_cable_sm = 5.0f;
@@ -35,9 +28,48 @@ namespace tok
    constexpr float motion_tooltip_delay = 500.0f;
    constexpr float motion_tooltip_fade = 83.0f;
    constexpr float motion_accent_fade = 188.0f;
-   constexpr float hit_min = 24.0f;
+   constexpr float hit_min = 20.0f;
    constexpr float bar_h = 48.0f;
-   constexpr float tile = 28.0f;
+   constexpr float control_h = 20.0f;
+   constexpr float row_h = 20.0f;
+   constexpr float cell_h = 32.0f;
+   constexpr float row_gap = 4.0f;
+   constexpr float section_gap = 12.0f;
+   constexpr float pad_panel = 8.0f;
+   constexpr float icon_control = 16.0f;
+   constexpr float button_min_w = 56.0f;
+   constexpr float dialog_button_min_w = 72.0f;
+   constexpr float dropdown_w_s = 96.0f;
+   constexpr float dropdown_w_m = 144.0f;
+   constexpr float label_col = 96.0f;
+   constexpr float label_w = 96.0f;
+   constexpr float label_w_wide = 200.0f;
+   constexpr float check_box = 16.0f;
+   constexpr float switch_w = 30.0f;
+   constexpr float switch_h = 16.0f;
+   constexpr float rail_w = 40.0f;
+   constexpr float radius_control = 6.0f;
+   constexpr float radius_container = 8.0f;
+   static_assert(control_h >= hit_min, "a control is never smaller than the hit minimum");
+   static_assert(row_h == control_h, "a list row is one control tall");
+   constexpr float compact_text = 11.0f;
+   constexpr float compact_row = 18.0f;
+   constexpr float compact_gap = 3.0f;
+   constexpr float compact_label = 60.0f;
+   constexpr float compact_pad = 6.0f;
+   constexpr float compact_check = 12.0f;
+   constexpr float compact_frame_pad_x = 6.0f;
+   constexpr float compact_item_gap_x = 4.0f;
+   constexpr float compact_inspector_w = 220.0f;
+   constexpr float compact_popover_w = 220.0f;
+   static_assert(compact_row > compact_text, "a compact row fits its text");
+   constexpr float page_chip_max_w = 140.0f;
+   constexpr float page_chip_min_w = 56.0f;
+   constexpr float page_rename_min_w = 96.0f;
+   constexpr float page_dot = 8.0f;
+   constexpr float page_swatch = 16.0f;
+   constexpr float page_strip_max_w = 360.0f;
+   constexpr float page_wheel_step = 40.0f;
 
    struct Rgba8 { unsigned char r, g, b, a; };
    struct Rgbaf { float r, g, b, a; };
@@ -161,6 +193,28 @@ namespace tok
    inline Pair8 terminal_ansi14 = d_terminal_ansi14;
    inline const Pair8 d_terminal_ansi15 = { {242, 244, 248, 255}, {140, 149, 159, 255} };
    inline Pair8 terminal_ansi15 = d_terminal_ansi15;
+   inline const Pair8 d_desk_chassis = { {18, 19, 22, 255}, {200, 196, 188, 255} };
+   inline Pair8 desk_chassis = d_desk_chassis;
+   inline const Pair8 d_desk_strip = { {58, 61, 68, 255}, {238, 235, 229, 255} };
+   inline Pair8 desk_strip = d_desk_strip;
+   inline const Pair8 d_desk_strip_edge = { {36, 38, 43, 255}, {216, 212, 204, 255} };
+   inline Pair8 desk_strip_edge = d_desk_strip_edge;
+   inline const Pair8 d_desk_cap_hi = { {84, 84, 84, 255}, {250, 249, 246, 255} };
+   inline Pair8 desk_cap_hi = d_desk_cap_hi;
+   inline const Pair8 d_desk_cap = { {54, 54, 54, 255}, {212, 210, 204, 255} };
+   inline Pair8 desk_cap = d_desk_cap;
+   inline const Pair8 d_desk_well = { {10, 14, 12, 255}, {26, 30, 28, 255} };
+   inline Pair8 desk_well = d_desk_well;
+   inline const Pair8 d_desk_scribble_bg = { {12, 13, 15, 255}, {250, 248, 242, 255} };
+   inline Pair8 desk_scribble_bg = d_desk_scribble_bg;
+   inline const Pair8 d_desk_scribble_text = { {250, 250, 250, 255}, {32, 32, 36, 255} };
+   inline Pair8 desk_scribble_text = d_desk_scribble_text;
+   inline const Pair8 d_desk_meter_off = { {0, 0, 0, 120}, {22, 24, 26, 220} };
+   inline Pair8 desk_meter_off = d_desk_meter_off;
+   inline const Pair8 d_desk_knurl = { {22, 22, 22, 255}, {40, 42, 46, 255} };
+   inline Pair8 desk_knurl = d_desk_knurl;
+   inline const Pair8 d_desk_legend = { {255, 255, 255, 255}, {26, 28, 32, 255} };
+   inline Pair8 desk_legend = d_desk_legend;
    inline const Rgba8 d_transparent = {0, 0, 0, 0};
    inline Rgba8 transparent = d_transparent;
    inline const Rgba8 d_record = {239, 68, 68, 255};
@@ -177,6 +231,56 @@ namespace tok
    inline Rgba8 inert = d_inert;
    inline const Rgba8 d_expression = {168, 85, 247, 255};
    inline Rgba8 expression = d_expression;
+   inline const Rgba8 d_canvas_ink = {255, 255, 255, 255};
+   inline Rgba8 canvas_ink = d_canvas_ink;
+   inline const Rgba8 d_canvas_shade = {0, 0, 0, 255};
+   inline Rgba8 canvas_shade = d_canvas_shade;
+   inline const Rgba8 d_canvas_check = {204, 204, 204, 255};
+   inline Rgba8 canvas_check = d_canvas_check;
+   inline const Rgba8 d_canvas_select = {80, 160, 255, 255};
+   inline Rgba8 canvas_select = d_canvas_select;
+   inline const Rgba8 d_label_red = {230, 80, 80, 255};
+   inline Rgba8 label_red = d_label_red;
+   inline const Rgba8 d_label_orange = {240, 150, 60, 255};
+   inline Rgba8 label_orange = d_label_orange;
+   inline const Rgba8 d_label_yellow = {235, 210, 70, 255};
+   inline Rgba8 label_yellow = d_label_yellow;
+   inline const Rgba8 d_label_green = {90, 190, 90, 255};
+   inline Rgba8 label_green = d_label_green;
+   inline const Rgba8 d_label_blue = {80, 150, 235, 255};
+   inline Rgba8 label_blue = d_label_blue;
+   inline const Rgba8 d_label_violet = {160, 110, 220, 255};
+   inline Rgba8 label_violet = d_label_violet;
+   inline const Rgba8 d_label_grey = {150, 150, 150, 255};
+   inline Rgba8 label_grey = d_label_grey;
+   inline const Rgba8 d_desk_light = {255, 255, 255, 255};
+   inline Rgba8 desk_light = d_desk_light;
+   inline const Rgba8 d_desk_shadow = {0, 0, 0, 255};
+   inline Rgba8 desk_shadow = d_desk_shadow;
+   inline const Rgba8 d_desk_screw = {92, 92, 92, 255};
+   inline Rgba8 desk_screw = d_desk_screw;
+   inline const Rgba8 d_desk_pot = {70, 73, 80, 255};
+   inline Rgba8 desk_pot = d_desk_pot;
+   inline const Rgba8 d_desk_metal = {176, 176, 176, 255};
+   inline Rgba8 desk_metal = d_desk_metal;
+   inline const Rgba8 d_desk_led_red = {255, 86, 80, 255};
+   inline Rgba8 desk_led_red = d_desk_led_red;
+   inline const Rgba8 d_desk_led_amber = {236, 190, 70, 255};
+   inline Rgba8 desk_led_amber = d_desk_led_amber;
+   inline const Rgba8 d_desk_led_green = {84, 214, 140, 255};
+   inline Rgba8 desk_led_green = d_desk_led_green;
+   inline const Rgba8 d_desk_led_yellow = {255, 214, 64, 255};
+   inline Rgba8 desk_led_yellow = d_desk_led_yellow;
+   inline const Rgba8 d_desk_led_blue = {120, 190, 255, 255};
+   inline Rgba8 desk_led_blue = d_desk_led_blue;
+   inline const Rgba8 d_desk_key_cream = {226, 220, 200, 255};
+   inline Rgba8 desk_key_cream = d_desk_key_cream;
+   inline const Rgba8 d_desk_step_led = {255, 52, 36, 255};
+   inline Rgba8 desk_step_led = d_desk_step_led;
+   inline const Rgba8 d_desk_readout = {120, 235, 160, 255};
+   inline Rgba8 desk_readout = d_desk_readout;
+   inline const Rgba8 d_desk_readout_over = {255, 115, 105, 255};
+   inline Rgba8 desk_readout_over = d_desk_readout_over;
    inline const Pairf d_dropdown_fill = { {0.16f, 0.18f, 0.24f, 1.0f}, {0.86f, 0.88f, 0.94f, 1.0f} };
    inline Pairf dropdown_fill = d_dropdown_fill;
    inline const Pairf d_dropdown_hover = { {0.28f, 0.31f, 0.42f, 1.0f}, {0.8f, 0.84f, 0.92f, 1.0f} };
@@ -248,6 +352,17 @@ namespace tok
       { "terminal.ansi13", ColorKind::Pair8, &terminal_ansi13, &d_terminal_ansi13 },
       { "terminal.ansi14", ColorKind::Pair8, &terminal_ansi14, &d_terminal_ansi14 },
       { "terminal.ansi15", ColorKind::Pair8, &terminal_ansi15, &d_terminal_ansi15 },
+      { "desk.chassis", ColorKind::Pair8, &desk_chassis, &d_desk_chassis },
+      { "desk.strip", ColorKind::Pair8, &desk_strip, &d_desk_strip },
+      { "desk.strip_edge", ColorKind::Pair8, &desk_strip_edge, &d_desk_strip_edge },
+      { "desk.cap_hi", ColorKind::Pair8, &desk_cap_hi, &d_desk_cap_hi },
+      { "desk.cap", ColorKind::Pair8, &desk_cap, &d_desk_cap },
+      { "desk.well", ColorKind::Pair8, &desk_well, &d_desk_well },
+      { "desk.scribble_bg", ColorKind::Pair8, &desk_scribble_bg, &d_desk_scribble_bg },
+      { "desk.scribble_text", ColorKind::Pair8, &desk_scribble_text, &d_desk_scribble_text },
+      { "desk.meter_off", ColorKind::Pair8, &desk_meter_off, &d_desk_meter_off },
+      { "desk.knurl", ColorKind::Pair8, &desk_knurl, &d_desk_knurl },
+      { "desk.legend", ColorKind::Pair8, &desk_legend, &d_desk_legend },
       { "transparent", ColorKind::Rgba8, &transparent, &d_transparent },
       { "record", ColorKind::Rgba8, &record, &d_record },
       { "danger_hover", ColorKind::Rgba8, &danger_hover, &d_danger_hover },
@@ -256,12 +371,37 @@ namespace tok
       { "modulation_row", ColorKind::Rgba8, &modulation_row, &d_modulation_row },
       { "inert", ColorKind::Rgba8, &inert, &d_inert },
       { "expression", ColorKind::Rgba8, &expression, &d_expression },
+      { "canvas.ink", ColorKind::Rgba8, &canvas_ink, &d_canvas_ink },
+      { "canvas.shade", ColorKind::Rgba8, &canvas_shade, &d_canvas_shade },
+      { "canvas.check", ColorKind::Rgba8, &canvas_check, &d_canvas_check },
+      { "canvas.select", ColorKind::Rgba8, &canvas_select, &d_canvas_select },
+      { "label.red", ColorKind::Rgba8, &label_red, &d_label_red },
+      { "label.orange", ColorKind::Rgba8, &label_orange, &d_label_orange },
+      { "label.yellow", ColorKind::Rgba8, &label_yellow, &d_label_yellow },
+      { "label.green", ColorKind::Rgba8, &label_green, &d_label_green },
+      { "label.blue", ColorKind::Rgba8, &label_blue, &d_label_blue },
+      { "label.violet", ColorKind::Rgba8, &label_violet, &d_label_violet },
+      { "label.grey", ColorKind::Rgba8, &label_grey, &d_label_grey },
+      { "desk.light", ColorKind::Rgba8, &desk_light, &d_desk_light },
+      { "desk.shadow", ColorKind::Rgba8, &desk_shadow, &d_desk_shadow },
+      { "desk.screw", ColorKind::Rgba8, &desk_screw, &d_desk_screw },
+      { "desk.pot", ColorKind::Rgba8, &desk_pot, &d_desk_pot },
+      { "desk.metal", ColorKind::Rgba8, &desk_metal, &d_desk_metal },
+      { "desk.led_red", ColorKind::Rgba8, &desk_led_red, &d_desk_led_red },
+      { "desk.led_amber", ColorKind::Rgba8, &desk_led_amber, &d_desk_led_amber },
+      { "desk.led_green", ColorKind::Rgba8, &desk_led_green, &d_desk_led_green },
+      { "desk.led_yellow", ColorKind::Rgba8, &desk_led_yellow, &d_desk_led_yellow },
+      { "desk.led_blue", ColorKind::Rgba8, &desk_led_blue, &d_desk_led_blue },
+      { "desk.key_cream", ColorKind::Rgba8, &desk_key_cream, &d_desk_key_cream },
+      { "desk.step_led", ColorKind::Rgba8, &desk_step_led, &d_desk_step_led },
+      { "desk.readout", ColorKind::Rgba8, &desk_readout, &d_desk_readout },
+      { "desk.readout_over", ColorKind::Rgba8, &desk_readout_over, &d_desk_readout_over },
       { "dropdown.fill", ColorKind::Pairf, &dropdown_fill, &d_dropdown_fill },
       { "dropdown.hover", ColorKind::Pairf, &dropdown_hover, &d_dropdown_hover },
       { "dropdown.active", ColorKind::Pairf, &dropdown_active, &d_dropdown_active },
       { "dropdown.text", ColorKind::Pairf, &dropdown_text, &d_dropdown_text },
    };
-   inline constexpr int kColorTokenCount = 71;
+   inline constexpr int kColorTokenCount = 107;
 
    constexpr float accent_hover = 0.36f;
    constexpr float accent_selected = 0.6f;

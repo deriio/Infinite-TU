@@ -246,7 +246,7 @@ namespace app
          char valBuf[16];
          snprintf(valBuf, sizeof(valBuf), "%+.2f", *curve);
          ImFont* font = ImGui::GetFont();
-         const float tinySize = ImGui::GetFontSize() * 0.62f;
+         const float tinySize = UiType::Px(UiType::Size::Caption);
          const ImU32 valCol = tok::U32(tok::curve_value_text, isLight);
          dl->AddText(font, tinySize, ImVec2(pos.x + 2.0f, pos.y + 1.0f), valCol, valBuf);
       }
@@ -263,8 +263,8 @@ namespace app
       const bool isLight = IsThemeLight();
       const ImU32 bgCol = tok::U32(tok::sparkline_bg, isLight);
       const ImU32 borderCol = tok::U32(tok::sparkline_border, isLight);
-      dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), bgCol, 2.0f);
-      dl->AddRect(pos, ImVec2(pos.x + width, pos.y + height), borderCol, 2.0f);
+      dl->AddRectFilled(pos, ImVec2(pos.x + width, pos.y + height), bgCol, tok::radius_cell);
+      dl->AddRect(pos, ImVec2(pos.x + width, pos.y + height), borderCol, tok::radius_cell);
 
       if (hist.count >= 2)
       {
@@ -380,7 +380,7 @@ namespace app
             ImGui::TableSetupColumn(L("Signal"), ImGuiTableColumnFlags_WidthFixed, vertical ? 42.0f : 55.0f);
             ImGui::TableSetupColumn("##unbind", ImGuiTableColumnFlags_WidthFixed, 20.0f);
             {
-               UiType::Scope hs(UiType::Size::Title, UiType::Weight::Semibold);
+               UiType::Scope hs(UiType::Size::Body, UiType::Weight::Semibold);
                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(tcol.x, tcol.y, tcol.z, 0.6f));
                ImGui::TableHeadersRow();
                ImGui::PopStyleColor();
@@ -976,17 +976,25 @@ namespace app
       const ImVec2 mouse = ImGui::GetIO().MousePos;
       const bool overPanel = mouse.x >= panelOrigin.x && mouse.x < panelOrigin.x + panelSize.x &&
                              mouse.y >= panelOrigin.y && mouse.y < panelOrigin.y + panelSize.y;
-      if (overPanel && ImGui::IsMouseReleased(ImGuiMouseButton_Right))
+      // Free space only: a row or chip that owns its own menu (the curve menu) keeps the click.
+      if (overPanel && ImGui::IsMouseClicked(ImGuiMouseButton_Right) && !ImGui::IsAnyItemHovered() &&
+          !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId))
          ImGui::OpenPopup("##modmatrixctx");
 
+      if (MenuParts::TestOpen("##modmatrixctx"))
+         ImGui::OpenPopup("##modmatrixctx");
       if (MenuParts::BeginPopup("##modmatrixctx"))
       {
          static const char* kDockLabels[] = { I18N_KEY("Bottom"), I18N_KEY("Right"), I18N_KEY("Left"), I18N_KEY("Top"), I18N_KEY("Floating Window") };
-         for (int i = 0; i < 5; i++)
-            if (MenuParts::Item(L(kDockLabels[i]), nullptr, i == gModMatrixDock))
-               gModMatrixDock = i;
+         if (MenuParts::SubMenu(L("Dock Position")))
+         {
+            for (int i = 0; i < 5; i++)
+               if (MenuParts::Item(L(kDockLabels[i]), nullptr, i == gModMatrixDock))
+                  gModMatrixDock = i;
+            ImGui::EndMenu();
+         }
          MenuParts::Separator();
-         if (MenuParts::Item(L("Close panel")))
+         if (MenuParts::Item(L("Close Mod Matrix")))
             gModMatrixOpen = false;
          MenuParts::EndPopup();
       }
@@ -1089,7 +1097,7 @@ namespace app
       // Set directly, not pushed: a push made in the child and popped in the parent unbalances both stacks.
       const ImVec2 savedSpacing = ImGui::GetStyle().ItemSpacing;
       ImGui::GetStyle().ItemSpacing = ImVec2(0.0f, 0.0f);
-      ImGui::EndChild();
+      EndChildSafe();
       ImGui::GetStyle().ItemSpacing = savedSpacing;
 
       // No divider line along the canvas-facing edge, in either theme. This

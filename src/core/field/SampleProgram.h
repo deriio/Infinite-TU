@@ -45,6 +45,23 @@ namespace Field
    // from the audio thread.
    static constexpr int kSampleMaxDeclaredAudioInputs = 16;
 
+   // Spectral Field host (docs/plans/spectral-field/README.md 5d): state is
+   // one cell per bin, so the cap is far below kSampleMaxStateCells.
+   static constexpr int kSpectralMaxStateCells = 16;
+
+   // Array ids for SampleOp::BinAt (operand a). State cell s reads id
+   // kBinArrayState + s from the previous frame's bank.
+   enum BinArray : uint8_t
+   {
+      kBinArrayMag = 0,
+      kBinArrayPhase = 1,
+      kBinArrayFreq = 2,
+      kBinArrayBMag = 3,
+      kBinArrayBPhase = 4,
+      kBinArrayBFreq = 5,
+      kBinArrayState = 6
+   };
+
    enum class SampleOp : uint8_t
    {
       Nop = 0,
@@ -59,6 +76,7 @@ namespace Field
       LoadNoteVel,   // dst = noteVel  (Step 26: most-recently-registered note's velocity, 0..1)
       LoadNoteNum,   // dst = noteNum  (Field Notes: the note's MIDI number 0..127, holds after note-off)
       LoadBeat,      // dst = beat  (Field Notes: transport position in beats at this sample, float view of the double clock)
+      LoadBrain,     // dst = Bci::ReadBrainGlobal((int)imm) (lock-free atomic read of brain.* neural global)
       Tick,          // dst = tick(div:a)  (1.0 on the one sample where the beat clock crosses a multiple of div beats)
       Deg,           // dst = deg(d:a)  (MIDI note of scale degree a under the node's Root/Scale)
       Rand,          // dst = rand()  (uniform 0..1 from the node's audio-thread generator)
@@ -78,6 +96,12 @@ namespace Field
       Sin, Cos, Tan, Sqrt, Abs, Floor, Ceil, Exp, Log,
       Min, Max, Clamp,
       PhaseShape,  // dst = phase shape imm (PhaseShape::Kind) of phase a by amount b
+      // Spectral Field host only (SampleRuntimeInput::spec is non-null).
+      LoadBin,     // dst = this bin's index
+      LoadBins,    // dst = bin count (Size / 2 + 1)
+      LoadBinHz,   // dst = Hz per bin (sr / Size)
+      LoadHop,     // dst = hop in samples
+      BinAt,       // dst = array a at bin index reg b: linear interp (phase: nearest), 0 outside [0, bins-1]
       Count
    };
 
@@ -161,6 +185,7 @@ namespace Field
       int numRegs = 0;
 
       int outReg = -1; // final register bound to 'out'; duplicated to both channels (mono kernel, v1)
+      int publishReg = -1; // Field Notes only: the register bound to `publish` at the end, read as a modulator
 
       std::vector<SampleStateInit> state; // one entry per declared state cell
       std::vector<SampleParamSlot> params; // one entry per declared param
@@ -170,6 +195,18 @@ namespace Field
       // True when the kernel calls note(); only a Field Notes node may
       // compile such a program (BackendRegister refuses it elsewhere).
       bool hasNoteEmit = false;
+
+      // Spectral Field host: the kernel's per-bin outputs. mag/phase/freq
+      // start as the analysis values and behave like locals; these are the
+      // registers bound to them at program end.
+      bool spectral = false;
+      int magOutReg = -1;
+      int phaseOutReg = -1;
+      int freqOutReg = -1;
+      bool writesPhase = false;   // raw mode: resynthesise with the written phase
+      bool writesFreq = false;
+      bool hasSpectralInput = false; // 'input bin audio B' declared
+      std::string spectralInputName;
 
       bool hasReduceRms = false;
       float reduceLoHz = 20.0f;

@@ -2,6 +2,7 @@
 #include "app/panels/InspectorPanel.h" // fork: inspector
 #include "core/GpuDiag.h" // fork
 #include "app/panels/CurveEditorPanel.h"
+#include "app/panels/FieldPatcherPanel.h"
 #include "app/ui/design/components/StatusDot.h"
 #include "app/ui/design/GlyphDraw.h"
 #include "app/ui/design/components/IconTile.h"
@@ -18,50 +19,114 @@
 #include "plugin/engine/HostAudio.h"
 #include "plugin/engine/PluginView.h"
 #include "app/ui/design/BrandLogo.gen.h"
+#include "platform/AppPaths.h"
 
 namespace app
 {
 // The rail of panel toggles down the right edge. Library leads on the top bar's centre line and the panels follow,
 // one tile apart; at the bottom, Settings in the corner, then Edit history, then the Terminal.
+std::string gRailOrder; // saved tile order
+
 static void DrawPanelRail()
 {
    PanelRail::Begin(ImGui::GetMainViewport());
-   const float step = tok::tile + tok::space_3;
-   const float top = (tok::bar_h - tok::tile) * 0.5f + step; // Library starts level with the Viewport tile
-   if (PanelRail::Item("##railLibrary", top, IconsInfinite::Library, IconsInfinite::LibraryFill, gNodePanelOpen,
-                       T("Library - search modules, samples, media and plugins")))
-      gNodePanelOpen = !gNodePanelOpen;
-   if (PanelRail::Item("##railViewport", top + step, IconsInfinite::Viewport, IconsInfinite::ViewportFill, gViewportPanelOpen,
-                       T("Viewport panel")))
-      gViewportPanelOpen = !gViewportPanelOpen;
-   if (PanelRail::Item("##railModMatrix", top + 2.0f * step, IconsInfinite::GridDots, nullptr, gModMatrixOpen,
-                       T("Modulation matrix")))
-      gModMatrixOpen = !gModMatrixOpen;
-   if (PanelRail::Item("##railPerf", top + 3.0f * step, IconsInfinite::Perform, nullptr, gPerfPanelOpen,
-                       T("Performance mode")))
-      gPerfPanelOpen = !gPerfPanelOpen;
-   if (PanelRail::Item("##railArrange", top + 4.0f * step, IconsInfinite::Cube, nullptr, gArrangePanelOpen,
-                       T("Arrangement timeline")))
-      gArrangePanelOpen = !gArrangePanelOpen;
-   if (PanelRail::Item("##railSession", top + 5.0f * step, IconsInfinite::Session, nullptr, gSessionPanelOpen,
-                       T("Session - launch clips by scene")))
-      gSessionPanelOpen = !gSessionPanelOpen;
-   if (PanelRail::Item("##railStudio", top + 6.0f * step, IconsInfinite::Waveform, nullptr, gSampleStudioOpen,
-                       T("Sample studio - generate and shape a loop (Shift+W)")))
-      gSampleStudioOpen = !gSampleStudioOpen;
-   if (PanelRail::Item("##railView3D", top + 8.0f * step, IconsInfinite::View3d, nullptr, gView3DOpen,
-                       T("3D View - arrange node outputs and render a camera (Shift+3)")))
-      gView3DOpen = !gView3DOpen;
-   if (PanelRail::Item("##railPianoRoll", top + 7.0f * step, IconsInfinite::Piano, nullptr, gPianoRollOpen,
-                       T("Piano roll - edit and generate notes (Shift+R)")))
-      gPianoRollOpen = !gPianoRollOpen;
-   if (PanelRail::Item("##railCurveEditor", top + 9.0f * step, IconsInfinite::Curve, nullptr, gCurveEditorOpen,
-                       T("Curve editor - draw and shape MSEG curves (Shift+E)")))
-      gCurveEditorOpen = !gCurveEditorOpen;
-   if (PanelRail::Item("##railInspector", top + 10.0f * step, IconsInfinite::Edit, nullptr, gInspectorOpen, // fork
-                       T("Inspector - parameters of the selected node (Shift+I)")))
-      gInspectorOpen = !gInspectorOpen;
-   const float bottom = ImGui::GetWindowHeight() - tok::tile - tok::space_2;
+   const float step = tok::control_h + tok::space_3;
+   const float top = (tok::bar_h - tok::control_h) * 0.5f + step; // Library starts level with the Viewport tile
+   struct Entry
+   {
+      const char* key;
+      const char* id;
+      const char* glyphOff;
+      const char* glyphOn;
+      bool* open;
+      const char* tip;
+   };
+   static const Entry kEntries[] = {
+      { "library", "##railLibrary", IconsInfinite::Library, IconsInfinite::LibraryFill, &gNodePanelOpen,
+        T("Library - search modules, samples, media and plugins") },
+      { "viewport", "##railViewport", IconsInfinite::Viewport, IconsInfinite::ViewportFill, &gViewportPanelOpen, T("Viewport panel") },
+      { "modmatrix", "##railModMatrix", IconsInfinite::GridDots, nullptr, &gModMatrixOpen, T("Modulation matrix") },
+      { "perf", "##railPerf", IconsInfinite::Perform, nullptr, &gPerfPanelOpen, T("Performance mode") },
+      { "mixer", "##railMixer", IconsInfinite::Mixer, nullptr, &gMixerPanelOpen, T("Mixer - every Mixer node as a console (Shift+L)") },
+      { "arrange", "##railArrange", IconsInfinite::Cube, nullptr, &gArrangePanelOpen, T("Arrangement timeline") },
+      { "session", "##railSession", IconsInfinite::Session, nullptr, &gSessionPanelOpen, T("Session - launch clips by scene") },
+      { "studio", "##railStudio", IconsInfinite::Waveform, nullptr, &gSampleStudioOpen,
+        T("Sample studio - generate and shape a loop (Shift+W)") },
+      { "piano", "##railPianoRoll", IconsInfinite::Piano, nullptr, &gPianoRollOpen, T("Piano roll - edit and generate notes (Shift+R)") },
+      { "drums", "##railDrums", IconsInfinite::Drum, nullptr, &gDrumPanelOpen, T("Drums - play and edit Drum Sequencers (Shift+J)") },
+      { "view3d", "##railView3D", IconsInfinite::View3d, nullptr, &gView3DOpen,
+        T("3D View - arrange node outputs and render a camera (Shift+3)") },
+      { "view2d", "##railView2D", IconsInfinite::Layers, nullptr, &gView2DOpen,
+        T("2D View - lay out node outputs as layers and render a picture (Shift+2)") },
+      { "curve", "##railCurveEditor", IconsInfinite::Curve, nullptr, &gCurveEditorOpen,
+        T("Curve editor - draw and shape MSEG curves (Shift+E)") },
+      { "field", "##railFieldPatcher", IconsInfinite::Code, nullptr, &gFieldPatcherOpen, T("Field patcher - Field as boxes (Shift+F)") },
+      { "inspector", "##railInspector", IconsInfinite::Edit, nullptr, &gInspectorOpen,
+        T("Inspector - parameters of the selected node (Shift+I)") }, // fork
+   };
+   constexpr int kN = (int)(sizeof(kEntries) / sizeof(kEntries[0]));
+   // The saved order (gRailOrder, comma-separated keys); unknown keys are skipped, new ones join in default place.
+   int order[kN];
+   {
+      int n = 0;
+      bool used[kN] = {};
+      size_t at = 0;
+      while (at <= gRailOrder.size() && n < kN)
+      {
+         size_t c = gRailOrder.find(',', at);
+         if (c == std::string::npos)
+            c = gRailOrder.size();
+         const std::string k = gRailOrder.substr(at, c - at);
+         at = c + 1;
+         for (int i = 0; i < kN; i++)
+            if (!used[i] && k == kEntries[i].key)
+            {
+               used[i] = true;
+               order[n++] = i;
+               break;
+            }
+      }
+      for (int i = 0; i < kN; i++)
+         if (!used[i])
+            order[n++] = i;
+   }
+   int moveFrom = -1, moveTo = -1;
+   for (int slot = 0; slot < kN; slot++)
+   {
+      const Entry& e = kEntries[order[slot]];
+      if (PanelRail::Item(e.id, top + slot * step, e.glyphOff, e.glyphOn, *e.open, e.tip))
+         *e.open = !*e.open;
+      // Drag a tile onto another to reorder; the order is saved with the workspace.
+      if (ImGui::BeginDragDropSource(ImGuiDragDropFlags_SourceNoPreviewTooltip))
+      {
+         ImGui::SetDragDropPayload("RAIL_TILE", &slot, sizeof(slot));
+         ImGui::EndDragDropSource();
+      }
+      if (ImGui::BeginDragDropTarget())
+      {
+         if (const ImGuiPayload* pl = ImGui::AcceptDragDropPayload("RAIL_TILE"))
+         {
+            moveFrom = *(const int*)pl->Data;
+            moveTo = slot;
+         }
+         ImGui::EndDragDropTarget();
+      }
+   }
+   if (moveFrom >= 0 && moveFrom != moveTo)
+   {
+      const int moved = order[moveFrom];
+      if (moveFrom < moveTo)
+         for (int i = moveFrom; i < moveTo; i++)
+            order[i] = order[i + 1];
+      else
+         for (int i = moveFrom; i > moveTo; i--)
+            order[i] = order[i - 1];
+      order[moveTo] = moved;
+      gRailOrder.clear();
+      for (int i = 0; i < kN; i++)
+         gRailOrder += std::string(i ? "," : "") + kEntries[order[i]].key;
+   }
+   const float bottom = ImGui::GetWindowHeight() - tok::control_h - tok::space_2;
    if (PanelRail::Item("##railSettings", bottom, IconsInfinite::Settings, nullptr, gSettingsOpen,
                        T("Settings")))
       gSettingsOpen = !gSettingsOpen;
@@ -134,10 +199,13 @@ void DrawMenuBar(FrameCtx& fc)
       // The bar is tok::bar_h tall: ImGui sizes it from FramePadding.y at Begin.
       const float barPadY = (tok::bar_h - ImGui::GetFontSize()) * 0.5f;
       ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(ImGui::GetStyle().FramePadding.x, barPadY));
+      // A 2D or 3D View on Fill takes the whole window, top bar included (Blender's Fullscreen Area, Photoshop's
+      // full screen mode); its own Fill icon brings the bar back.
+      const bool viewFills = (gView2DOpen && gView2DDock == 4) || (gView3DOpen && gView3DDock == 4);
       ImGui::Begin("Infinite", nullptr,
                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoBringToFrontOnFocus |
-                   ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoScrollbar |
+                   (viewFills ? 0 : ImGuiWindowFlags_MenuBar) | ImGuiWindowFlags_NoScrollbar |
                    ImGuiWindowFlags_NoScrollWithMouse);
       ImGui::PopStyleVar(2);
 
@@ -152,7 +220,7 @@ void DrawMenuBar(FrameCtx& fc)
          float* sMenuMidYPtr = nullptr;
          // Infinite mark (the app icon): opens the About dialog.
          {
-            const float s = tok::tile;
+            const float s = tok::control_h;
             const ImVec2 p0 = ImGui::GetCursorScreenPos();
             // Same centre line as the File/Edit/Menu well (measured last frame), same height.
             static float sMenuMidY = 0.0f;
@@ -176,8 +244,10 @@ void DrawMenuBar(FrameCtx& fc)
          auto GroupTile = [&](const char* label) -> bool
          {
             // Menu-bar items do not share a y after the first; pin each tile to the group's line.
+            // A menu-bar title's box reaches 8 px left of the cursor (MenuTile's 16 spacing: +8 in, -16 out), so add 8 back
+            // for a true 2 px gap between tiles.
             if (menuGroupY1 > 0.0f)
-               ImGui::SetCursorScreenPos(ImVec2(menuGroupMaxX + 2.0f, menuGroupP.y));
+               ImGui::SetCursorScreenPos(ImVec2(menuGroupMaxX + 2.0f + 8.0f, menuGroupP.y));
             const bool open = MenuTile(label);
             menuGroupMaxX = std::max(menuGroupMaxX, ImGui::GetItemRectMax().x);
             if (menuGroupY1 <= 0.0f)
@@ -217,9 +287,7 @@ void DrawMenuBar(FrameCtx& fc)
                const std::vector<std::string> recents = Patch::Recents();
                for (const std::string& entry : recents)
                {
-                  const size_t slash = entry.find_last_of('/');
-                  const std::string name =
-                     (slash == std::string::npos) ? entry : entry.substr(slash + 1);
+                  const std::string name = AppPaths::FsPath(entry).filename().u8string();
                   if (MenuParts::Item(name.c_str()))
                      GuardUnsavedChanges([entry]() { LoadPatchFrom(entry); });
                }
@@ -243,10 +311,8 @@ void DrawMenuBar(FrameCtx& fc)
                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 260.0f);
                if (!gPatchPath.empty())
                {
-                  const size_t slash = gPatchPath.find_last_of('/');
-                  ImGui::TextDisabled("%s", (slash == std::string::npos)
-                                               ? gPatchPath.c_str()
-                                               : gPatchPath.c_str() + slash + 1);
+                  const std::string base = AppPaths::FsPath(gPatchPath).filename().u8string();
+                  ImGui::TextDisabled("%s", base.c_str());
                }
                if (!gPatchStatus.empty())
                   ImGui::TextDisabled("%s", gPatchStatus.c_str());
@@ -270,7 +336,9 @@ void DrawMenuBar(FrameCtx& fc)
                MenuParts::Check(L("History"), &gHistoryOpen);
             }
             MenuParts::Separator();
-            if (MenuParts::Item(L("Cut / Copy"), MODKEY "+C"))
+            if (MenuParts::Item(L("Cut"), MODKEY "+X"))
+               gRequestCut = true;
+            if (MenuParts::Item(L("Copy"), MODKEY "+C"))
                gRequestCopy = true;
             if (MenuParts::Item(L("Paste"), MODKEY "+V"))
                gRequestPaste = true;
@@ -327,9 +395,9 @@ void DrawMenuBar(FrameCtx& fc)
                                            kViewportPanelMinHeight, 800.0f, "%.0f px");
                      }
                      MenuParts::Separator();
-                     if (!gViewportPanelNodes.empty() && MenuParts::Item(L("Clear cards")))
+                     if (!gViewportPanelNodes.empty() && MenuParts::Item(L("Clear Cards")))
                         gViewportPanelNodes.clear();
-                     if (MenuParts::Item(L("Close viewport panel")))
+                     if (MenuParts::Item(L("Close Viewport")))
                         gViewportPanelOpen = false;
                   }
                   ImGui::EndMenu();
@@ -360,6 +428,22 @@ void DrawMenuBar(FrameCtx& fc)
                         FieldWell::Slider(L("Height"), &gModMatrixHeight,
                                            kModMatrixMinHeight, 800.0f, "%.0f px");
                      }
+                  }
+                  ImGui::EndMenu();
+               }
+
+               if (MenuParts::SubMenu(L("Mixer")))
+               {
+                  MenuParts::Check(L("Show Mixer"), &gMixerPanelOpen);
+                  if (gMixerPanelOpen)
+                  {
+                     ImGui::SetNextItemWidth(150);
+                     FieldWell::PushStyle(); MixerPanelDockCombo(); FieldWell::PopStyle();
+                     ImGui::SetNextItemWidth(150);
+                     if (gMixerPanelDock == 1 || gMixerPanelDock == 2)
+                        FieldWell::Slider(L("Width"), &gMixerPanelWidth, kMixerPanelMinWidth, 1600.0f, "%.0f px");
+                     else if (gMixerPanelDock != kDockFloating)
+                        FieldWell::Slider(L("Height"), &gMixerPanelHeight, kMixerPanelMinHeight, 800.0f, "%.0f px");
                   }
                   ImGui::EndMenu();
                }
@@ -462,8 +546,37 @@ void DrawMenuBar(FrameCtx& fc)
                   ImGui::EndMenu();
                };
                dockedPanelMenu(L("Sample Studio"), L("Show Sample Studio"), gSampleStudioOpen, gSampleStudioDock, gSampleStudioHeight, "##studiodock");
-               dockedPanelMenu(L("3D View"), L("Show 3D View"), gView3DOpen, gView3DDock, gView3DHeight, "##view3ddock");
+               // The 2D and 3D Views dock on every side, or fill the window in the canvas's place.
+               auto viewPanelMenu = [](const char* name, const char* show, bool& open, int which, float& height, float& width, const char* dockId) {
+                  if (!MenuParts::SubMenu(name))
+                     return;
+                  MenuParts::Check(show, &open);
+                  if (open)
+                  {
+                     static const char* kDockNames[] = { I18N_KEY("Bottom"), I18N_KEY("Right"), I18N_KEY("Left"), I18N_KEY("Top"), I18N_KEY("Fill") };
+                     const int dock = which == 2 ? gView2DDock : gView3DDock;
+                     ImGui::SetNextItemWidth(150);
+                     FieldWell::PushStyle();
+                     if (MenuParts::BeginCombo(dockId, T(kDockNames[dock])))
+                     {
+                        for (int i = 0; i < 5; ++i)
+                           if (MenuParts::Choice(L(kDockNames[i]), i == dock))
+                              SetViewDock(which, i);
+                        MenuParts::EndCombo();
+                     }
+                     FieldWell::PopStyle();
+                     ImGui::SetNextItemWidth(150);
+                     if (dock == 1 || dock == 2)
+                        FieldWell::Slider(L("Width"), &width, 320.0f, 1600.0f, "%.0f px");
+                     else if (dock != 4)
+                        FieldWell::Slider(L("Height"), &height, 300.0f, 800.0f, "%.0f px");
+                  }
+                  ImGui::EndMenu();
+               };
+               viewPanelMenu(L("3D View"), L("Show 3D View"), gView3DOpen, 3, gView3DHeight, gView3DWidth, "##view3ddock");
+               viewPanelMenu(L("2D View"), L("Show 2D View"), gView2DOpen, 2, gView2DHeight, gView2DWidth, "##view2ddock");
                dockedPanelMenu(L("Piano Roll"), L("Show Piano Roll"), gPianoRollOpen, gPianoRollDock, gPianoRollHeight, "##rolldock");
+               dockedPanelMenu(L("Drums"), L("Show Drums"), gDrumPanelOpen, gDrumPanelDock, gDrumPanelHeight, "##drumsdock");
                if (!Platform::PluginModeActive() && MenuParts::SubMenu(L("Terminal"))) // no shell inside a DAW
                {
                   MenuParts::Check(L("Show Terminal"), &gTerminalOpen);
@@ -507,6 +620,28 @@ void DrawMenuBar(FrameCtx& fc)
                      FieldWell::PopStyle();
                      ImGui::SetNextItemWidth(150);
                      FieldWell::Slider(L("Height"), &gCurveEditorHeight, 220.0f, 800.0f, "%.0f px");
+                  }
+                  ImGui::EndMenu();
+               }
+               if (MenuParts::SubMenu(L("Field Patcher")))
+               {
+                  MenuParts::Check(L("Show Field Patcher"), &gFieldPatcherOpen);
+                  if (gFieldPatcherOpen)
+                  {
+                     static const char* kPatcherDocks[] = { I18N_KEY("Bottom"), I18N_KEY("Top") };
+                     static const int kPatcherDockCodes[] = { 0, 3 };
+                     ImGui::SetNextItemWidth(150);
+                     FieldWell::PushStyle();
+                     if (MenuParts::BeginCombo("##patcherdock", T(kPatcherDocks[gFieldPatcherDock == 3 ? 1 : 0])))
+                     {
+                        for (int i = 0; i < 2; ++i)
+                           if (MenuParts::Choice(L(kPatcherDocks[i]), kPatcherDockCodes[i] == gFieldPatcherDock))
+                              gFieldPatcherDock = kPatcherDockCodes[i];
+                        MenuParts::EndCombo();
+                     }
+                     FieldWell::PopStyle();
+                     ImGui::SetNextItemWidth(150);
+                     FieldWell::Slider(L("Height"), &gFieldPatcherHeight, 220.0f, 800.0f, "%.0f px");
                   }
                   ImGui::EndMenu();
                }
@@ -600,8 +735,8 @@ void DrawMenuBar(FrameCtx& fc)
             const float mid = (menuGroupY0 + menuGroupY1) * 0.5f;
             if (sMenuMidYPtr != nullptr)
                *sMenuMidYPtr = mid;
-            menuDl->AddRectFilled(ImVec2(menuGroupP.x - 2.0f, mid - tok::tile * 0.5f), ImVec2(menuGroupMaxX + 2.0f, mid + tok::tile * 0.5f),
-               ImGui::GetColorU32(ImVec4(tx.x, tx.y, tx.z, 0.06f)), tok::radius_tile);
+            menuDl->AddRectFilled(ImVec2(menuGroupP.x - 2.0f, mid - tok::control_h * 0.5f), ImVec2(menuGroupMaxX + 2.0f, mid + tok::control_h * 0.5f),
+               ImGui::GetColorU32(ImVec4(tx.x, tx.y, tx.z, 0.06f)), tok::radius_control);
          }
          menuDl->ChannelsMerge();
 
@@ -616,9 +751,9 @@ void DrawMenuBar(FrameCtx& fc)
          ImGui::PushStyleColor(ImGuiCol_ButtonHovered, tok::V4(tok::palf::v_1000_1000_1000_80));
          ImGui::PushStyleColor(ImGuiCol_ButtonActive, tok::V4(tok::palf::v_1000_1000_1000_160));
          ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_tile);
-         // 28 pt controls (tok::tile) on one centre line; the cursor Y below pins them in the bar.
-         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, (tok::tile - ImGui::GetFontSize()) * 0.5f));
+         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, tok::radius_control);
+         // 24 pt controls (tok::control_h) on one centre line; the cursor Y below pins them in the bar.
+         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8.0f, (tok::control_h - ImGui::GetFontSize()) * 0.5f));
          ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4.0f, 4.0f));
 
          // Right-edge items are placed at an absolute x on the bar's line.
@@ -626,15 +761,6 @@ void DrawMenuBar(FrameCtx& fc)
          auto TopBarSameLine = [](float spacing = 4.0f) {
             ImGui::SameLine(0.0f, spacing);
          };
-         auto TopBarLabel = [](const char* text, bool disabled = false) {
-            ImGuiWindow* window = ImGui::GetCurrentWindow();
-            window->DC.CurrLineTextBaseOffset = ImGui::GetStyle().FramePadding.y;
-            if (disabled)
-               ImGui::TextDisabled("%s", text);
-            else
-               ImGui::TextUnformatted(text);
-         };
-         const bool isLight = IsThemeLight();
          // A live number: tabular digits in a slot as wide as its widest value, so it never
          // shifts what sits beside it. `widest` is the longest text it can show.
          auto TabLabel = [](const char* key, const char* text, const char* widest, bool dim)
@@ -642,21 +768,21 @@ void DrawMenuBar(FrameCtx& fc)
             const ImVec2 p = ImGui::GetCursorScreenPos();
             float w;
             {
-               UiType::Scope ts(UiType::Size::Title, UiType::Weight::Regular);
+               UiType::Scope ts(UiType::Size::Body, UiType::Weight::Regular);
                w = std::max(Readout::Measure(widest), Readout::Measure(text));
             }
-            ImGui::Dummy(ImVec2(w, tok::tile));
-            Readout::Draw(key, UiLayout::Rect { p.x, p.y, w, tok::tile }, text, text, UiType::Size::Title,
+            ImGui::Dummy(ImVec2(w, tok::control_h));
+            Readout::Draw(key, UiLayout::Rect { p.x, p.y, w, tok::control_h }, text, text, UiType::Size::Body,
                           UiType::Weight::Regular, Readout::Align::Left, dim ? 0.5f : 1.0f);
          };
 
          auto& SectionBreak = TopBarParts::SectionBreak;
-         // Everything after the menus sits on one centre line, tok::tile tall in a tok::bar_h bar.
+         // Everything after the menus sits on one centre line, tok::control_h tall in a tok::bar_h bar.
 
          auto drawTransport = [&]()
          {
          // 1. Transport (Play, Rewind, Audio On/Off)
-         if (ActionButton::Draw("##transportplay", ImVec2(tok::tile + 4.0f, 0),
+         if (ActionButton::Draw("##transportplay", ImVec2(tok::control_h, 0),
                                 isTransportPlaying ? ActionButton::Kind::Go : ActionButton::Kind::Plain))
             LaunchRequestTogglePlay();
          {
@@ -664,7 +790,7 @@ void DrawMenuBar(FrameCtx& fc)
             const ImVec2 bmin = ImGui::GetItemRectMin();
             const ImVec2 bmax = ImGui::GetItemRectMax();
             const ImVec2 center((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f);
-            const float iconSize = tok::icon_md;
+            const float iconSize = tok::icon_control;
             const ImU32 col = isTransportPlaying
                                   ? tok::U32(tok::pal::c_FFFFFFFF)
                                   : ImGui::GetColorU32(ImGuiCol_Text);
@@ -677,14 +803,14 @@ void DrawMenuBar(FrameCtx& fc)
             HelpTip(T("%s (Space)"), isTransportPlaying ? T("Pause") : T("Play"));
 
          ImGui::SetCursorScreenPos(ImVec2(ImGui::GetItemRectMax().x + 4.0f, ImGui::GetItemRectMin().y));
-         if (ActionButton::Draw("##transportrewind", ImVec2(tok::tile + 4.0f, 0)))
+         if (ActionButton::Draw("##transportrewind", ImVec2(tok::control_h, 0)))
             LaunchRequestRewind();
          {
             ImDrawList* dl = ImGui::GetWindowDrawList();
             const ImVec2 bmin = ImGui::GetItemRectMin();
             const ImVec2 bmax = ImGui::GetItemRectMax();
             const ImVec2 center((bmin.x + bmax.x) * 0.5f, (bmin.y + bmax.y) * 0.5f);
-            const float iconSize = tok::icon_md;
+            const float iconSize = tok::icon_control;
             const ImU32 col = ImGui::GetColorU32(ImGuiCol_Text);
             glyph::DrawPlayerRewind(dl, center, iconSize, col);
          }
@@ -704,7 +830,7 @@ void DrawMenuBar(FrameCtx& fc)
          {
             const bool engineOn = AudioEngine::Instance().SampleRate() > 0.0;
             const bool audioOn = engineOn;
-            if (ChipButton::Draw(audioOn ? L("Stop Audio") : L("Start Audio"), audioOn, tok::tile, 0.0f, true))
+            if (ChipButton::Draw(audioOn ? L("Stop Audio") : L("Start Audio"), audioOn, tok::control_h, 0.0f, true))
             {
                if (audioOn)
                {
@@ -732,7 +858,7 @@ void DrawMenuBar(FrameCtx& fc)
             if (gAudioMode == AudioMode::Timeline)
             {
                TopBarSameLine(4.0f);
-               if (ChipButton::Draw(T("Timeline"), true, tok::tile, 0.0f, true))
+               if (ChipButton::Draw(T("Timeline"), true, tok::control_h, 0.0f, true))
                   gAudioMode = AudioMode::Canvas;
                if (ImGui::IsItemHovered())
                   HelpTip(engineOn
@@ -742,7 +868,7 @@ void DrawMenuBar(FrameCtx& fc)
             else if (gAudioMode == AudioMode::Session)
             {
                TopBarSameLine(4.0f);
-               if (ChipButton::Draw(L("Session##sessionbadge"), true, tok::tile, 0.0f, true))
+               if (ChipButton::Draw(L("Session##sessionbadge"), true, tok::control_h, 0.0f, true))
                   gAudioMode = AudioMode::Canvas;
                if (ImGui::IsItemHovered())
                   HelpTip(engineOn
@@ -752,12 +878,22 @@ void DrawMenuBar(FrameCtx& fc)
             else if (gAudioMode == AudioMode::Studio)
             {
                TopBarSameLine(4.0f);
-               if (ChipButton::Draw(L("Studio##studiobadge"), true, tok::tile, 0.0f, true))
+               if (ChipButton::Draw(L("Studio##studiobadge"), true, tok::control_h, 0.0f, true))
                   gAudioMode = AudioMode::Canvas;
                if (ImGui::IsItemHovered())
                   HelpTip(engineOn
                      ? T("The Sample studio's take is driving audio. Click to hand it back to the canvas.")
                      : T("The Sample studio's take will drive audio once the engine is started."));
+            }
+            else if (gAudioMode == AudioMode::Mixer)
+            {
+               TopBarSameLine(4.0f);
+               if (ChipButton::Draw(L("Mixer##mixerbadge"), true, tok::control_h, 0.0f, true))
+                  SetMixerAudio(false);
+               if (ImGui::IsItemHovered())
+                  HelpTip(engineOn
+                     ? T("The Mixer panel's console is driving audio. Click to hand it back to the canvas.")
+                     : T("The Mixer panel's console will drive audio once the engine is started."));
             }
          };
 
@@ -768,7 +904,7 @@ void DrawMenuBar(FrameCtx& fc)
          const float centreX = std::max(leftClusterEndX + tok::space_5,
                                         std::round((ImGui::GetWindowWidth() - sCentreW) * 0.5f));
          ImGui::SameLine(centreX);
-         ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX(), (tok::bar_h - tok::tile) * 0.5f));
+         ImGui::SetCursorPos(ImVec2(ImGui::GetCursorPosX(), (tok::bar_h - tok::control_h) * 0.5f));
          const float centreStartScreenX = ImGui::GetCursorScreenPos().x;
          // Transport sits just left of the tempo, audio power just right of it.
          if (!Platform::PluginModeActive()) // the DAW's transport plays and stops the plugin
@@ -857,7 +993,7 @@ void DrawMenuBar(FrameCtx& fc)
             const float cellW = std::max({ tempoCellW, sigCellW, keyCellW });
             tempoCellW = sigCellW = keyCellW = cellW;
          }
-         const float centreY = ImGui::GetCursorScreenPos().y + tok::tile * 0.5f;
+         const float centreY = ImGui::GetCursorScreenPos().y + tok::control_h * 0.5f;
          const ImVec2 wellMin(std::round(ImGui::GetCursorScreenPos().x), std::round(centreY - TD::kHeight * 0.5f));
          // The metronome is the display's last cell: a square the height of the well, set off by a hairline.
          // Not inside a DAW: the host plays its own click.
@@ -1030,12 +1166,15 @@ void DrawMenuBar(FrameCtx& fc)
                TD::Wash(ImVec2(x, wellMin.y), ImVec2(x + w, wellMin.y + TD::kHeight), hv, ImGui::IsItemActive());
                TD::Value(id, x, w, wellMin.y, shown);
             };
-            // Key and scale keep fixed widths (the scale's is the longest name's), so the pair never moves.
-            const float curScaleW = scaleW;
+            // The cell keeps one width (sized to "C#" and the longest scale); key and scale are sized to what they show,
+            // so "C Major" sits as one centred pair, not a key pinned left of a wide scale slot.
+            const char* keyShown = kKeyNames[std::clamp(curKey, 0, 11)];
+            const float curKeyW = TD::ValueWidth(keyShown) + fieldPad;
+            const float curScaleW = TD::ValueWidth(capScaleName.c_str()) + fieldPad;
             const float cellX = wellMin.x + tempoCellW + sigCellW;
-            const float kx = std::round(cellX + (keyCellW - (keyW + curScaleW)) * 0.5f);
-            Pick("##keyField", kx, keyW, kKeyNames[std::clamp(curKey, 0, 11)], "##globalKeyPopup");
-            Pick("##scaleField", kx + keyW, curScaleW, capScaleName.c_str(), "##globalScalePopup");
+            const float kx = std::round(cellX + (keyCellW - (curKeyW + curScaleW)) * 0.5f);
+            Pick("##keyField", kx, curKeyW, keyShown, "##globalKeyPopup");
+            Pick("##scaleField", kx + curKeyW, curScaleW, capScaleName.c_str(), "##globalScalePopup");
          }
 
          if (MenuParts::BeginPopup("##globalKeyPopup"))
@@ -1063,11 +1202,11 @@ void DrawMenuBar(FrameCtx& fc)
             AudioEngine::Instance().SetMetronome(false, gMetronomeVolume, gMetronomeAccent);
          else
          {
-         ImGui::SetCursorScreenPos(ImVec2(wellMax.x - clickCellW + (clickCellW - tok::tile) * 0.5f, centreY - tok::tile * 0.5f));
+         ImGui::SetCursorScreenPos(ImVec2(wellMax.x - clickCellW + (clickCellW - tok::control_h) * 0.5f, centreY - tok::control_h * 0.5f));
          {
             // Same tile as the panel toggles: outline glyph off, accent tile + filled glyph on.
             if (IconTile::Draw("##metronomeBtn", IconsInfinite::Metronome, IconsInfinite::MetronomeFill, gMetronomeOn,
-                               tok::tile, ImGui::GetFrameHeight(), true,
+                               tok::control_h, ImGui::GetFrameHeight(), true,
                                // Pendulum swings to the other side on every beat while the click is on and playing.
                                (gMetronomeOn && isTransportPlaying)
                                   ? (((long long)std::floor(transport.Beats()) & 1) ? 1.0f : -1.0f)
@@ -1106,7 +1245,7 @@ void DrawMenuBar(FrameCtx& fc)
          if (!Platform::PluginModeActive()) // the DAW owns the audio device
          {
             SectionBreak();
-            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, centreY - tok::tile * 0.5f));
+            ImGui::SetCursorScreenPos(ImVec2(ImGui::GetCursorScreenPos().x, centreY - tok::control_h * 0.5f));
             drawAudio();
          }
          DrawTopBarParamsTools(centreY); // fork: params show/hide + inspector tiles
@@ -1146,7 +1285,7 @@ void DrawMenuBar(FrameCtx& fc)
 
          auto TabWidth = [](const char* widest, const char* text)
          {
-            UiType::Scope ts(UiType::Size::Title, UiType::Weight::Regular);
+            UiType::Scope ts(UiType::Size::Body, UiType::Weight::Regular);
             return std::max(Readout::Measure(widest), Readout::Measure(text));
          };
          const char* cpuWidest = audioDead ? cpuReadout : "cpu 99%";
@@ -1169,20 +1308,20 @@ void DrawMenuBar(FrameCtx& fc)
 #endif
          if (showUpdate)
          {
-            const float updateWidth = tok::tile;
+            const float updateWidth = tok::control_h;
             if (cursorX - updateWidth - telemetryGap - telemetryW >= centreEndX + minGap)
             {
                cursorX -= updateWidth;
                TopBarPlaceAt(cursorX);
                ImGui::PushID("##updateicon");
-               const bool clicked = ImGui::InvisibleButton("##update", ImVec2(tok::tile, tok::tile));
+               const bool clicked = ImGui::InvisibleButton("##update", ImVec2(tok::control_h, tok::control_h));
                ImGui::PopID();
                const bool hov = ImGui::IsItemHovered();
                const ImVec2 mn = ImGui::GetItemRectMin(), mx = ImGui::GetItemRectMax();
                const ImVec2 c((mn.x + mx.x) * 0.5f, (mn.y + mx.y) * 0.5f);
                ImDrawList* dl = ImGui::GetWindowDrawList();
                const ImVec4 ac = ImGui::GetStyleColorVec4(ImGuiCol_CheckMark);
-               dl->AddRectFilled(mn, mx, ImGui::GetColorU32(ImVec4(ac.x, ac.y, ac.z, hov ? 0.28f : 0.16f)), tok::radius_tile);
+               dl->AddRectFilled(mn, mx, ImGui::GetColorU32(ImVec4(ac.x, ac.y, ac.z, hov ? 0.28f : 0.16f)), tok::radius_control);
                const ImU32 fg = ImGui::GetColorU32(ac);
                dl->AddLine(ImVec2(c.x, c.y - 6.0f), ImVec2(c.x, c.y + 4.0f), fg, 1.8f);
                dl->AddLine(ImVec2(c.x - 4.5f, c.y), ImVec2(c.x, c.y + 4.5f), fg, 1.8f);
@@ -1208,40 +1347,40 @@ void DrawMenuBar(FrameCtx& fc)
          if (Platform::PluginModeActive())
          {
             auto fits = [&](float w) { return cursorX - w - telemetryGap - telemetryW >= centreEndX + minGap; };
-            if (fits(tok::tile))
+            if (fits(tok::control_h))
             {
-               cursorX -= tok::tile;
+               cursorX -= tok::control_h;
                TopBarPlaceAt(cursorX);
                const bool popped = PluginView::Popped();
-               if (IconTile::Draw("##popout", IconsInfinite::PopOut, IconsInfinite::PopOut, popped, tok::tile,
+               if (IconTile::Draw("##popout", IconsInfinite::PopOut, IconsInfinite::PopOut, popped, tok::control_h,
                                   ImGui::GetFrameHeight()))
                   PluginView::RequestPopped(!popped);
                if (ImGui::IsItemHovered())
                   ImGui::SetTooltip("%s", popped ? T("Back to the plugin") : T("Pop out"));
                cursorX -= telemetryGap;
             }
-            if (fits(tok::tile))
+            if (fits(tok::control_h))
             {
-               cursorX -= tok::tile;
+               cursorX -= tok::control_h;
                TopBarPlaceAt(cursorX);
                const bool picture = PluginView::Picture();
-               if (IconTile::Draw("##picture", IconsInfinite::Viewport, IconsInfinite::ViewportFill, picture, tok::tile,
+               if (IconTile::Draw("##picture", IconsInfinite::Viewport, IconsInfinite::ViewportFill, picture, tok::control_h,
                                   ImGui::GetFrameHeight()))
                   PluginView::SetPicture(!picture);
                if (ImGui::IsItemHovered())
                   ImGui::SetTooltip("%s", picture ? T("Canvas") : T("Picture"));
                cursorX -= telemetryGap;
             }
-            if (fits(tok::tile))
+            if (fits(tok::control_h))
             {
-               cursorX -= tok::tile;
+               cursorX -= tok::control_h;
                TopBarPlaceAt(cursorX);
                if (IconTile::Draw("##slots", IconsInfinite::FamilyMacros, IconsInfinite::FamilyMacros,
-                                  ImGui::IsPopupOpen("##slotsmap"), tok::tile, ImGui::GetFrameHeight()))
+                                  ImGui::IsPopupOpen("##slotsmap"), tok::control_h, ImGui::GetFrameHeight()))
                   ImGui::OpenPopup("##slotsmap");
                if (ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##slotsmap"))
                   ImGui::SetTooltip("%s", T("Host slots"));
-               if (ImGui::BeginPopup("##slotsmap"))
+               if (MenuParts::BeginPopup("##slotsmap"))
                {
                   int shown = 0;
                   for (int i = 0; i < PluginEngine::kSlotCount; i++)
@@ -1254,7 +1393,7 @@ void DrawMenuBar(FrameCtx& fc)
                   }
                   if (shown == 0)
                      ImGui::TextDisabled("%s", T("No Macro is on a host slot"));
-                  ImGui::EndPopup();
+                  MenuParts::EndPopup();
                }
                cursorX -= telemetryGap;
             }

@@ -19,12 +19,12 @@ project(Infinite LANGUAGES C CXX)
 # "am I current" comparison. Bump this (and INFINITE_VERSION_RC below it,
 # kept in sync by hand) when cutting a release; nothing else should hardcode
 # a version string.
-set(INFINITE_VERSION "1.2.0")
+set(INFINITE_VERSION "2.0.0")
 # VERSIONINFO (src/platform/win/Infinite.rc.in) wants four dot/comma-separated
 # numeric components but INFINITE_VERSION is three; kept as an explicit
 # second value rather than derived, so bump both together when cutting a
 # release.
-set(INFINITE_VERSION_RC "1,2,0,0")
+set(INFINITE_VERSION_RC "2,0,0,0")
 string(REPLACE "," "." INFINITE_VERSION_RC_STR "${INFINITE_VERSION_RC}")
 
 if(APPLE)
@@ -500,6 +500,7 @@ set(COMMON_SOURCES
     src/app/frame/StagePopupsB.cpp
     src/app/frame/StagePresent.cpp
     src/app/frame/StageSidePanels.cpp
+    src/app/frame/CanvasLink.cpp
     src/app/frame/StageTestsB.cpp
     src/app/graph/AudioTopology.cpp
     src/app/graph/Core.cpp
@@ -542,8 +543,11 @@ set(COMMON_SOURCES
     src/app/panels/PatchOpenerCheck.cpp
     src/app/panels/HistoryPanel.cpp
     src/app/panels/PianoRollPanel.cpp
+    src/app/panels/DrumPanel.cpp
     src/app/panels/CurveEditorPanel.cpp
+    src/app/panels/FieldPatcherPanel.cpp
     src/app/panels/View3DPanel.cpp
+    src/app/panels/View2DPanel.cpp
     src/app/panels/TerminalPanel.cpp
     src/app/panels/CliSetupSection.cpp
     src/app/panels/DawPluginSection.cpp
@@ -567,12 +571,15 @@ set(COMMON_SOURCES
     src/core/chat/NodeFinder.cpp
     src/core/chat/FileFinder.cpp
     src/core/chat/ChatThread.cpp
+    src/core/chat/OpenAIAgent.cpp
     src/app/panels/TerminalDraw.cpp
     src/app/panels/SampleStudioPanel.cpp
     src/app/panels/TemplatesWindow.cpp
     src/app/panels/Diagnostics.cpp
     src/app/panels/ModMatrixPanel.cpp
     src/app/panels/InspectorPanel.cpp
+    src/app/panels/MixerPanel.cpp
+    src/app/panels/MixerRender.cpp
     src/app/panels/PerfPanel.cpp
     src/app/panels/SettingsWindow.cpp
     src/app/panels/ViewportPanel.cpp
@@ -582,7 +589,12 @@ set(COMMON_SOURCES
     src/app/selftest/UiAudit.cpp
     src/app/selftest/MidiOutTests.cpp
     src/app/selftest/View3DNavTests.cpp
+    src/app/selftest/View2DTests.cpp
+    src/app/selftest/MixerPanelTests.cpp
+    src/app/selftest/PageMenuTests.cpp
+    src/app/selftest/MenuAliveTests.cpp
     src/app/selftest/EditMeshRefineTests.cpp
+    src/app/selftest/FurTests.cpp
     src/app/selftest/CliSetupTests.cpp
     src/app/selftest/ChatTests.cpp
     src/app/selftest/BenchScenes.cpp
@@ -593,6 +605,7 @@ set(COMMON_SOURCES
     src/app/selftest/AliasTests.cpp
     src/app/selftest/FxAudit.cpp
     src/app/selftest/ModAudit.cpp
+    src/app/selftest/BciTests.cpp
     src/app/selftest/PresetTests.cpp
     src/app/selftest/SynthAudit.cpp
     src/app/selftest/NoteAudit.cpp
@@ -604,6 +617,7 @@ set(COMMON_SOURCES
     src/app/selftest/GenSampleTests.cpp
     src/app/selftest/FieldTests1.cpp
     src/app/selftest/FieldTests2.cpp
+    src/app/selftest/SpectralFieldTests.cpp
     src/app/selftest/Headless.cpp
     src/app/selftest/I18nTests.cpp
     src/app/selftest/MiscTests.cpp
@@ -616,6 +630,8 @@ set(COMMON_SOURCES
     src/app/selftest/SculptTests.cpp
     src/app/selftest/ModelAbTests.cpp
     src/app/selftest/ThreeDBench.cpp
+    src/app/selftest/RhiTests.cpp
+    src/app/selftest/EngineTests.cpp
     src/app/selftest/FlowTests.cpp
     src/app/selftest/SpatialTests.cpp
     src/app/selftest/PlatformTests.cpp
@@ -629,6 +645,8 @@ set(COMMON_SOURCES
     src/app/ui/design/UiInteract.cpp
     src/app/ui/design/UiGallery.cpp
     src/core/GLUtil.cpp
+    src/core/BrushEngine.cpp
+    src/core/TileStore.cpp
     src/core/CurveShape.cpp
     src/core/NodeFactory.cpp
     src/core/CategoryColors.cpp
@@ -639,6 +657,7 @@ set(COMMON_SOURCES
     src/core/FilterDefs.cpp
     src/core/BlendModes.cpp
     src/core/Mesh.cpp
+    src/core/MeshWear.cpp
     src/core/Bvh.cpp
     src/core/GpuPoints.cpp
     src/core/PlyPoints.cpp
@@ -651,6 +670,7 @@ set(COMMON_SOURCES
     src/core/Sculpt.cpp
     src/core/EditMesh.cpp
     src/core/MeshDecimate.cpp
+    src/core/MeshFur.cpp
     src/core/NodeViewport.cpp
     src/core/Transport.cpp
     src/core/Modulation.cpp
@@ -684,13 +704,20 @@ set(COMMON_SOURCES
     src/core/field/FieldDevice.cpp
     src/core/field/PinTable.cpp
     src/core/field/GlslBackend.cpp
+    src/core/field/MslBackend.cpp
+    src/core/field/MaterialRegistry.cpp
+    src/core/field/FieldNoise.cpp
     src/core/field/PixelState.cpp
     src/core/field/Transfer.cpp
     src/core/field/ReduceOps.cpp
     src/core/field/BackendRegister.cpp
+    src/core/field/AliasAnalysis.cpp
+    src/core/field/RatePlan.cpp
     src/core/field/FieldGraphKernel.cpp
     src/core/field/FieldGraphReconciler.cpp
     src/core/field/FieldGraphOwnership.cpp
+    src/core/field/FieldBoxRegistry.cpp
+    src/core/field/FieldBoxGraph.cpp
     src/core/ExprGlobals.cpp
     src/core/FactoryPresets.cpp
     src/platform/PluginCrashGuard.cpp
@@ -720,6 +747,10 @@ set(COMMON_SOURCES
     src/core/tracking/HandTracker.cpp
     src/core/tracking/FaceTracker.cpp
     src/core/tracking/PoseTracker.cpp
+    src/core/bci/BciTypes.cpp
+    src/core/bci/SyntheticCortex.cpp
+    src/core/bci/BciDspEngine.cpp
+    src/core/bci/BciRuntime.cpp
     src/nodes/TrackNodeBase.cpp
     src/nodes/HandTrackNode.cpp
     src/nodes/FaceTrackNode.cpp
@@ -751,6 +782,7 @@ set(COMMON_SOURCES
     src/audio/dsp/StereoKernel.cpp
     src/audio/dsp/PitchShiftKernel.cpp
     src/audio/dsp/SpectralPitchShifter.cpp
+    src/audio/dsp/SpectralFieldEngine.cpp
     src/audio/dsp/ChorusKernel.cpp
     src/audio/dsp/FlangerKernel.cpp
     src/audio/dsp/PhaserKernel.cpp
@@ -782,6 +814,8 @@ set(COMMON_SOURCES
     src/nodes/VideoSourceNode.cpp
     src/nodes/VideoInNode.cpp
     src/nodes/ModulatorNodes.cpp
+    src/nodes/BrainSourceNode.cpp
+    src/nodes/BrainSculptNode.cpp
     src/nodes/PredictionNodes.cpp
     src/nodes/PredictiveNotesNode.cpp
     src/nodes/PredictiveColoringNode.cpp
@@ -813,6 +847,7 @@ set(COMMON_SOURCES
     src/nodes/MidiOutNode.cpp
     src/nodes/Geometry3DNodes.cpp
     src/nodes/Render3DPost.cpp
+    src/nodes/Render3DEngine.cpp
     src/nodes/Render3DHdr.cpp
     src/nodes/Render3DPano.cpp
     src/nodes/Render3DPathTrace.cpp
@@ -830,13 +865,21 @@ set(COMMON_SOURCES
     src/nodes/GenerativeNodes.cpp
     src/nodes/GeometryOpNodes.cpp
     src/nodes/Scene3DNode.cpp
+    src/nodes/Scene2DNode.cpp
+    src/nodes/Scene2DPaint.cpp
+    src/nodes/Scene2DVector.cpp
+    src/nodes/Scene2D3D.cpp
+    src/nodes/Scene2DEffects.cpp
+    src/nodes/Scene2DFiles.cpp
     src/nodes/GeometryFeedbackNode.cpp
     src/nodes/FieldElementNode.cpp
     src/nodes/FieldPrimitiveNode.cpp
     src/nodes/FieldSampleNode.cpp
+    src/nodes/SpectralFieldNode.cpp
     src/nodes/FieldSynthNode.cpp
     src/nodes/FieldNotesNode.cpp
     src/nodes/FieldPixelNode.cpp
+    src/nodes/ShadeNodes.cpp
     src/nodes/FieldGraphNode.cpp
     src/nodes/PointDistributionNodes.cpp
     src/nodes/ProximityLinesNode.cpp
@@ -966,6 +1009,7 @@ file(GLOB INFINITE_STARTER_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/
 file(GLOB INFINITE_NOTO_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/external/fonts/Noto/*-Subset.otf")
 
 set(APPLE_SOURCES
+    src/engine/rhi/MetalDevice.mm
     src/platform/Platform.mm
     src/platform/AgentNetMac.mm
     src/platform/MidiOutMac.mm
@@ -1088,6 +1132,7 @@ endif()
 add_executable(field-preset-check
     tools/field_preset_check.cpp
     src/core/field/FieldLex.cpp
+    src/core/field/FieldNoise.cpp
     src/core/field/FieldParse.cpp
     src/core/field/FieldIR.cpp
     src/core/field/FieldSwizzle.cpp
@@ -1100,8 +1145,55 @@ add_executable(field-preset-check
     src/core/field/ElementStore.cpp
     src/core/field/FieldRandom.cpp
     src/core/field/FieldState.cpp
+    src/core/bci/BciTypes.cpp
 )
 target_include_directories(field-preset-check PRIVATE src src/core)
+
+# Headless checks for Field Patcher Block A (internal/plans/field-patcher/README.md §12).
+# The check round-trips every shipped preset, so it needs the kPresets tables without the app:
+# tools/field_patcher_presets.py copies them out of the node sources into a header. Skipped
+# (with a notice) where no Python 3 is installed.
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+add_executable(field-patcher-check
+    tools/field_patcher_check.cpp
+    src/core/field/FieldBoxRegistry.cpp
+    src/core/field/FieldBoxGraph.cpp
+    src/core/field/FieldLex.cpp
+    src/core/field/FieldParse.cpp
+    src/core/field/FieldIR.cpp
+    src/core/field/FieldSwizzle.cpp
+    src/core/field/FieldCycles.cpp
+    src/core/field/GlslBackend.cpp
+    src/core/field/Transfer.cpp
+    src/core/field/ReduceOps.cpp
+    src/core/field/BackendRegister.cpp
+    src/core/field/ElementBackend.cpp
+    src/core/field/ElementStore.cpp
+    src/core/field/FieldNoise.cpp
+    src/core/field/FieldRandom.cpp
+    src/core/field/FieldState.cpp
+    src/core/bci/BciTypes.cpp
+)
+target_include_directories(field-patcher-check PRIVATE src src/core ${CMAKE_BINARY_DIR}/generated)
+set(FIELD_PATCHER_PRESET_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/nodes/FieldNotesNode.cpp
+    ${CMAKE_SOURCE_DIR}/src/nodes/FieldPrimitiveNode.cpp
+    ${CMAKE_SOURCE_DIR}/src/nodes/FieldElementNode.cpp
+    ${CMAKE_SOURCE_DIR}/src/nodes/FieldPixelNode.cpp
+    ${CMAKE_SOURCE_DIR}/src/nodes/FieldSampleNode.cpp
+    ${CMAKE_SOURCE_DIR}/src/nodes/FieldSynthNode.cpp
+    ${CMAKE_SOURCE_DIR}/src/nodes/FieldGraphNode.cpp)
+add_custom_command(
+    OUTPUT ${CMAKE_BINARY_DIR}/generated/field_patcher_presets.h
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/field_patcher_presets.py
+            ${CMAKE_SOURCE_DIR} ${CMAKE_BINARY_DIR}/generated/field_patcher_presets.h
+    DEPENDS ${CMAKE_SOURCE_DIR}/tools/field_patcher_presets.py ${FIELD_PATCHER_PRESET_SOURCES}
+    COMMENT "Extracting Field presets for field-patcher-check")
+target_sources(field-patcher-check PRIVATE ${CMAKE_BINARY_DIR}/generated/field_patcher_presets.h)
+else()
+    message(STATUS "Python 3 not found: field-patcher-check is not built")
+endif()
 
 # Headless checks for the Sketch engine (docs/plans/sketch/README.md exit criteria
 # that need no window): compile, params, determinism, abort, memory, errors.
@@ -1259,11 +1351,61 @@ target_compile_definitions(Infinite PRIVATE $<$<CONFIG:Debug>:IMGUI_ENABLE_TEST_
 
 if(APPLE)
     target_sources(Infinite PRIVATE ${APPLE_SOURCES})
+else()
+    target_sources(Infinite PRIVATE src/engine/rhi/RhiStub.cpp)
 endif()
 
 if(WIN32)
     target_sources(Infinite PRIVATE ${WIN32_SOURCES})
 endif()
+# Real-time engine on Vulkan (OPUS_PLAN rows 9.2 to 9.5). Off by default: the shipped macOS engine is Metal. On, it
+# links MoltenVK statically (macOS) or the system loader (Linux), and INFINITE_RHI=vulkan picks it at run time.
+# SPIR-V comes from VkShaderGen (src/engine/rhi/vk) through glslang at build time.
+option(INFINITE_VULKAN "Build the Vulkan engine backend (INFINITE_RHI=vulkan)" OFF)
+if(INFINITE_VULKAN)
+    set(INFINITE_VK_ROOT "$ENV{HOME}/Infinite/vk/src" CACHE PATH "Vulkan headers, MoltenVK and glslang")
+    find_program(INFINITE_GLSLANG NAMES glslang glslangValidator HINTS "${INFINITE_VK_ROOT}/glslang/16.6.0/bin" REQUIRED)
+    add_executable(VkShaderGen src/engine/rhi/vk/VkShaderGen.cpp)
+    target_include_directories(VkShaderGen PRIVATE src)
+    target_compile_features(VkShaderGen PRIVATE cxx_std_17)
+    set(_vkgen "${CMAKE_CURRENT_BINARY_DIR}/vkshaders")
+    set(_vkheaders)
+    foreach(_s raster.vert raster.frag shadow.vert bg.vert bg.frag tri.vert tri.frag pt.comp dnprep.comp dnatrous.comp caus.comp ptres.frag)
+        string(REPLACE "." "_" _id "${_s}")
+        # kVk + CamelCase name, e.g. raster_frag -> kVkRasterFrag
+        string(REPLACE "_" ";" _parts "${_id}")
+        set(_name "kVk")
+        foreach(_p ${_parts})
+            string(SUBSTRING "${_p}" 0 1 _f)
+            string(TOUPPER "${_f}" _f)
+            string(SUBSTRING "${_p}" 1 -1 _r)
+            string(APPEND _name "${_f}${_r}")
+        endforeach()
+        add_custom_command(OUTPUT "${_vkgen}/${_id}.h"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "${_vkgen}"
+            COMMAND VkShaderGen "${_vkgen}"
+            COMMAND "${INFINITE_GLSLANG}" -V --target-env vulkan1.3 --vn ${_name} -o "${_vkgen}/${_id}.h" "${_vkgen}/${_s}"
+            DEPENDS VkShaderGen
+            COMMENT "SPIR-V ${_s}")
+        list(APPEND _vkheaders "${_vkgen}/${_id}.h")
+    endforeach()
+    add_custom_target(InfiniteVkShaders DEPENDS ${_vkheaders})
+    add_dependencies(Infinite InfiniteVkShaders)
+    target_sources(Infinite PRIVATE src/engine/rhi/VulkanDevice.cpp)
+    # The SPIR-V headers are generated: without this a shader edit regenerates them but leaves the old object file.
+    set_source_files_properties(src/engine/rhi/VulkanDevice.cpp PROPERTIES OBJECT_DEPENDS "${_vkheaders}")
+    target_include_directories(Infinite PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_definitions(Infinite PRIVATE INFINITE_VULKAN=1)
+    if(APPLE)
+        target_include_directories(Infinite PRIVATE "${INFINITE_VK_ROOT}/vulkan-headers/1.4.363.0/include" "${INFINITE_VK_ROOT}/molten-vk/1.4.2/include")
+        target_link_libraries(Infinite PRIVATE "${INFINITE_VK_ROOT}/molten-vk/1.4.2/lib/libMoltenVK.a"
+            "-framework Metal" "-framework IOSurface" "-framework QuartzCore" "-framework Foundation" "-framework CoreGraphics" "-framework IOKit" "-framework AppKit")
+    else()
+        find_package(Vulkan REQUIRED)
+        target_link_libraries(Infinite PRIVATE Vulkan::Vulkan)
+    endif()
+endif()
+
 
 # ---- ASIO (Windows) ---------------------------------------------------------
 # Steinberg's ASIO SDK is fetched at configure time and is never committed to
@@ -1342,7 +1484,6 @@ target_include_directories(Infinite PRIVATE
     src src/core src/nodes src/platform src/audio
     ${IMGUI_DIR} ${IMGUI_DIR}/backends ${IMGUI_DIR}/misc/cpp
     ${NODE_EDITOR_DIR}
-    ${STB_DIR}
     ${CGLTF_DIR}
     external
     external/json
@@ -1353,6 +1494,7 @@ target_include_directories(Infinite PRIVATE
     external/ndi/include
     src/platform/ndi
 )
+target_include_directories(Infinite SYSTEM PRIVATE ${STB_DIR})
 
 target_link_libraries(Infinite PRIVATE glfw sketch_deps lunasvg_lib vterm_lib)
 target_link_libraries(Infinite PRIVATE infinite_plugin_ipc)
@@ -1409,10 +1551,29 @@ if(WIN32)
     # sit next to Infinite.exe to run, exactly like infinite-vst3-scanner.exe
     # below. package.ps1 and .github/workflows/build.yml duplicate this same
     # copy for the distributed zip.
+    #
+    # onnxruntime.dll is built against the shared MSVC runtime, so it needs
+    # MSVCP140/VCRUNTIME140(_1).dll even though our own exes link the CRT
+    # statically. A clean Windows has neither, so ship them app-local (the
+    # loader finds them next to the exe) instead of asking the user to
+    # install the Visual C++ redistributable.
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS_SKIP TRUE)
+    include(InstallRequiredSystemLibraries)
+    set(INFINITE_VC_RUNTIME_DLLS "")
+    foreach(_dll IN LISTS CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        if(_dll MATCHES "/(msvcp140|vcruntime140|concrt140)[a-z0-9_]*\\.dll$")
+            list(APPEND INFINITE_VC_RUNTIME_DLLS "${_dll}")
+        endif()
+    endforeach()
+    if(NOT INFINITE_VC_RUNTIME_DLLS)
+        message(FATAL_ERROR "No Visual C++ runtime DLLs found to bundle; "
+                "install the VS C++ redistributable component (VC/Redist/MSVC).")
+    endif()
     add_custom_command(TARGET Infinite POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${ONNXRUNTIME_DLL}"
                 "${DIRECTML_DLL}"
+                ${INFINITE_VC_RUNTIME_DLLS}
                 "$<TARGET_FILE_DIR:Infinite>"
         COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_FILE_DIR:Infinite>/assets/models"
@@ -1546,9 +1707,6 @@ if(WIN32)
                 "${CMAKE_CURRENT_SOURCE_DIR}/resources/starter-profile"
                 "$<TARGET_FILE_DIR:Infinite>/Resources/starter-profile"
         COMMAND ${CMAKE_COMMAND} -E copy
-                "${CMAKE_CURRENT_SOURCE_DIR}/external/icons/Lucide/lucide.ttf"
-                "$<TARGET_FILE_DIR:Infinite>/Resources/icons/"
-        COMMAND ${CMAKE_COMMAND} -E copy
                 "${CMAKE_CURRENT_SOURCE_DIR}/external/icons/Infinite/infinite-glyphs.ttf"
                 "$<TARGET_FILE_DIR:Infinite>/Resources/icons/"
         COMMAND ${CMAKE_COMMAND} -E make_directory
@@ -1612,9 +1770,6 @@ elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         COMMAND ${CMAKE_COMMAND} -E copy_directory
                 "${CMAKE_CURRENT_SOURCE_DIR}/resources/starter-profile"
                 "$<TARGET_FILE_DIR:Infinite>/Resources/starter-profile"
-        COMMAND ${CMAKE_COMMAND} -E copy
-                "${CMAKE_CURRENT_SOURCE_DIR}/external/icons/Lucide/lucide.ttf"
-                "$<TARGET_FILE_DIR:Infinite>/Resources/icons/"
         COMMAND ${CMAKE_COMMAND} -E copy
                 "${CMAKE_CURRENT_SOURCE_DIR}/external/icons/Infinite/infinite-glyphs.ttf"
                 "$<TARGET_FILE_DIR:Infinite>/Resources/icons/"
@@ -1768,6 +1923,7 @@ endif()
 
 if(APPLE)
     target_include_directories(Infinite PRIVATE "${ORT_MAC_INCLUDE_DIR}")
+    set_source_files_properties(src/engine/rhi/MetalDevice.mm PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     set_source_files_properties(src/platform/Platform.mm src/platform/AgentNetMac.mm src/platform/MidiOutMac.mm src/platform/HeadTracker.mm src/audio/AudioFileWriter.mm
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
     set_source_files_properties(${SYPHON_SOURCES}
@@ -1823,6 +1979,7 @@ if(APPLE)
 
         target_link_libraries(infinite-vst3-scanner PRIVATE
             "-framework Cocoa"
+        "-framework Security"
             "-framework CoreFoundation"
             "-framework CoreAudio"
             "-framework AudioToolbox"
@@ -1854,8 +2011,8 @@ if(APPLE)
 
     target_link_libraries(Infinite PRIVATE
         "-framework OpenGL"
-        "-framework Security"  # fork: Keychain for the built-in agent
         "-framework Cocoa"
+        "-framework Security"
         "-framework IOKit"
         "-framework CoreVideo"
         "-framework CoreText"
@@ -1875,6 +2032,8 @@ if(APPLE)
         "-framework CoreAudio"
         "-framework AudioToolbox"
         "-framework IOSurface"
+        "-framework Metal"
+        "-weak_framework MetalFX"   # row 8.4: temporal upscale, macOS 13+
         # Plugin hosting: AUAudioUnit's -requestViewControllerWithCompletionHandler:
         # lives in CoreAudioKit (AUViewController.h), as does the
         # AUGenericViewController fallback for plugins with no editor of their
@@ -1931,7 +2090,6 @@ if(APPLE)
         "${CMAKE_CURRENT_SOURCE_DIR}/external/fonts/AtkinsonHyperlegible/AtkinsonHyperlegible-Regular.ttf")
     list(APPEND INFINITE_FONT_FILES ${INFINITE_NOTO_FILES})
     set(INFINITE_ICON_FONT_FILES
-        "${CMAKE_CURRENT_SOURCE_DIR}/external/icons/Lucide/lucide.ttf"
         "${CMAKE_CURRENT_SOURCE_DIR}/external/icons/Infinite/infinite-glyphs.ttf")
     target_sources(Infinite PRIVATE ${INFINITE_FONT_FILES} ${INFINITE_ICON_FONT_FILES} ${INFINITE_LANG_FILES} ${INFINITE_STARTER_FILES})
     set_source_files_properties(${INFINITE_LANG_FILES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources/lang")
@@ -1970,3 +2128,21 @@ endif()
 set_source_files_properties(src/app/selftest/RigTests.cpp PROPERTIES
     COMPILE_DEFINITIONS "INFINITE_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
 
+if(DEFINED ENV{CI})
+    set(_infinite_werror_default ON)
+else()
+    set(_infinite_werror_default OFF)
+endif()
+option(INFINITE_WERROR "Treat compiler warnings as errors in strict-warning directories" ${_infinite_werror_default})
+if(NOT MSVC)
+    get_target_property(_infinite_srcs Infinite SOURCES)
+    foreach(_src IN LISTS _infinite_srcs)
+        if(_src MATCHES "^src/(app|core|nodes)/.*\\.(cpp|c|mm|m)$")
+            if(INFINITE_WERROR)
+                set_property(SOURCE "${_src}" APPEND PROPERTY COMPILE_OPTIONS -Wall -Werror)
+            else()
+                set_property(SOURCE "${_src}" APPEND PROPERTY COMPILE_OPTIONS -Wall)
+            endif()
+        endif()
+    endforeach()
+endif()

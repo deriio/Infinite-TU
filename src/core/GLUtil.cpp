@@ -9,13 +9,53 @@
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <unordered_map>
 
 namespace GLUtil
 {
+   namespace
+   {
+      std::atomic<unsigned> gUniformGeneration { 0 };
+
+      struct UniformMemo
+      {
+         unsigned generation = 0;
+         std::unordered_map<unsigned long long, int> map;
+      };
+   }
+
+   void ForgetUniformLocations()
+   {
+      gUniformGeneration.fetch_add(1, std::memory_order_relaxed);
+   }
+
+   int UniformLoc(unsigned int program, const char* name)
+   {
+      thread_local UniformMemo memo;
+      const unsigned gen = gUniformGeneration.load(std::memory_order_relaxed);
+      if (memo.generation != gen)
+      {
+         memo.map.clear();
+         memo.generation = gen;
+      }
+      // 64-bit FNV-1a of the name, mixed with the program id.
+      unsigned long long h = 1469598103934665603ull;
+      for (const char* c = name; *c; ++c)
+         h = (h ^ (unsigned char)*c) * 1099511628211ull;
+      h ^= (unsigned long long)program * 0x9E3779B97F4A7C15ull;
+      auto it = memo.map.find(h);
+      if (it != memo.map.end())
+         return it->second;
+      const int loc = glGetUniformLocation(program, name);
+      memo.map.emplace(h, loc);
+      return loc;
+   }
+
    static const char* kVertSrc =
       "#version 150\n"
       "in vec2 aPos;\n"
@@ -385,9 +425,13 @@ namespace GLUtil
       const unsigned int program = glCreateProgram();
       glBindAttribLocation(program, 0, "aPos");
       glBindAttribLocation(program, 1, "aUv");
+      // A shader with a second output (the 2D View's depth) gets attachment 1; names a shader lacks are ignored.
+      glBindFragDataLocation(program, 0, "fragColor");
+      glBindFragDataLocation(program, 1, "fragDepth");
       glAttachShader(program, vert);
       glAttachShader(program, frag);
       glLinkProgram(program);
+      ForgetUniformLocations();
 
       // The linked program keeps its own copy; the stages stay in the cache.
       glDetachShader(program, vert);
@@ -402,6 +446,47 @@ namespace GLUtil
          return fail("link error: ", log);
       }
       return program;
+   }
+
+   void DrawPass(const Fbo& out, unsigned int program, const std::function<void()>& setup, const int* scissor)
+   {
+      if (out.fbo == 0 || program == 0)
+         return;
+      GLint prevFbo = 0;
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+      GLint prevViewport[4];
+      glGetIntegerv(GL_VIEWPORT, prevViewport);
+      glBindFramebuffer(GL_FRAMEBUFFER, out.fbo);
+      glViewport(0, 0, out.w, out.h);
+      if (scissor != nullptr)
+      {
+         glEnable(GL_SCISSOR_TEST);
+         glScissor(scissor[0], scissor[1], scissor[2], scissor[3]);
+      }
+      glUseProgram(program);
+      if (setup)
+         setup();
+      DrawQuad();
+      glUseProgram(0);
+      if (scissor != nullptr)
+         glDisable(GL_SCISSOR_TEST);
+      glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
+      glViewport(prevViewport[0], prevViewport[1], prevViewport[2], prevViewport[3]);
+   }
+
+   void ClearFbo(const Fbo& out, const float* rgba)
+   {
+      if (out.fbo == 0)
+         return;
+      GLint prevFbo = 0;
+      glGetIntegerv(GL_FRAMEBUFFER_BINDING, &prevFbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, out.fbo);
+      if (rgba != nullptr)
+         glClearColor(rgba[0], rgba[1], rgba[2], rgba[3]);
+      else
+         glClearColor(0, 0, 0, 0);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glBindFramebuffer(GL_FRAMEBUFFER, prevFbo);
    }
 
    void RunShaderPass(const Fbo& out, unsigned int program, const std::function<void()>& setup)

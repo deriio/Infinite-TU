@@ -26,7 +26,7 @@ PAGES = {
 <h2>Your license</h2>
 <ul>
 <li>One purchase gives you a personal, non-exclusive, perpetual license for the plugin on up to 2 computers you own or use.</li>
-<li>It includes every update within the major version you bought (1.x for a 1.x purchase). A later major version may be sold separately.</li>
+<li>It includes every update for the lifetime of the product, including all future major versions, at no extra charge.</li>
 <li>Music, video and other work you make with Infinite belongs to you. You may release it commercially.</li>
 <li>Do not share, publish or resell your license key or license file.</li>
 </ul>
@@ -111,6 +111,11 @@ for name, (title, desc, body) in PAGES.items():
     h = tpl
     h = re.sub(r"<title>.*?</title>", f"<title>{title} | Infinite</title>", h)
     h = re.sub(r'(<meta name="description" content=")[^"]*', lambda m: m.group(1) + desc, h)
+    if 'property="og:title"' not in h:
+        h = h.replace('<meta property="og:image"', f'<meta property="og:title" content="{title} | Infinite">\n  <meta property="og:description" content="{desc}">\n  <meta property="og:image"', 1)
+    else:
+        h = re.sub(r'(<meta property="og:title" content=")[^"]*', lambda m: m.group(1) + f"{title} | Infinite", h)
+        h = re.sub(r'(<meta property="og:description" content=")[^"]*', lambda m: m.group(1) + desc, h)
     h = h.replace("https://infinitedevices.org/buy.html", f"https://infinitedevices.org/{name}")
     h = h.replace('  <meta name="robots" content="noindex">\n', "")
     h = re.sub(r"  <style>.*?</style>", "  <style>" + CSS + "  </style>", h, count=1, flags=re.S)

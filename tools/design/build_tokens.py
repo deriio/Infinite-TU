@@ -20,7 +20,23 @@ def build():
         L.append(f"   constexpr float motion_{k} = {float(v)}f;")
     L.append(f"   constexpr float hit_min = {float(b['hit_min'])}f;")
     L.append(f"   constexpr float bar_h = {float(b['bar_h'])}f;")
-    L.append(f"   constexpr float tile = {float(b['tile'])}f;")
+    # The UI system sheet: one value per part (control height, list row, icon, radius ...), shared by every surface.
+    for k, v in b.get("system", {}).items():
+        if not k.startswith("_"):
+            L.append(f"   constexpr float {k} = {float(v)}f;")
+    if "system" in b:
+        L.append("   static_assert(control_h >= hit_min, \"a control is never smaller than the hit minimum\");")
+        L.append("   static_assert(row_h == control_h, \"a list row is one control tall\");")
+    # Compact density: the settings strips and More.. popovers (UiDensity::Compact reads these).
+    for k, v in b.get("compact", {}).items():
+        if not k.startswith("_"):
+            L.append(f"   constexpr float compact_{k} = {float(v)}f;")
+    if "compact" in b:
+        L.append("   static_assert(compact_row > compact_text, \"a compact row fits its text\");")
+    # The page strip (PagePicker): chip widths, colour dot and swatch.
+    for k, v in b.get("page", {}).items():
+        if not k.startswith("_"):
+            L.append(f"   constexpr float page_{k} = {float(v)}f;")
     r = t["roles"]
     L += ["", "   struct Rgba8 { unsigned char r, g, b, a; };", "   struct Rgbaf { float r, g, b, a; };", "   struct Pair8 { Rgba8 dark, light; };", "   struct Pairf { Rgbaf dark, light; };"]
     # Colour roles are `inline` variables (not constexpr) so a user theme can override them at run time

@@ -150,7 +150,7 @@ namespace app
       const float parked = std::clamp(n->position, n->start, n->end);
       const float playhead = (snap.selfActive && snap.selfPos >= 0.0f) ? snap.selfPos : parked;
       const TrimWaveInput in = DrawTrimWave("##samplerwave", n->wavePeaks, &n->start, &n->end, w, h, cursors,
-                                            numCursors, playhead, "no sample loaded");
+                                            numCursors, playhead, T("No sample · drop or click"));
       if (!n->wavePeaks.Empty() && (in.activated || in.active))
       {
          const float target = std::clamp(in.frac, n->start, n->end);
@@ -209,7 +209,7 @@ namespace app
                hit = i;
          }
          const int note = SlicerNode::kBaseNote + hit;
-         char val[48];
+         char val[96];
          snprintf(val, sizeof(val), "slice %d - %s%d - click to audition", hit + 1,
                   kPitchClass[note % 12], note / 12 - 1);
          SetAudioReadout("#", val);
@@ -257,7 +257,7 @@ namespace app
 
             const float nextX = origin.x + w * ((i + 1 < sliceCount) ? std::clamp(slices[i + 1], 0.0f, 1.0f) : 1.0f);
             const int note = SlicerNode::kBaseNote + i;
-            char label[8];
+            char label[24];
             snprintf(label, sizeof(label), "%s%d", kPitchClass[note % 12], note / 12 - 1);
             const ImVec2 ts = ImGui::CalcTextSize(label);
             if (nextX - x > ts.x + 6.0f)
@@ -266,7 +266,7 @@ namespace app
       }
       else
       {
-         EmptyState::DrawCaption(origin, br, "no sample loaded");
+         EmptyState::DrawCaption(origin, br, T("No sample loaded"));
       }
 
       dl->PopClipRect();
@@ -352,7 +352,7 @@ namespace app
       }
       else
       {
-         EmptyState::DrawCaption(origin, br, "no sample loaded");
+         EmptyState::DrawCaption(origin, br, T("No sample loaded"));
       }
 
       dl->PopClipRect();
@@ -495,7 +495,7 @@ namespace app
       }
       else
       {
-         EmptyState::DrawCaption(origin, br, "no sample loaded");
+         EmptyState::DrawCaption(origin, br, T("No sample loaded"));
       }
 
       dl->PopClipRect();
@@ -586,7 +586,7 @@ namespace app
                            : db > -6.0f ? tok::U32(tok::pal::c_FFBE5AF0)
                                         : tok::U32(tok::pal::c_78D2A0EB);
          dl->AddRectFilled(ImVec2(x + 1.0f, br.y - 1.0f - (h - 2.0f) * lvl),
-                           ImVec2(br.x - 1.0f, br.y - 1.0f), col, 2.0f);
+                           ImVec2(br.x - 1.0f, br.y - 1.0f), col, tok::radius_cell);
       }
       AudioViz::Border(dl, tl, br);
    }
@@ -2228,7 +2228,7 @@ namespace app
       const float hx = x0 + (x1 - x0) * 0.125f;
       const float lift = n->ActiveVoices() > 0 ? 2.0f : 6.0f;
       const float hw = 4.0f + 3.0f * n->hardness;
-      dl->AddRectFilled(ImVec2(hx - hw, y0 + spread + lift), ImVec2(hx + hw, br.y - 3.0f), trace, 2.0f);
+      dl->AddRectFilled(ImVec2(hx - hw, y0 + spread + lift), ImVec2(hx + hw, br.y - 3.0f), trace, tok::radius_cell);
       AudioViz::Border(dl, origin, br);
       ImGui::Dummy(ImVec2(w, h));
    }
@@ -2395,11 +2395,10 @@ namespace app
          ImDrawList* dl = ImGui::GetWindowDrawList();
          const ImVec2 containerBr(origin.x + containerW, origin.y + previewH);
 
-         dl->AddRectFilled(origin, containerBr, tok::U32(tok::pal::c_0E1014FF), 4.0f);
+         dl->AddRectFilled(origin, containerBr, tok::U32(tok::pal::c_0E1014FF), tok::radius_control);
          dl->PushClipRect(origin, containerBr, true);
 
          const int frameCount = WaveTerrainNode::kDisplayFrameCount;
-         const int sampleCount = WaveTerrainNode::kDisplayFrameSize;
          const float framePos = std::clamp(n->position, 0.0f, 1.0f) * (float)(frameCount - 1);
 
          // Stack offset: each frame further from the current morph position
@@ -2883,7 +2882,7 @@ namespace app
          const ImVec2 containerBr(origin.x + containerW, origin.y + previewH);
 
          // Background panel
-         dl->AddRectFilled(origin, containerBr, tok::U32(tok::pal::c_0A0C10FF), 4.0f);
+         dl->AddRectFilled(origin, containerBr, tok::U32(tok::pal::c_0A0C10FF), tok::radius_control);
          dl->AddRect(origin, containerBr, tok::U32(tok::pal::c_242A36B4), 4.0f, 0, 1.0f);
 
          const float imgSize = previewH - 8.0f;

@@ -69,9 +69,14 @@ void FrameTest_BYPASSRULETEST(int frameId, GLFWwindow* window);
 void FrameTest_BYPASSSWEEPTEST(int frameId, GLFWwindow* window);
 void FrameTest_PATCHLAYOUTLIVETEST(int frameId, GLFWwindow* window);
 void FrameTest_UIAUDIT(int frameId, GLFWwindow* window);
+void FrameTest_JOURNEYS(int frameId, GLFWwindow* window);
+void FrameTest_CRAWL(int frameId, GLFWwindow* window);
 void FrameTest_CURVEBENCH(int frameId, GLFWwindow* window);
 void FrameTest_CURVEM1TEST(int frameId, GLFWwindow* window);
 void FrameTest_CURVEMOTIONTEST(int frameId, GLFWwindow* window);
+void FrameTest_FIELDPATCHERTEST(int frameId, GLFWwindow* window);
+void FrameTest_CANVASLINKTEST(int frameId, GLFWwindow* window);
+void FrameTest_TIMELINEEXPORTTEST(int frameId, GLFWwindow* window);
 
 void FrameTest_KEYEDSTARTEST(int frameId, GLFWwindow* window);
 void FrameTest_ROUNDTRIPTEST(int frameId, GLFWwindow* window);

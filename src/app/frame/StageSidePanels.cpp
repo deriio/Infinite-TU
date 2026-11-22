@@ -10,7 +10,9 @@
 #include "app/ui/design/components/LibraryParts.h"
 #include "app/ui/design/components/PanelFrame.h"
 #include "app/frame/FrameCtx.h"
+#include "app/frame/CanvasLink.h"
 #include "app/panels/CurveEditorPanel.h"
+#include "app/panels/FieldPatcherPanel.h"
 
 // Field compile errors read "line N, col M: message". Show the message, then
 // the offending source line with the token at that column marked, so the user
@@ -164,69 +166,37 @@ void DrawSidePanels(FrameCtx& fc)
    auto& timerNodeBodiesGpu = *fc.timerNodeBodiesGpu;
 
 
-      // Arrangement clip "Assign Node..." canvas picker - same click-to-assign
-      // UX as gPerfAssigningElemIdx above, but whole-node instead of
-      // per-parameter: hovering a compatible node glows its whole bounding
-      // box (via ed::GetNodePosition/GetNodeSize, both canvas-space here
-      // just like the param picker's mp above) and a click assigns it as the
-      // clip's source.
+      // Arrangement clip "Assign Node...": the arrange code still sets gArrangeAssigningClipId; this bridges it into
+      // the shared Canvas Link pick (dim, ring, prompt, click, Esc) so it looks and behaves like every other pick.
       // A MIDI clip has no source node to assign (its lane links a Piano Roll node).
       if (gArrangeAssigningClipId != 0)
          if (const Arrange::Lane* al = Arrange::LaneOfClip(gArrange, gArrangeAssigningClipId); al == nullptr || al->type == Arrange::kLaneMidi)
             gArrangeAssigningClipId = 0;
-      if (gArrangeAssigningClipId != 0)
+      CanvasLink::Sync("arrange.clip", gArrangeAssigningClipId != 0 ? "arrange.clip." + std::to_string(gArrangeAssigningClipId) : "", []
       {
-         const Arrange::Lane* assignLane = Arrange::LaneOfClip(gArrange, gArrangeAssigningClipId);
-         const bool assignIsVideo = assignLane->type == Arrange::kLaneVideo;
-         const ImVec2 mp = ImGui::GetMousePos();
-
-         GraphNode* hoveredCompatible = nullptr;
-         ImVec2 hoveredP(0, 0), hoveredS(0, 0);
-         for (GraphNode& gn : gNodes)
+         const uint64_t clip = gArrangeAssigningClipId;
+         const bool isVideo = Arrange::LaneOfClip(gArrange, clip)->type == Arrange::kLaneVideo;
+         CanvasLink::Spec spec;
+         spec.kind = isVideo ? T("picture node") : T("sound node");
+         spec.accepts = [isVideo](const GraphNode& gn) { return isVideo ? IsNodeVideoCompatible(gn) : IsNodeAudioCompatible(gn); };
+         spec.onPicked = [clip](uint64_t uid)
          {
-            const bool match = assignIsVideo ? IsNodeVideoCompatible(gn) : IsNodeAudioCompatible(gn);
-            if (!match)
-               continue;
-            const ImVec2 p = ed::GetNodePosition(gn.NodeId());
-            const ImVec2 s = ed::GetNodeSize(gn.NodeId());
-            if (mp.x >= p.x && mp.x <= p.x + s.x && mp.y >= p.y && mp.y <= p.y + s.y)
-            {
-               hoveredCompatible = &gn;
-               hoveredP = p;
-               hoveredS = s;
-               break;
-            }
-         }
-
-         if (hoveredCompatible != nullptr)
+            // By uid, through the model - one call (one undo entry) per target clip, so a multi-select
+            // Assign Node... points every selected clip of this lane type at the same node.
+            ArrangeAssignClipSource(clip, uid);
+            for (uint64_t targetId : gArrangeAssignTargetIds)
+               ArrangeAssignClipSource(targetId, uid);
+            if (gArrangeAssigningClipId == clip)
+               gArrangeAssigningClipId = 0, gArrangeAssignTargetIds.clear();
+         };
+         spec.onCancel = [clip]
          {
-            ImDrawList* hoverDl = ImGui::GetWindowDrawList();
-            StateRing::Draw(hoverDl, hoveredP, ImVec2(hoveredP.x + hoveredS.x, hoveredP.y + hoveredS.y), StateRing::Kind::Target, IsThemeLight());
-
-            ed::Suspend();
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            ImGui::SetTooltip(T("Assign clip source -> %s"), NodeTitleWithInstance(*hoveredCompatible).c_str());
-            ed::Resume();
-
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-            {
-               // By uid, through the model - one call (one undo entry) per
-               // target clip, so a multi-select Assign Node... points every
-               // selected clip of this lane type at the same node.
-               ArrangeAssignClipSource(gArrangeAssigningClipId, hoveredCompatible->uid);
-               for (uint64_t targetId : gArrangeAssignTargetIds)
-                  ArrangeAssignClipSource(targetId, hoveredCompatible->uid);
-               gArrangeAssigningClipId = 0;
-               gArrangeAssignTargetIds.clear();
-            }
-         }
-
-         if (ImGui::IsKeyPressed(ImGuiKey_Escape) || ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-         {
-            gArrangeAssigningClipId = 0;
-            gArrangeAssignTargetIds.clear();
-         }
-      }
+            if (gArrangeAssigningClipId == clip)
+               gArrangeAssigningClipId = 0, gArrangeAssignTargetIds.clear();
+         };
+         return spec;
+      });
+      CanvasLink::CanvasHook();
 
       timerNodeBodies.Stop();
       timerNodeBodiesGpu.Stop();
@@ -259,6 +229,17 @@ void DrawSidePanels(FrameCtx& fc)
          ed::End();
          ImGui::PopStyleColor(2);
          ImGui::PopStyleVar();
+         if (fc.viewFill)
+         {
+            // The editor draws into the shell's own draw list, after the Fill cover StageLayout laid down, so its
+            // nodes and cables showed round the view's card. Cover again now: above the canvas, under the view's
+            // child windows (which render after their parent).
+            ImGuiWindow* w = ImGui::GetCurrentWindow();
+            ImDrawList* bl = w->DrawList;
+            bl->PushClipRect(w->Rect().Min, w->Rect().Max, false);
+            bl->AddRectFilled(w->Rect().Min, w->Rect().Max, ImGui::GetColorU32(ImGuiCol_WindowBg));
+            bl->PopClipRect();
+         }
       }
       if (kEdPerf)
       {
@@ -394,6 +375,11 @@ void DrawSidePanels(FrameCtx& fc)
          ImGui::SameLine(0.0f, 0.0f);
          DrawModMatrixDocked("##modmatrix_right", ImVec2(gModMatrixWidth, graphHeight));
       }
+      if (gMixerPanelOpen && gMixerPanelDock == 1)
+      {
+         ImGui::SameLine(0.0f, 0.0f);
+         DrawMixerPanelDocked("##mixerpanel_right", ImVec2(gMixerPanelWidth, graphHeight));
+      }
 
       // Right-docked performance matrix
       if (perfRight)
@@ -414,6 +400,16 @@ void DrawSidePanels(FrameCtx& fc)
       {
          FormParts::Inline(0.0f, 0.0f);
          DrawTerminalDocked("##terminal_right", ImVec2(gTerminalWidth, graphHeight));
+      }
+      if (gView3DOpen && gView3DDock == 1)
+      {
+         ImGui::SameLine(0.0f, 0.0f);
+         DrawView3DDocked("##view3d_right", ImVec2(gView3DWidth, graphHeight));
+      }
+      if (gView2DOpen && gView2DDock == 1)
+      {
+         ImGui::SameLine(0.0f, 0.0f);
+         DrawView2DDocked("##view2d_right", ImVec2(gView2DWidth, graphHeight));
       }
 
       // Right-docked edit history (always right; Edit > History or Shift+U)
@@ -448,7 +444,7 @@ void DrawSidePanels(FrameCtx& fc)
                   sel = i;
             const ImVec2 cp = ImGui::GetCursorScreenPos();
             const UiLayout::Rect r{ cp.x, cp.y, ImGui::GetContentRegionAvail().x, 32.0f };
-            const int hit = PillGroup::Draw("lib.tabs", r, segs, segCount, sel, UiType::Size::Title);
+            const int hit = PillGroup::Draw("lib.tabs", r, segs, segCount, sel, UiType::Size::Body);
             if (hit >= 0)
                gSearchPanelMode = kModes[hit];
             ImGui::SetCursorScreenPos(cp);
@@ -573,7 +569,7 @@ void DrawSidePanels(FrameCtx& fc)
                   {
                      if (MenuParts::Item(isFav ? L("Remove from favourites") : L("Add to favourites")))
                         gBrowserFavorites.ToggleModule(match.first);
-                     if (MenuParts::Item(L("Add to canvas")))
+                     if (MenuParts::Item(CanvasLink::Label(CanvasLink::Verb::Add)))
                      {
                         spawnName = match.first;
                         spawnCategory = match.second;
@@ -635,7 +631,7 @@ void DrawSidePanels(FrameCtx& fc)
                      {
                         if (MenuParts::Item(isFav ? L("Remove from favourites") : L("Add to favourites")))
                            gBrowserFavorites.ToggleModule(name);
-                        if (MenuParts::Item(L("Add to canvas")))
+                        if (MenuParts::Item(CanvasLink::Label(CanvasLink::Verb::Add)))
                         {
                            spawnName = name;
                            spawnCategory = category;
@@ -646,7 +642,7 @@ void DrawSidePanels(FrameCtx& fc)
                   }
                }
             }
-            ImGui::EndChild();
+            EndChildSafe();
 
             if (!spawnName.empty())
             {
@@ -689,7 +685,7 @@ void DrawSidePanels(FrameCtx& fc)
          // above every kind of bottom-docked panel regardless of which one -
          // it never had anything to do with the bottom panel at all.
          ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0.0f, 0.0f));
-         ImGui::EndChild();
+         EndChildSafe();
          ImGui::PopStyleVar();
       }
 
@@ -709,10 +705,19 @@ void DrawSidePanels(FrameCtx& fc)
       // just its trailing gap - which also zeroed it for every popup/menu
       // opened *inside* that panel (e.g. its right-click dock menu), and was
       // why those popups rendered with no padding only when bottom-docked.
+      if (fc.viewFill)
+      {
+         // Back from the off-window canvas row to the line under the filling view.
+         ImGui::SetCursorPos(fc.viewFillResume);
+         ImGui::GetCurrentWindow()->DC.CursorMaxPos = fc.viewFillMax;
+         ImGui::GetCurrentWindow()->DC.IsSetPos = false;   // nothing was extended: the row is back where it was
+      }
       if (viewportBottom)
          DrawViewportPanelDocked("##viewportpanel_bottom", ImVec2(0, gViewportPanelHeight));
       if (matrixBottom)
          DrawModMatrixDocked("##modmatrix_bottom", ImVec2(0, gModMatrixHeight));
+      if (gMixerPanelOpen && gMixerPanelDock == 0)
+         DrawMixerPanelDocked("##mixerpanel_bottom", ImVec2(0, gMixerPanelHeight));
       if (perfBottom)
          DrawPerfPanelDocked("##perfpanel_bottom", ImVec2(0, gPerfPanelHeight));
       if (arrangeBottom)
@@ -725,11 +730,19 @@ void DrawSidePanels(FrameCtx& fc)
       // Piano Roll (View > Piano Roll or Shift+R), bottom or top like the Timeline.
       if (gPianoRollOpen && gPianoRollDock != 3)
          DrawPianoRollDocked("##pianoroll_bottom", ImVec2(0, gPianoRollHeight));
-      if (gView3DOpen && gView3DDock != 3)
+      // Drums (View > Drums or Shift+J), bottom or top.
+      if (gDrumPanelOpen && gDrumPanelDock != 3)
+         DrawDrumPanelDocked("##drums_bottom", ImVec2(0, gDrumPanelHeight));
+      if (gView3DOpen && gView3DDock == 0)
          DrawView3DDocked("##view3d_bottom", ImVec2(0, gView3DHeight));
+      if (gView2DOpen && gView2DDock == 0)
+         DrawView2DDocked("##view2d_bottom", ImVec2(0, gView2DHeight));
       // Curve Editor (View > Curve Editor or Shift+E) at the bottom; the other sides draw with their row.
       if (gCurveEditorOpen && gCurveEditorDock == 0)
          DrawCurveEditorDocked("##curveeditor_bottom", ImVec2(0, gCurveEditorHeight));
+      // Field Patcher (View > Field Patcher or Shift+F): boxes for Field nodes, bottom or top.
+      if (gFieldPatcherOpen && gFieldPatcherDock == 0)
+         DrawFieldPatcherDocked("##fieldpatcher_bottom", ImVec2(0, gFieldPatcherShownHeight));
       // Terminal (View > Terminal or Ctrl+`) docked at the bottom; the other sides draw with their row.
       if (TerminalDocked() && gTerminalDock == 0)
          DrawTerminalDocked("##terminal_bottom", ImVec2(0, gTerminalHeight));
@@ -1433,6 +1446,67 @@ void DrawSidePanels(FrameCtx& fc)
             {
                DrawFieldError(gFieldSampleEditor->LastError(), gFieldSampleEditor->code);
             }
+         }
+         EndEditorWindow(editorVisible);
+      }
+
+      if (gSpectralFieldEditorOpen && gSpectralFieldEditor != nullptr)
+      {
+         bool alive = false;
+         for (const GraphNode& gn : gNodes)
+         {
+            if (gn.node.get() == gSpectralFieldEditor)
+               alive = true;
+         }
+         if (!alive)
+         {
+            gSpectralFieldEditor = nullptr;
+            gSpectralFieldEditorOpen = false;
+         }
+      }
+
+      if (gSpectralFieldEditorOpen && gSpectralFieldEditor != nullptr)
+      {
+         ImGui::SetNextWindowSize(ImVec2(640, 480), ImGuiCond_FirstUseEver);
+         const bool editorVisible = BeginEditorWindow(L("Spectral field editor"), &gSpectralFieldEditorOpen);
+         if (editorVisible)
+         {
+            SectionCard::Begin(T("Kernel"));
+            EditorHint(T("Runs once per bin. Read: bin, bins, binhz, hop, sr. Write: mag, phase, freq. X.at(k) reads another bin."));
+            SectionCard::Begin(T("Code"));
+
+            gCurrentNodeIndex = gSpectralFieldEditor->NodeIndex();
+            DrawFieldDeviceControls<SpectralFieldNode>(gSpectralFieldEditor, "bin", &SpectralFieldNode::PresetNames(),
+                                                       [](SpectralFieldNode* n2, int i) { n2->presetIndex = i; n2->LoadPreset(i); });
+            gCurrentNodeIndex = -1;
+
+            static char editBuf[8192];
+            static SpectralFieldNode* lastEdited = nullptr;
+            static std::string lastKnownCode;
+            if (lastEdited != gSpectralFieldEditor || gSpectralFieldEditor->code != lastKnownCode)
+            {
+               snprintf(editBuf, sizeof(editBuf), "%s", gSpectralFieldEditor->code.c_str());
+               lastEdited = gSpectralFieldEditor;
+               lastKnownCode = gSpectralFieldEditor->code;
+            }
+
+            FieldWell::InputTextMultiline("##spectralFieldCode", editBuf, sizeof(editBuf),
+                                          ImVec2(-1, ImGui::GetContentRegionAvail().y - 35));
+
+            PushPrimaryButtonStyle();
+            if (ActionButton::Draw(L("Apply"), ImVec2(120, 0)))
+            {
+               gSpectralFieldEditor->code = editBuf;
+               gSpectralFieldEditor->Apply();
+               lastKnownCode = gSpectralFieldEditor->code;
+            }
+            PopPrimaryButtonStyle();
+            FormParts::Inline();
+            if (ActionButton::Draw(L("Revert"), ImVec2(120, 0)))
+               snprintf(editBuf, sizeof(editBuf), "%s", gSpectralFieldEditor->code.c_str());
+
+            if (!gSpectralFieldEditor->LastError().empty())
+               DrawFieldError(gSpectralFieldEditor->LastError(), gSpectralFieldEditor->code);
          }
          EndEditorWindow(editorVisible);
       }

@@ -2,7 +2,7 @@ build/
 build-*/
 dist/
 *.dmg
-!website/assets/*.dmg
+# website/assets/Infinite.dmg is no longer tracked: the site links to the latest GitHub Release
 !website/*.dmg
 
 # editor/runtime state written next to the app
@@ -62,3 +62,11 @@ collect_check.md
 glyph-sheet.png
 .media_scratch_*
 /ui-audit/
+/crawl/
+tools/blender-ab/assets/bed/
+tools/blender-ab/assets/hand/
+
+# 2D View audit output and per-machine golden shots (tools/ui/golden_view2d.py)
+ui-audit-view2d/
+tools/ui/golden-view2d/
+/journeys/
