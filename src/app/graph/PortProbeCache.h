@@ -11,15 +11,15 @@ struct GraphNode;
 
 namespace app
 {
-   // What an output pin carries: the 10 facts IsInputSlotCompatible takes, packed into a bitmask.
+   // What an output pin carries: the source properties IsInputSlotCompatible takes, packed into a bitmask.
    enum SrcKind : uint16_t
    {
       kSrcModulator = 1u << 0, kSrcPalette = 1u << 1, kSrcGeometry = 1u << 2, kSrcCamera = 1u << 3,
       kSrcLight = 1u << 4, kSrcEnvironment = 1u << 5, kSrcAudio = 1u << 6, kSrcNote = 1u << 7,
-      kSrcPredictor = 1u << 8, kSrcShade = 1u << 9,
+      kSrcPredictor = 1u << 8, kSrcShade = 1u << 9, kSrcMaterial = 1u << 10,
    };
 
-   // The same call IsInputSlotCompatible makes, from a packed kind (pointers there are only null-tested).
+   // Applies the same compatibility rules to the packed source properties.
    bool SlotAcceptsKind(GraphNode* dst, int slot, uint16_t kind);
    // Kind of output `out` of a live node.
    uint16_t SrcKindOfOutput(GraphNode* src, int out);

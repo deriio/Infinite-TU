@@ -9,7 +9,7 @@ namespace app
 {
 namespace
 {
-   constexpr uint16_t kKindCount = kSrcShade << 1;
+   constexpr uint16_t kKindCount = kSrcMaterial << 1;
 
    struct Entry
    {
@@ -52,19 +52,6 @@ namespace
    }
 }
 
-bool SlotAcceptsKind(GraphNode* dst, int slot, uint16_t kind)
-{
-   // IsInputSlotCompatible only compares these pointers with nullptr, so a non-null stand-in is enough.
-   auto* mark = reinterpret_cast<void*>(uintptr_t(1));
-   return IsInputSlotCompatible(dst, slot, (kind & kSrcModulator) != 0,
-                                (kind & kSrcPalette) ? static_cast<IPaletteSource*>(mark) : nullptr,
-                                (kind & kSrcGeometry) ? static_cast<IGeometrySource*>(mark) : nullptr,
-                                (kind & kSrcCamera) ? static_cast<CameraNode*>(mark) : nullptr,
-                                (kind & kSrcLight) ? static_cast<LightNode*>(mark) : nullptr,
-                                (kind & kSrcEnvironment) != 0, (kind & kSrcAudio) != 0, (kind & kSrcNote) != 0,
-                                (kind & kSrcPredictor) != 0, (kind & kSrcShade) != 0);
-}
-
 uint16_t SrcKindOfOutput(GraphNode* src, int out)
 {
    INode* n = src->node.get();
@@ -74,7 +61,11 @@ uint16_t SrcKindOfOutput(GraphNode* src, int out)
    if (dynamic_cast<IPaletteSource*>(n) != nullptr)
       k |= kSrcPalette;
    if (auto* g = dynamic_cast<IGeometrySource*>(n); g != nullptr && g->IsGeometryOutputIndex(out))
+   {
       k |= kSrcGeometry;
+      if (dynamic_cast<MaterialNode*>(g) != nullptr)
+         k |= kSrcMaterial;
+   }
    if (dynamic_cast<CameraNode*>(n) != nullptr)
       k |= kSrcCamera;
    if (dynamic_cast<LightNode*>(n) != nullptr)
