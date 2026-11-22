@@ -47,7 +47,7 @@ namespace app
          keyMask = chat::MaskKey(k);
       }
       // Presets fill only the URL; model names are hints in the chat's model menu.
-      const auto& presets = chat::CustomPresets();
+      const auto& presets = chat::EnvironmentAgentPresets();
       int cur = 0;
       std::string items = std::string(T("None")) + '\0';
       for (size_t i = 0; i < presets.size(); i++)
@@ -144,7 +144,7 @@ namespace app
 
       FormParts::Label("");
       std::string note = T("The key is stored in your system keychain (macOS Keychain / Windows Credential Manager), never in Infinite's files. Ollama needs no key. The model must support tool calls to change the patch; otherwise the chat talks only.");
-      for (const chat::CustomPreset& p : presets)
+      for (const chat::EnvironmentAgentPreset& p : presets)
          if (prefs.customPreset == p.id)
             note += std::string("\n") + p.note;
       const std::string why = chat::CustomProblem(prefs.customBaseUrl, prefs.models["custom"], prefs.customKeyEnv);

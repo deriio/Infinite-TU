@@ -31,10 +31,10 @@ namespace chat
       return nullptr;
    }
 
-   const std::vector<CustomPreset>& CustomPresets()
+   const std::vector<EnvironmentAgentPreset>& EnvironmentAgentPresets()
    {
       // URLs and model names are hints, not checked against the services (see docs/custom-agent.md).
-      static const std::vector<CustomPreset> k = {
+      static const std::vector<EnvironmentAgentPreset> k = {
          { "ollama", "Ollama (local)", "http://localhost:11434/v1", { "qwen3-coder", "gpt-oss:20b", "llama3.3" },
            "Ollama needs no key: leave the key empty. Pull the model first (ollama pull <name>); tools need a model that supports them." },
          { "deepseek", "DeepSeek", "https://api.deepseek.com", { "deepseek-chat", "deepseek-reasoner" },
