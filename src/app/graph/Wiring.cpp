@@ -786,12 +786,7 @@ namespace app
    // in one place, so the two stay in sync. Param pins (IsParamPin) and colour
    // pins (IsColorPin) are handled by the caller before this is ever reached -
    // this only covers ordinary input pins.
-   bool IsInputSlotCompatible(GraphNode* dstNode, int slot,
-                               bool srcIsModulator, IPaletteSource* srcPalette,
-                               IGeometrySource* srcGeometry, CameraNode* srcCamera,
-                               LightNode* srcLight,
-                               bool srcIsEnvironment, bool srcIsAudioNode, bool srcIsNoteSource,
-                               bool srcIsPredictor, bool srcIsShade)
+   bool SlotAcceptsKind(GraphNode* dstNode, int slot, uint16_t kind)
    {
       if (dstNode == nullptr || dstNode->node == nullptr)
          return false;
@@ -806,10 +801,10 @@ namespace app
       // This lived only in the ed::QueryNewLink handler until now, which meant
       // ConnectNodes() (the RemoteControl `connect` RPC and cluster paste),
       // the drag-to-empty-canvas auto-wire, and RecommendedNodeTypesForOutput
-      // all happily made a link the UI refuses. `srcIsPredictor` is a required
+      // all happily made a link the UI refuses. The predictor flag is a required
       // parameter rather than a defaulted one precisely so a new call site
       // cannot silently reopen that hole - the compiler names it instead.
-      if (srcIsPredictor)
+      if ((kind & kSrcPredictor))
          return false;
 
       auto* dstRender = dynamic_cast<Render3DNode*>(dstNode->node.get());
@@ -819,70 +814,85 @@ namespace app
       const bool dstWantsImage = dynamic_cast<ImageAnalyzeNode*>(dstNode->node.get()) != nullptr ||
                                  dynamic_cast<TrackNodeBase*>(dstNode->node.get()) != nullptr;
 
-      const bool srcIsImage = !srcIsModulator && srcPalette == nullptr &&
-                              srcGeometry == nullptr && srcCamera == nullptr &&
-                              srcLight == nullptr && !srcIsAudioNode && !srcIsNoteSource;
+      const bool srcIsImage = !(kind & kSrcModulator) && !(kind & kSrcPalette) &&
+                              !(kind & kSrcGeometry) && !(kind & kSrcCamera) &&
+                              !(kind & kSrcLight) && !(kind & kSrcAudio) && !(kind & kSrcNote);
 
       // Audio/note pins are found generically via AudioInputSlot()/NoteInputSlot().
       // AudioFileNode is a real IAudioSource (its samples flow through the
       // DSP graph like any other audio node - see AnalyzeNodes.h), so
-      // srcIsAudioNode alone covers it here; the special-case
+      // (kind & kSrcAudio) alone covers it here; the special-case
       // "srcAudioFile != nullptr" carve-out this branch used to also accept
       // was scoped too broadly (every AudioInputSlot(), not just
       // OutputNode's recording slot) and let a cable land on Audio
       // Displacement/Mixer/effects/Audio Out that read as permanent silence -
       // see docs/plans/audio-file-into-dsp-graph.md.
       if (dstNode->node->AudioInputSlot(slot) != nullptr)
-         return srcIsAudioNode;
+         return (kind & kSrcAudio);
       else if (dstNode->node->NoteInputSlot(slot) != nullptr)
-         return srcIsNoteSource;
+         return (kind & kSrcNote);
       // Audio Analyze used to need a branch of its own here, accepting an
       // AudioFileNode and nothing else, because it read that node's published
       // AudioLevels through a bare pointer instead of taking audio. It now
       // owns a real AudioNode and a real AudioInputSlot(0), so the generic
       // audio-pin branch above already accepts any IAudioSource for it -
       // exactly the broadening that special case was blocking.
-      else if (srcIsAudioNode || srcIsNoteSource)
+      else if ((kind & kSrcAudio) || (kind & kSrcNote))
          return false;
       else if (dstRender != nullptr)
       {
          if (slot < Render3DNode::kSlots)
-            return srcGeometry != nullptr && srcCamera == nullptr && srcLight == nullptr;
+            return (kind & kSrcGeometry) && !(kind & kSrcCamera) && !(kind & kSrcLight);
          else if (slot == Render3DNode::kSlots)
-            return srcCamera != nullptr;
+            return (kind & kSrcCamera);
          else if (slot == Render3DNode::kEnvSlot)
-            return srcIsEnvironment;
+            return (kind & kSrcEnvironment);
          else if (slot > Render3DNode::kSlots && slot - Render3DNode::kSlots - 1 < Render3DNode::kLightSlots)
-            return srcLight != nullptr;
+            return (kind & kSrcLight);
          else
             return false;
       }
       else if (dstMaterial != nullptr && slot == MaterialNode::kLayerSlot)
-         return dynamic_cast<MaterialNode*>(srcGeometry) != nullptr; // row 4.1: a Material only (one on itself is ignored)
+         return (kind & kSrcMaterial); // row 4.1: a Material only (one on itself is ignored)
       else if (dstNode->node->GeometryInputSlot(slot) != nullptr)
-         return srcGeometry != nullptr && srcCamera == nullptr && srcLight == nullptr;
+         return (kind & kSrcGeometry) && !(kind & kSrcCamera) && !(kind & kSrcLight);
       else if (dstMaterial != nullptr)
          return srcIsImage;
       else if (dstDisplacement != nullptr)
          return srcIsImage;
       else if (dstSetColor != nullptr && slot == 2)
-         return srcPalette != nullptr;
+         return (kind & kSrcPalette);
       else if (dstSetColor != nullptr)
          return srcIsImage;
-      else if (srcGeometry != nullptr || srcCamera != nullptr || srcLight != nullptr)
+      else if ((kind & kSrcGeometry) || (kind & kSrcCamera) || (kind & kSrcLight))
          return false; // 3D cables only go into 3D nodes
       else if (dstNode->node->ModulatorInputSlot(slot) != nullptr && !dstWantsImage)
-         return srcIsModulator;
+         return (kind & kSrcModulator);
       // A Shade field pin reads its input only as another Shade output (ShadeBuild::Input returns the fallback for
       // any other picture), so a plain picture is refused here instead of being accepted and then silently dropped.
       // Shade Image's picture pin (slot 1) is the exception: it reads any picture as a texture.
       else if (dynamic_cast<ShadeNode*>(dstNode->node.get()) != nullptr &&
                !(dynamic_cast<ShadeImageNode*>(dstNode->node.get()) != nullptr && slot == 1))
-         return srcIsShade && srcIsImage;
+         return (kind & kSrcShade) && srcIsImage;
       else
          return srcIsImage;
    }
 
+   bool IsInputSlotCompatible(GraphNode* dstNode, int slot,
+                               bool srcIsModulator, IPaletteSource* srcPalette,
+                               IGeometrySource* srcGeometry, CameraNode* srcCamera,
+                               LightNode* srcLight,
+                               bool srcIsEnvironment, bool srcIsAudioNode, bool srcIsNoteSource,
+                               bool srcIsPredictor, bool srcIsShade)
+   {
+      uint16_t kind = (srcIsModulator ? kSrcModulator : 0) | (srcPalette ? kSrcPalette : 0) |
+                      (srcGeometry ? kSrcGeometry : 0) | (srcCamera ? kSrcCamera : 0) |
+                      (srcLight ? kSrcLight : 0) | (srcIsEnvironment ? kSrcEnvironment : 0) |
+                      (srcIsAudioNode ? kSrcAudio : 0) | (srcIsNoteSource ? kSrcNote : 0) |
+                      (srcIsPredictor ? kSrcPredictor : 0) | (srcIsShade ? kSrcShade : 0) |
+                      (dynamic_cast<MaterialNode*>(srcGeometry) ? kSrcMaterial : 0);
+      return SlotAcceptsKind(dstNode, slot, kind);
+   }
 
    // Performs the connection once IsInputSlotCompatible (or the caller's own
    // equivalent check) has already said `slot` on `dstNode` accepts whatever
