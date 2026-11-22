@@ -47,7 +47,7 @@
 				<string>com.namansoni.infinite.patch</string>
 			</array>
 			<key>LSHandlerRank</key>
-			<string>Owner</string>
+			<string>Alternate</string>
 		</dict>
 		<dict>
 			<key>CFBundleTypeName</key>
@@ -67,7 +67,7 @@
 				<string>com.namansoni.infinite.device</string>
 			</array>
 			<key>LSHandlerRank</key>
-			<string>Owner</string>
+			<string>Alternate</string>
 		</dict>
 	</array>
 	<key>UTExportedTypeDeclarations</key>
