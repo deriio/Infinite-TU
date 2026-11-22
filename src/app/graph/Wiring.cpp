@@ -1,6 +1,7 @@
 // Cable / slot compatibility, connect, schema probe, cluster links, spawn (moved verbatim from main.cpp).
 #include "core/Notices.h"
 #include "app/AppShared.h"
+#include "app/graph/PortProbeCache.h"
 
 namespace app
 {
@@ -1594,6 +1595,7 @@ namespace app
       // would offer a link IsInputSlotCompatible then refuses.
       const bool srcIsPredictor = dynamic_cast<IPredictor*>(srcNode->node.get()) != nullptr;
       const bool srcIsShade = IsShadeSource(srcNode->node.get());
+      const uint16_t portKind = SrcKindOfOutput(srcNode, srcOutputIndex); // fork: reuse warmed port descriptors
 
       // The answer depends only on what kind of source this is, so it is kept per kind: building every node type
       // again on each cable drop cost a visible stall.
@@ -1622,24 +1624,7 @@ namespace app
             if (!IsUserSpawnable(name))
                continue;
 
-            GraphNode probe;
-            probe.node.reset(NodeFactory::Instance().MakeNode(name));
-            if (!probe.node)
-               continue;
-
-            const int slotCount = InputCountFor(probe);
-            bool compatible = false;
-            for (int slot = 0; slot < slotCount; ++slot)
-            {
-               if (IsInputSlotCompatible(&probe, slot, srcIsModulator, srcPalette, srcGeometry,
-                                          srcCamera, srcLight, srcIsEnvironment,
-                                          srcIsAudioNode, srcIsNoteSource, srcIsPredictor, srcIsShade))
-               {
-                  compatible = true;
-                  break;
-               }
-            }
-            if (compatible)
+            if (TypeAcceptsKind(name, portKind))
                result.emplace_back(name, category);
          }
       }
