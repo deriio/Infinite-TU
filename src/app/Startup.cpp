@@ -29,8 +29,6 @@ extern "C"
 
 namespace app
 {
-   DawPlugin::Env DawPluginEnv();   // DawPluginSection.cpp
-   void DawPluginLaunchRecopy();
 
 bool RunAliasTest(); // selftest/AliasTests.cpp
 extern bool gShotNodeMenu; // frame/StagePopupsA.cpp: review shots open the first node's menu
@@ -1094,20 +1092,8 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    // window, for install.sh and the Homebrew cask (docs/plans/vst-au/README.md 3.6).
    if (argc >= 2 && (std::strcmp(argv[1], "--install-plugins") == 0 || std::strcmp(argv[1], "--uninstall-plugins") == 0))
    {
-      const bool install = std::strcmp(argv[1], "--install-plugins") == 0;
-      DawPlugin::Env env = DawPluginEnv();
-      if (argc >= 3 && install)
-         env.formats = argv[2]; // the installer's checkboxes: "vst3", "au" or "vst3,au"
-      std::string err;
-      const bool ok = install ? DawPlugin::Install(env, err) : DawPlugin::Uninstall(env, err);
-      if (!ok)
-      {
-         fprintf(stderr, "%s\n", err.c_str());
-         return 1;
-      }
-      for (const DawPlugin::Bundle& b : DawPlugin::Bundles(env))
-         printf("%s %s\n", install ? "installed" : "removed", b.target.c_str());
-      return 0;
+      std::fputs("Infinite TU leaves the official Infinite DAW plugins in place.\n", stderr);
+      return 1;
    }
 
    // Plugin engine mode: this process is the engine of one VST3/AU instance
@@ -1638,9 +1624,6 @@ int InitApp(FrameCtx& fc, int argc, char** argv)
    // Never inside a DAW: the app does both (an engine must not replace the bundle its DAW has loaded).
    if (UpdateCheck::AutoCheckEnabled() && !Platform::PluginModeActive())
       UpdateCheck::Start();
-   // An installed DAW plugin follows this app's version and location (DawPluginInstall.h).
-   if (!IsHeadlessProcess() && !Platform::PluginModeActive())
-      DawPluginLaunchRecopy();
 
    static std::string iniPath = settingsDir.empty() ? std::string("imgui.ini")
                                                     : settingsDir + "/imgui.ini";
