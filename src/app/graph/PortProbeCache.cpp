@@ -9,9 +9,11 @@ namespace app
 {
 namespace
 {
+   constexpr uint16_t kKindCount = kSrcShade << 1;
+
    struct Entry
    {
-      std::bitset<512> accepts;           // indexed by SrcKind mask
+      std::bitset<kKindCount> accepts;           // indexed by SrcKind mask
       std::vector<uint16_t> outputKinds;
    };
    std::unordered_map<std::string, Entry>& Cache()
@@ -32,7 +34,7 @@ namespace
          return nullptr;
       Entry e;
       const int slots = InputCountFor(probe);
-      for (uint16_t kind = 0; kind < 512; ++kind)
+      for (uint16_t kind = 0; kind < kKindCount; ++kind)
       {
          if (kind & kSrcPredictor)
             continue;   // IsInputSlotCompatible refuses every slot for a predictor
@@ -60,7 +62,7 @@ bool SlotAcceptsKind(GraphNode* dst, int slot, uint16_t kind)
                                 (kind & kSrcCamera) ? static_cast<CameraNode*>(mark) : nullptr,
                                 (kind & kSrcLight) ? static_cast<LightNode*>(mark) : nullptr,
                                 (kind & kSrcEnvironment) != 0, (kind & kSrcAudio) != 0, (kind & kSrcNote) != 0,
-                                (kind & kSrcPredictor) != 0);
+                                (kind & kSrcPredictor) != 0, (kind & kSrcShade) != 0);
 }
 
 uint16_t SrcKindOfOutput(GraphNode* src, int out)
@@ -85,13 +87,15 @@ uint16_t SrcKindOfOutput(GraphNode* src, int out)
       k |= kSrcNote;
    if (dynamic_cast<IPredictor*>(n) != nullptr)
       k |= kSrcPredictor;
+   if (IsShadeSource(n))
+      k |= kSrcShade;
    return k;
 }
 
 bool TypeAcceptsKind(const std::string& name, uint16_t kind)
 {
    const Entry* e = Build(name);
-   return e != nullptr && e->accepts.test(kind & 511u);
+   return e != nullptr && e->accepts.test(kind & (kKindCount - 1));
 }
 
 const std::vector<uint16_t>& TypeOutputKinds(const std::string& name)
