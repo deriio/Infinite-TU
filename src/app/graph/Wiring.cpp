@@ -1,7 +1,6 @@
 // Cable / slot compatibility, connect, schema probe, cluster links, spawn (moved verbatim from main.cpp).
 #include "core/Notices.h"
 #include "app/AppShared.h"
-#include "app/graph/PortProbeCache.h"
 
 namespace app
 {
